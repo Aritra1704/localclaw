@@ -19,7 +19,7 @@ Recommended layout:
 ```text
 ~/localclaw/
   package.json
-  pm2.config.js
+  pm2.config.cjs
   .env
   src/
   db/
@@ -606,4 +606,3 @@ Do not expand the platform into uncontrolled self-improvement before the followi
 - GitHub push
 - approval-gated deployment
 - observable evidence in PostgreSQL and Telegram
-
