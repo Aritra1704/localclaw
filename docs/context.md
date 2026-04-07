@@ -11,7 +11,7 @@ As of 2026-04-07, the project status is:
 | Phase | Status | Notes |
 |---|---|---|
 | Phase 0: Preflight | complete | SSD layout is ready, mandatory local model baseline is present, Telegram token and chat ID are available, DB credentials are verified, and Railway token can be added later. |
-| Phase 1: Foundation | in progress | repo scaffold, env handling, migration runner, dedicated `localclaw` schema, orchestrator bootstrap, PM2 config, and Telegram command wiring are implemented. Remaining work is live Telegram command flow testing. |
+| Phase 1: Foundation | complete | repo scaffold, env handling, migration runner, dedicated `localclaw` schema, orchestrator bootstrap, PM2 config, Telegram command wiring, command-handler integration testing, and live Telegram polling verification are complete. |
 | Phase 2: LLM and Tool Execution | not started | planner, model client, tool execution, and verifier still need implementation. |
 | Phase 3: Git and GitHub | not started | GitHub API and repo automation are still pending. |
 | Phase 4: Deploy Gate Checkpoint | not started | Railway integration and deploy approval flow are not implemented yet. |
