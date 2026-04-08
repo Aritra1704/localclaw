@@ -234,6 +234,16 @@ export class Orchestrator {
         ]
       );
 
+      this.logger.info(
+        {
+          taskId: task.id,
+          title: task.title,
+          taskStatus,
+          workspaceRoot: result.workspaceRoot,
+        },
+        'Task execution finished'
+      );
+
       if (taskStatus === 'done') {
         await this.incrementStats('tasks_completed');
       } else {
@@ -259,6 +269,15 @@ export class Orchestrator {
            last_heartbeat_at = NOW()
          WHERE id = $1`,
         [task.id, error.message]
+      );
+
+      this.logger.error(
+        {
+          err: error,
+          taskId: task.id,
+          title: task.title,
+        },
+        'Task execution failed'
       );
 
       await this.incrementStats('tasks_failed');
