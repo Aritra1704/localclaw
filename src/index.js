@@ -4,10 +4,16 @@ import process from 'node:process';
 import pino from 'pino';
 
 import { config, requireConfig } from './config.js';
+import { createTaskExecutor } from './agent/executor.js';
+import { createPlanner } from './agent/planner.js';
+import { createVerifier } from './agent/verifier.js';
 import { checkDatabaseConnection, closePool } from './db/client.js';
+import { createModelSelector } from './llm/modelSelector.js';
+import { createOllamaClient } from './llm/ollama.js';
 import { runMigrations } from './db/migrate.js';
 import { Orchestrator } from './orchestrator.js';
 import { startTelegramBot } from './telegram/bot.js';
+import { createToolRegistry } from './tools/registry.js';
 
 const logger = pino({
   name: 'localclaw',
@@ -30,7 +36,48 @@ async function bootstrap() {
   const dbHealth = await checkDatabaseConnection();
   logger.info({ serverTime: dbHealth.server_time }, 'Database connection healthy');
 
-  orchestrator = new Orchestrator({ logger });
+  const ollamaClient = createOllamaClient({ logger });
+  const modelSelector = createModelSelector();
+  const ollamaHealth = await ollamaClient.healthCheck({
+    requiredModels: [
+      config.modelPlanner,
+      config.modelCoder,
+      config.modelFast,
+      config.modelReview,
+      config.modelEmbed,
+    ],
+  });
+
+  if (!ollamaHealth.ok) {
+    throw new Error(
+      `Missing required Ollama models: ${ollamaHealth.missingModels.join(', ')}`
+    );
+  }
+
+  logger.info(
+    {
+      ollamaBaseUrl: config.ollamaBaseUrl,
+      availableModels: ollamaHealth.models.map((model) => model.name),
+    },
+    'Ollama connection healthy'
+  );
+
+  const planner = createPlanner({
+    client: ollamaClient,
+    modelSelector,
+  });
+  const verifier = createVerifier({
+    client: ollamaClient,
+    modelSelector,
+  });
+  const toolRegistry = createToolRegistry();
+  const taskExecutor = createTaskExecutor({
+    planner,
+    verifier,
+    toolRegistry,
+  });
+
+  orchestrator = new Orchestrator({ logger, taskExecutor });
   await orchestrator.start();
   telegramBot = await startTelegramBot({
     logger,

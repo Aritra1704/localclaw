@@ -18,6 +18,7 @@ export class Orchestrator {
     this.pollIntervalMs = options.pollIntervalMs ?? config.taskPollIntervalMs;
     this.logger = options.logger ?? logger;
     this.pool = options.pool ?? getPool();
+    this.taskExecutor = options.taskExecutor;
     this.timer = null;
     this.isRunning = false;
     this.tickInFlight = false;
@@ -114,10 +115,10 @@ export class Orchestrator {
         stepNumber: 1,
         stepType: 'system',
         status: 'started',
-        outputSummary: `Picked task "${task.title}" for placeholder execution`,
+        outputSummary: `Picked task "${task.title}" for controlled execution`,
       });
 
-      await this.executePlaceholderTask(task);
+      await this.executeTask(task);
     } finally {
       this.tickInFlight = false;
     }
@@ -186,38 +187,117 @@ export class Orchestrator {
     }
   }
 
-  async executePlaceholderTask(task) {
-    this.logger.info({ taskId: task.id, title: task.title }, 'Executing placeholder task');
+  async executeTask(task) {
+    if (!this.taskExecutor) {
+      throw new Error('Task executor is not configured');
+    }
 
-    await this.logTaskStep(task.id, {
-      stepNumber: 2,
-      stepType: 'act',
-      status: 'success',
-      outputSummary: `Placeholder execution completed for "${task.title}"`,
-    });
+    this.logger.info({ taskId: task.id, title: task.title }, 'Executing task');
 
+    try {
+      const result = await this.taskExecutor.executeTask(task, {
+        startStepNumber: 2,
+        logStep: async (step) => {
+          await this.logTaskStep(task.id, step);
+          await this.touchTaskLease(task.id);
+        },
+      });
+
+      await this.persistArtifacts(task.id, result.artifacts ?? []);
+
+      const taskStatus =
+        result.verification.review.status === 'passed'
+          ? 'done'
+          : result.verification.review.status === 'needs_human_review'
+            ? 'blocked'
+            : 'failed';
+
+      await this.pool.query(
+        `UPDATE tasks
+         SET
+           status = $2,
+           project_path = COALESCE(project_path, $3),
+           blocked_reason = $4,
+           result = $5::jsonb,
+           completed_at = CASE WHEN $2 = 'done' THEN NOW() ELSE completed_at END,
+           updated_at = NOW(),
+           locked_by = NULL,
+           lease_expires_at = NULL,
+           last_heartbeat_at = NOW()
+         WHERE id = $1`,
+        [
+          task.id,
+          taskStatus,
+          result.workspaceRoot,
+          taskStatus === 'blocked' ? result.verification.review.summary : null,
+          JSON.stringify(result),
+        ]
+      );
+
+      if (taskStatus === 'done') {
+        await this.incrementStats('tasks_completed');
+      } else {
+        await this.incrementStats('tasks_failed');
+      }
+    } catch (error) {
+      await this.logTaskStep(task.id, {
+        stepNumber: 999,
+        stepType: 'system',
+        status: 'error',
+        outputSummary: null,
+        errorMessage: error.message,
+      });
+
+      await this.pool.query(
+        `UPDATE tasks
+         SET
+           status = 'failed',
+           blocked_reason = $2,
+           updated_at = NOW(),
+           locked_by = NULL,
+           lease_expires_at = NULL,
+           last_heartbeat_at = NOW()
+         WHERE id = $1`,
+        [task.id, error.message]
+      );
+
+      await this.incrementStats('tasks_failed');
+      throw error;
+    } finally {
+      await this.setAgentStateValue('current_task_id', null);
+    }
+  }
+
+  async persistArtifacts(taskId, artifacts) {
+    for (const artifact of artifacts) {
+      await this.pool.query(
+        `INSERT INTO task_artifacts (
+           task_id,
+           artifact_type,
+           artifact_path,
+           metadata
+         )
+         VALUES ($1, $2, $3, $4::jsonb)`,
+        [
+          taskId,
+          artifact.artifactType,
+          artifact.artifactPath,
+          JSON.stringify(artifact.metadata ?? {}),
+        ]
+      );
+    }
+  }
+
+  async touchTaskLease(taskId) {
     await this.pool.query(
       `UPDATE tasks
        SET
-         status = 'done',
-         result = $2::jsonb,
-         completed_at = NOW(),
-         updated_at = NOW(),
-         locked_by = NULL,
-         lease_expires_at = NULL,
-         last_heartbeat_at = NOW()
+         lease_expires_at = NOW() + INTERVAL '5 minutes',
+         last_heartbeat_at = NOW(),
+         updated_at = NOW()
        WHERE id = $1`,
-      [
-        task.id,
-        JSON.stringify({
-          mode: 'placeholder',
-          message: `Task "${task.title}" reached the Phase 1 placeholder executor.`,
-        }),
-      ]
+      [taskId]
     );
-
-    await this.incrementStats('tasks_completed');
-    await this.setAgentStateValue('current_task_id', null);
   }
 
   async incrementStats(field) {
