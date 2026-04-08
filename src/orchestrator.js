@@ -19,6 +19,7 @@ export class Orchestrator {
     this.logger = options.logger ?? logger;
     this.pool = options.pool ?? getPool();
     this.taskExecutor = options.taskExecutor;
+    this.publisher = options.publisher ?? null;
     this.timer = null;
     this.isRunning = false;
     this.tickInFlight = false;
@@ -197,6 +198,7 @@ export class Orchestrator {
     try {
       const result = await this.taskExecutor.executeTask(task, {
         startStepNumber: 2,
+        publisher: this.publisher,
         logStep: async (step) => {
           await this.logTaskStep(task.id, step);
           await this.touchTaskLease(task.id);
@@ -205,8 +207,13 @@ export class Orchestrator {
 
       await this.persistArtifacts(task.id, result.artifacts ?? []);
 
-      const taskStatus =
-        result.verification.review.status === 'passed'
+      const publishBlocked =
+        result.publication?.attempted === true &&
+        result.publication?.published === false;
+
+      const taskStatus = publishBlocked
+        ? 'blocked'
+        : result.verification.review.status === 'passed'
           ? 'done'
           : result.verification.review.status === 'needs_human_review'
             ? 'blocked'
@@ -216,9 +223,11 @@ export class Orchestrator {
         `UPDATE tasks
          SET
            status = $2,
-           project_path = COALESCE(project_path, $3),
-           blocked_reason = $4,
-           result = $5::jsonb,
+           project_name = COALESCE(project_name, $3),
+           project_path = COALESCE(project_path, $4),
+           repo_url = COALESCE(repo_url, $5),
+           blocked_reason = $6,
+           result = $7::jsonb,
            completed_at = CASE WHEN $2 = 'done' THEN NOW() ELSE completed_at END,
            updated_at = NOW(),
            locked_by = NULL,
@@ -228,8 +237,12 @@ export class Orchestrator {
         [
           task.id,
           taskStatus,
+          result.publication?.repo?.name ?? result.workspaceName ?? null,
           result.workspaceRoot,
-          taskStatus === 'blocked' ? result.verification.review.summary : null,
+          result.publication?.repo?.htmlUrl ?? null,
+          taskStatus === 'blocked'
+            ? result.publication?.error?.message ?? result.verification.review.summary
+            : null,
           JSON.stringify(result),
         ]
       );

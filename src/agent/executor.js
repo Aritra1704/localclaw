@@ -43,6 +43,13 @@ export function createTaskExecutor({ planner, verifier, toolRegistry }) {
       ];
       const toolRuns = [];
       let logStepNumber = hooks.startStepNumber ?? 2;
+      let publication = {
+        attempted: false,
+        published: false,
+        repo: null,
+        commit: null,
+        error: null,
+      };
 
       const seedWorkspaceResult = await toolRegistry.runTool(
         'write_file',
@@ -155,10 +162,67 @@ export function createTaskExecutor({ planner, verifier, toolRegistry }) {
         inputSummary: planning.plan.summary,
         outputSummary: verification.review.summary,
       });
+      logStepNumber += 1;
+
+      if (verification.review.status === 'passed' && hooks.publisher?.isEnabled?.()) {
+        const publishStartedAt = Date.now();
+        try {
+          publication = await hooks.publisher.publishWorkspace(task, {
+            workspaceRoot,
+            workspaceName,
+          });
+
+          artifacts.push({
+            artifactType: 'repository',
+            artifactPath: publication.repo.htmlUrl,
+            metadata: {
+              provider: 'github',
+              owner: publication.repo.owner,
+              name: publication.repo.name,
+              commitSha: publication.commit?.sha ?? null,
+            },
+          });
+
+          await hooks.logStep?.({
+            stepNumber: logStepNumber,
+            stepType: 'publish',
+            status: 'success',
+            inputSummary: publication.repo.name,
+            outputSummary: publication.repo.htmlUrl,
+            durationMs: Date.now() - publishStartedAt,
+          });
+        } catch (error) {
+          publication = {
+            attempted: true,
+            published: false,
+            repo: null,
+            commit: null,
+            error: {
+              message: error.message,
+              status: error.status ?? null,
+            },
+          };
+
+          await hooks.logStep?.({
+            stepNumber: logStepNumber,
+            stepType: 'publish',
+            status: 'error',
+            inputSummary: workspaceName,
+            outputSummary: null,
+            errorMessage: error.message,
+            durationMs: Date.now() - publishStartedAt,
+          });
+        }
+
+        logStepNumber += 1;
+      }
 
       return {
-        executionMode: 'phase2_controlled',
+        executionMode: hooks.publisher?.isEnabled?.()
+          ? 'phase3_controlled'
+          : 'phase2_controlled',
         workspaceRoot,
+        workspaceName,
         plan: planning.plan,
         planner: {
           modelUsed: planning.modelUsed,
@@ -166,6 +230,7 @@ export function createTaskExecutor({ planner, verifier, toolRegistry }) {
         },
         toolRuns,
         verification,
+        publication,
         artifacts,
       };
     },

@@ -15,6 +15,14 @@ const envSchema = z.object({
   TELEGRAM_CHAT_ID: z.string().optional(),
   GITHUB_PAT: z.string().optional(),
   GITHUB_USERNAME: z.string().optional(),
+  GITHUB_REPO_OWNER: z.string().optional(),
+  GITHUB_API_BASE_URL: z.string().url().default('https://api.github.com'),
+  GITHUB_REPO_VISIBILITY: z.enum(['private', 'public']).default('private'),
+  GITHUB_AUTO_PUBLISH: z
+    .enum(['true', 'false'])
+    .default('false')
+    .transform((value) => value === 'true'),
+  GIT_DEFAULT_BRANCH: z.string().min(1).default('main'),
   RAILWAY_API_TOKEN: z.string().optional(),
   OLLAMA_BASE_URL: z.string().url().default('http://127.0.0.1:11434'),
   OLLAMA_KEEP_ALIVE: z.string().default('30s'),
@@ -53,6 +61,11 @@ export const config = {
   telegramChatId: env.TELEGRAM_CHAT_ID ?? '',
   githubPat: env.GITHUB_PAT ?? '',
   githubUsername: env.GITHUB_USERNAME ?? '',
+  githubRepoOwner: env.GITHUB_REPO_OWNER ?? env.GITHUB_USERNAME ?? '',
+  githubApiBaseUrl: env.GITHUB_API_BASE_URL,
+  githubRepoVisibility: env.GITHUB_REPO_VISIBILITY,
+  githubAutoPublish: env.GITHUB_AUTO_PUBLISH,
+  gitDefaultBranch: env.GIT_DEFAULT_BRANCH,
   railwayApiToken: env.RAILWAY_API_TOKEN ?? '',
   ollamaBaseUrl: env.OLLAMA_BASE_URL,
   ollamaKeepAlive: env.OLLAMA_KEEP_ALIVE,

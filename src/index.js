@@ -8,6 +8,9 @@ import { createTaskExecutor } from './agent/executor.js';
 import { createPlanner } from './agent/planner.js';
 import { createVerifier } from './agent/verifier.js';
 import { checkDatabaseConnection, closePool } from './db/client.js';
+import { createGitClient } from './git/cli.js';
+import { createGitHubClient } from './github/client.js';
+import { createGitHubPublisher } from './github/publisher.js';
 import { createModelSelector } from './llm/modelSelector.js';
 import { createOllamaClient } from './llm/ollama.js';
 import { runMigrations } from './db/migrate.js';
@@ -71,13 +74,34 @@ async function bootstrap() {
     modelSelector,
   });
   const toolRegistry = createToolRegistry();
+  let publisher = null;
+
+  if (config.githubAutoPublish) {
+    requireConfig('githubPat');
+    const gitClient = createGitClient();
+    const githubClient = createGitHubClient();
+    publisher = createGitHubPublisher({
+      gitClient,
+      githubClient,
+      logger,
+    });
+
+    logger.info(
+      {
+        githubRepoOwner: config.githubRepoOwner || config.githubUsername,
+        visibility: config.githubRepoVisibility,
+      },
+      'GitHub auto-publish enabled'
+    );
+  }
+
   const taskExecutor = createTaskExecutor({
     planner,
     verifier,
     toolRegistry,
   });
 
-  orchestrator = new Orchestrator({ logger, taskExecutor });
+  orchestrator = new Orchestrator({ logger, taskExecutor, publisher });
   await orchestrator.start();
   telegramBot = await startTelegramBot({
     logger,
