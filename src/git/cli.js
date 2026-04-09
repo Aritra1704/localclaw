@@ -1,5 +1,6 @@
 import { execFile } from 'node:child_process';
 import fs from 'node:fs/promises';
+import os from 'node:os';
 import path from 'node:path';
 import { promisify } from 'node:util';
 
@@ -13,19 +14,39 @@ function buildGitHubPushHeader(token) {
 }
 
 async function runGit(args, options = {}) {
-  const result = await execFileAsync('git', args, {
-    cwd: options.cwd,
-    env: {
-      ...process.env,
-      ...(options.env ?? {}),
-    },
-    maxBuffer: options.maxBuffer ?? 10 * 1024 * 1024,
-  });
+  try {
+    const result = await execFileAsync('git', args, {
+      cwd: options.cwd,
+      env: {
+        ...process.env,
+        ...(options.env ?? {}),
+      },
+      maxBuffer: options.maxBuffer ?? 10 * 1024 * 1024,
+    });
 
-  return {
-    stdout: result.stdout?.trim() ?? '',
-    stderr: result.stderr?.trim() ?? '',
-  };
+    return {
+      stdout: result.stdout?.trim() ?? '',
+      stderr: result.stderr?.trim() ?? '',
+    };
+  } catch (error) {
+    const sanitizedStdout = options.sanitize
+      ? options.sanitize(error.stdout ?? '')
+      : error.stdout ?? '';
+    const sanitizedStderr = options.sanitize
+      ? options.sanitize(error.stderr ?? '')
+      : error.stderr ?? '';
+    const sanitizedMessage = options.sanitize
+      ? options.sanitize(error.message ?? '')
+      : error.message ?? 'Git command failed';
+
+    const wrappedError = new Error(
+      [sanitizedMessage, sanitizedStderr || sanitizedStdout].filter(Boolean).join('\n')
+    );
+    wrappedError.stdout = sanitizedStdout;
+    wrappedError.stderr = sanitizedStderr;
+    wrappedError.code = error.code;
+    throw wrappedError;
+  }
 }
 
 async function pathExists(targetPath) {
@@ -61,17 +82,56 @@ async function ensureLocalIdentity(cwd, options = {}) {
   }
 }
 
+async function createAskPassScript() {
+  const scriptPath = path.join(
+    os.tmpdir(),
+    `localclaw-git-askpass-${process.pid}-${Date.now()}.sh`
+  );
+  const script = `#!/bin/sh
+case "$1" in
+  *Username*) printf '%s' "$LOCALCLAW_GIT_USERNAME" ;;
+  *Password*) printf '%s' "$LOCALCLAW_GIT_TOKEN" ;;
+  *) printf '' ;;
+esac
+`;
+
+  await fs.writeFile(scriptPath, script, { mode: 0o700 });
+  return scriptPath;
+}
+
+function createTokenSanitizer(token) {
+  const patterns = [token];
+
+  const basicToken = Buffer.from(`x-access-token:${token}`).toString('base64');
+  patterns.push(basicToken);
+
+  return (value) => {
+    let sanitized = value;
+
+    for (const pattern of patterns) {
+      if (!pattern) {
+        continue;
+      }
+
+      sanitized = sanitized.split(pattern).join('[REDACTED]');
+    }
+
+    return sanitized;
+  };
+}
+
 export function createGitClient(options = {}) {
   const defaultBranch = options.defaultBranch ?? config.gitDefaultBranch;
 
   return {
-    async initRepository(cwd) {
+    async initRepository(cwd, initOptions = {}) {
+      const branch = initOptions.branch ?? defaultBranch;
       const gitDir = path.join(cwd, '.git');
       if (!(await pathExists(gitDir))) {
         await runGit(['init'], { cwd });
       }
 
-      await runGit(['branch', '-M', defaultBranch], { cwd });
+      await runGit(['branch', '-M', branch], { cwd });
       await ensureLocalIdentity(cwd, options.identity);
     },
 
@@ -122,7 +182,12 @@ export function createGitClient(options = {}) {
     },
 
     async pushBranch(cwd, options) {
-      const { remoteName = 'origin', branch = defaultBranch, token } = options;
+      const {
+        remoteName = 'origin',
+        branch = defaultBranch,
+        token,
+        username = config.githubUsername || 'x-access-token',
+      } = options;
       const args = ['push', '-u', remoteName, branch];
 
       if (!token) {
@@ -130,11 +195,23 @@ export function createGitClient(options = {}) {
         return;
       }
 
-      const header = buildGitHubPushHeader(token);
-      await runGit(
-        ['-c', `http.https://github.com/.extraheader=${header}`, ...args],
-        { cwd }
-      );
+      const askPassScript = await createAskPassScript();
+      const sanitize = createTokenSanitizer(token);
+
+      try {
+        await runGit(args, {
+          cwd,
+          sanitize,
+          env: {
+            GIT_TERMINAL_PROMPT: '0',
+            GIT_ASKPASS: askPassScript,
+            LOCALCLAW_GIT_USERNAME: username,
+            LOCALCLAW_GIT_TOKEN: token,
+          },
+        });
+      } finally {
+        await fs.unlink(askPassScript).catch(() => {});
+      }
     },
   };
 }

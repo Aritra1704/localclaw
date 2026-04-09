@@ -13,6 +13,8 @@ import { createGitHubClient } from './github/client.js';
 import { createGitHubPublisher } from './github/publisher.js';
 import { createModelSelector } from './llm/modelSelector.js';
 import { createOllamaClient } from './llm/ollama.js';
+import { createRailwayClient } from './railway/client.js';
+import { createRailwayDeployer } from './railway/deployer.js';
 import { runMigrations } from './db/migrate.js';
 import { Orchestrator } from './orchestrator.js';
 import { startTelegramBot } from './telegram/bot.js';
@@ -75,6 +77,7 @@ async function bootstrap() {
   });
   const toolRegistry = createToolRegistry();
   let publisher = null;
+  let deployer = null;
 
   if (config.githubAutoPublish) {
     requireConfig('githubPat');
@@ -95,14 +98,43 @@ async function bootstrap() {
     );
   }
 
+  if (config.railwayDeployEnabled) {
+    if (!config.githubAutoPublish) {
+      throw new Error(
+        'RAILWAY_DEPLOY_ENABLED requires GITHUB_AUTO_PUBLISH=true so LocalClaw can deploy a published repository.'
+      );
+    }
+
+    requireConfig(
+      'railwayApiToken',
+      'railwayProjectId',
+      'railwayEnvironmentId',
+      'railwayServiceId'
+    );
+
+    const railwayClient = createRailwayClient({ logger });
+    deployer = createRailwayDeployer({
+      client: railwayClient,
+      timeoutMs: config.railwayDeployTimeoutMs,
+    });
+
+    logger.info(
+      {
+        railwayProjectId: config.railwayProjectId,
+        railwayEnvironmentId: config.railwayEnvironmentId,
+        railwayServiceId: config.railwayServiceId,
+      },
+      'Railway deploy gate enabled'
+    );
+  }
+
   const taskExecutor = createTaskExecutor({
     planner,
     verifier,
     toolRegistry,
   });
 
-  orchestrator = new Orchestrator({ logger, taskExecutor, publisher });
-  await orchestrator.start();
+  orchestrator = new Orchestrator({ logger, taskExecutor, publisher, deployer });
   telegramBot = await startTelegramBot({
     logger,
     orchestrator,
@@ -111,6 +143,8 @@ async function bootstrap() {
       process.exit(0);
     },
   });
+  orchestrator.setNotifier(telegramBot);
+  await orchestrator.start();
 
   logger.info('LocalClaw bootstrap complete');
 }

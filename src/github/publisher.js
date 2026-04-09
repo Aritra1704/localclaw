@@ -46,8 +46,11 @@ export function createGitHubPublisher({ gitClient, githubClient, logger }) {
         description: buildRepositoryDescription(task),
         private: config.githubRepoVisibility !== 'public',
       });
+      const publishBranch = repository.default_branch || config.gitDefaultBranch;
 
-      await gitClient.initRepository(context.workspaceRoot);
+      await gitClient.initRepository(context.workspaceRoot, {
+        branch: publishBranch,
+      });
       await gitClient.ensureRemote(context.workspaceRoot, 'origin', repository.clone_url);
 
       const commitResult = await gitClient.commitAll(
@@ -57,7 +60,7 @@ export function createGitHubPublisher({ gitClient, githubClient, logger }) {
 
       await gitClient.pushBranch(context.workspaceRoot, {
         remoteName: 'origin',
-        branch: config.gitDefaultBranch,
+        branch: publishBranch,
         token: config.githubPat,
       });
 
@@ -78,7 +81,7 @@ export function createGitHubPublisher({ gitClient, githubClient, logger }) {
           name: repository.name,
           htmlUrl: repository.html_url,
           cloneUrl: repository.clone_url,
-          defaultBranch: repository.default_branch || config.gitDefaultBranch,
+          defaultBranch: publishBranch,
         },
         commit: {
           sha: commitResult.commitSha,

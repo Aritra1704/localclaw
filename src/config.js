@@ -24,6 +24,19 @@ const envSchema = z.object({
     .transform((value) => value === 'true'),
   GIT_DEFAULT_BRANCH: z.string().min(1).default('main'),
   RAILWAY_API_TOKEN: z.string().optional(),
+  RAILWAY_GRAPHQL_ENDPOINT: z
+    .string()
+    .url()
+    .default('https://backboard.railway.com/graphql/v2'),
+  RAILWAY_PROJECT_ID: z.string().optional(),
+  RAILWAY_ENVIRONMENT_ID: z.string().optional(),
+  RAILWAY_SERVICE_ID: z.string().optional(),
+  RAILWAY_DEPLOY_ENABLED: z
+    .enum(['true', 'false'])
+    .default('false')
+    .transform((value) => value === 'true'),
+  RAILWAY_DEPLOY_POLL_INTERVAL_MS: z.coerce.number().int().positive().default(10000),
+  RAILWAY_DEPLOY_TIMEOUT_MS: z.coerce.number().int().positive().default(900000),
   OLLAMA_BASE_URL: z.string().url().default('http://127.0.0.1:11434'),
   OLLAMA_KEEP_ALIVE: z.string().default('30s'),
   MODEL_PLANNER: z.string().default('gemma4:e4b'),
@@ -67,6 +80,13 @@ export const config = {
   githubAutoPublish: env.GITHUB_AUTO_PUBLISH,
   gitDefaultBranch: env.GIT_DEFAULT_BRANCH,
   railwayApiToken: env.RAILWAY_API_TOKEN ?? '',
+  railwayGraphqlEndpoint: env.RAILWAY_GRAPHQL_ENDPOINT,
+  railwayProjectId: env.RAILWAY_PROJECT_ID ?? '',
+  railwayEnvironmentId: env.RAILWAY_ENVIRONMENT_ID ?? '',
+  railwayServiceId: env.RAILWAY_SERVICE_ID ?? '',
+  railwayDeployEnabled: env.RAILWAY_DEPLOY_ENABLED,
+  railwayDeployPollIntervalMs: env.RAILWAY_DEPLOY_POLL_INTERVAL_MS,
+  railwayDeployTimeoutMs: env.RAILWAY_DEPLOY_TIMEOUT_MS,
   ollamaBaseUrl: env.OLLAMA_BASE_URL,
   ollamaKeepAlive: env.OLLAMA_KEEP_ALIVE,
   modelPlanner: env.MODEL_PLANNER,

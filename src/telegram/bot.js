@@ -77,6 +77,11 @@ export async function startTelegramBot(dependencies) {
 
   return {
     bot,
+    async sendMessage(text) {
+      return bot.telegram.sendMessage(config.telegramChatId, text, {
+        disable_web_page_preview: true,
+      });
+    },
     async stop() {
       await bot.stop();
       logger.info('Telegram bot stopped');

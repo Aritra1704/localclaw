@@ -22,7 +22,7 @@ export function createTelegramHandlers(dependencies) {
   return {
     start: async (ctx) => {
       await ctx.reply(
-        'LocalClaw bot is connected.\nCommands: /status /pause /resume /tasks /add /kill'
+        'LocalClaw bot is connected.\nCommands: /status /pause /resume /tasks /add /approvals /approve /reject /kill'
       );
     },
 
@@ -39,6 +39,9 @@ export function createTelegramHandlers(dependencies) {
         `Pending: ${snapshot.queue.pending_count}`,
         `In progress: ${snapshot.queue.in_progress_count}`,
         `Blocked: ${snapshot.queue.blocked_count}`,
+        `Waiting approval: ${snapshot.queue.waiting_approval_count}`,
+        `Pending approvals: ${snapshot.approvals?.pending_count ?? 0}`,
+        `Deploying: ${snapshot.deployments?.deploying_count ?? 0}`,
         `Current task: ${snapshot.currentTask?.title ?? 'none'}`,
         `Completed: ${snapshot.stats?.tasks_completed ?? 0}`,
         `Failed: ${snapshot.stats?.tasks_failed ?? 0}`,
@@ -96,6 +99,77 @@ export function createTelegramHandlers(dependencies) {
       );
     },
 
+    approvals: async (ctx) => {
+      const approvals = await orchestrator.listPendingApprovals(10);
+
+      if (approvals.length === 0) {
+        await ctx.reply('No pending deploy approvals.');
+        return;
+      }
+
+      const lines = approvals.map((approval) =>
+        [
+          `- ${approval.task_title}`,
+          `  approval: ${approval.id}`,
+          `  task: ${approval.task_id}`,
+          `  repo: ${approval.repo_url ?? 'n/a'}`,
+          `  target: ${approval.target_env} (${approval.service_id ?? 'service not set'})`,
+          `  requested: ${formatTimestamp(approval.requested_at)}`,
+        ].join('\n')
+      );
+
+      await ctx.reply(lines.join('\n\n'));
+    },
+
+    approve: async (ctx) => {
+      const value = ctx.message.text.replace(/^\/approve\s*/, '').trim();
+
+      if (!value) {
+        await ctx.reply('Usage: /approve <approval_id>');
+        return;
+      }
+
+      const approval = await orchestrator.approveApproval(value, {
+        respondedVia: 'telegram',
+      });
+
+      if (!approval) {
+        await ctx.reply('Approval not found or already handled.');
+        return;
+      }
+
+      logger.info({ approvalId: value }, 'Deploy approval granted from Telegram');
+      await ctx.reply(
+        `Deployment approved.\nApproval: ${approval.id}\nTask: ${approval.task_id}\nRailway deploy will be triggered on the next processing cycle.`
+      );
+    },
+
+    reject: async (ctx) => {
+      const value = ctx.message.text.replace(/^\/reject\s*/, '').trim();
+
+      if (!value) {
+        await ctx.reply('Usage: /reject <approval_id> [reason]');
+        return;
+      }
+
+      const [approvalId, ...reasonParts] = value.split(/\s+/);
+      const reason = reasonParts.join(' ').trim() || 'Rejected via Telegram';
+      const approval = await orchestrator.rejectApproval(approvalId, {
+        respondedVia: 'telegram',
+        reason,
+      });
+
+      if (!approval) {
+        await ctx.reply('Approval not found or already handled.');
+        return;
+      }
+
+      logger.info({ approvalId, reason }, 'Deploy approval rejected from Telegram');
+      await ctx.reply(
+        `Deployment rejected.\nApproval: ${approval.id}\nTask: ${approval.task_id}\nReason: ${reason}`
+      );
+    },
+
     kill: async (ctx) => {
       const reason =
         ctx.message.text.replace(/^\/kill\s*/, '').trim() || 'Killed via Telegram';
@@ -123,5 +197,8 @@ export function registerTelegramCommands(bot, dependencies) {
   bot.command('resume', handlers.resume);
   bot.command('tasks', handlers.tasks);
   bot.command('add', handlers.add);
+  bot.command('approvals', handlers.approvals);
+  bot.command('approve', handlers.approve);
+  bot.command('reject', handlers.reject);
   bot.command('kill', handlers.kill);
 }

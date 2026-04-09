@@ -20,6 +20,8 @@ export class Orchestrator {
     this.pool = options.pool ?? getPool();
     this.taskExecutor = options.taskExecutor;
     this.publisher = options.publisher ?? null;
+    this.deployer = options.deployer ?? null;
+    this.notifier = options.notifier ?? null;
     this.timer = null;
     this.isRunning = false;
     this.tickInFlight = false;
@@ -93,11 +95,15 @@ export class Orchestrator {
     this.tickInFlight = true;
 
     try {
+      await this.pollActiveDeployments();
+
       const status = await this.getAgentStateValue('status', 'running');
       if (status !== 'running') {
         this.logger.info({ status }, 'Skipping poll because agent is not running');
         return;
       }
+
+      await this.processReadyDeployments();
 
       const pendingCount = await this.getPendingTaskCount();
       this.logger.debug({ pendingCount }, 'Polling task queue');
@@ -207,6 +213,11 @@ export class Orchestrator {
 
       await this.persistArtifacts(task.id, result.artifacts ?? []);
 
+      if (result.publication?.published && this.deployer?.isEnabled?.()) {
+        await this.queueDeploymentApproval(task, result);
+        return;
+      }
+
       const publishBlocked =
         result.publication?.attempted === true &&
         result.publication?.published === false;
@@ -298,6 +309,505 @@ export class Orchestrator {
     } finally {
       await this.setAgentStateValue('current_task_id', null);
     }
+  }
+
+  setNotifier(notifier) {
+    this.notifier = notifier;
+  }
+
+  async notify(text) {
+    if (!this.notifier?.sendMessage) {
+      return null;
+    }
+
+    try {
+      return await this.notifier.sendMessage(text);
+    } catch (error) {
+      this.logger.error({ err: error }, 'Failed to send Telegram notification');
+      return null;
+    }
+  }
+
+  async queueDeploymentApproval(task, result) {
+    const target = this.deployer.getTarget();
+    const approvalResult = await this.pool.query(
+      `INSERT INTO approvals (
+         task_id,
+         approval_type,
+         status,
+         requested_via,
+         response_payload
+       )
+       VALUES ($1, $2, 'pending', 'telegram', $3::jsonb)
+       RETURNING id, task_id, requested_at`,
+      [
+        task.id,
+        'railway_deploy',
+        JSON.stringify({
+          repoUrl: result.publication.repo.htmlUrl,
+          target,
+        }),
+      ]
+    );
+
+    const approval = approvalResult.rows[0];
+    const deploymentResult = await this.pool.query(
+      `INSERT INTO deployments (
+         task_id,
+         provider,
+         target_env,
+         repo_url,
+         status,
+         approval_id,
+         project_id,
+         environment_id,
+         service_id,
+         updated_at
+       )
+       VALUES ($1, 'railway', $2, $3, 'approval_pending', $4, $5, $6, $7, NOW())
+       RETURNING id`,
+      [
+        task.id,
+        target.environmentName,
+        result.publication.repo.htmlUrl,
+        approval.id,
+        target.projectId,
+        target.environmentId,
+        target.serviceId,
+      ]
+    );
+
+    await this.pool.query(
+      `UPDATE tasks
+       SET
+         status = 'waiting_approval',
+         project_name = COALESCE(project_name, $2),
+         project_path = COALESCE(project_path, $3),
+         repo_url = COALESCE(repo_url, $4),
+         blocked_reason = NULL,
+         result = $5::jsonb,
+         updated_at = NOW(),
+         locked_by = NULL,
+         lease_expires_at = NULL,
+         last_heartbeat_at = NOW()
+       WHERE id = $1`,
+      [
+        task.id,
+        result.publication.repo.name,
+        result.workspaceRoot,
+        result.publication.repo.htmlUrl,
+        JSON.stringify(result),
+      ]
+    );
+
+    await this.logTaskStep(task.id, {
+      stepNumber: 900,
+      stepType: 'approval',
+      status: 'success',
+      inputSummary: result.publication.repo.htmlUrl,
+      outputSummary: `Deploy approval requested: ${approval.id}`,
+    });
+
+    const message = [
+      `Deploy approval requested.`,
+      `Task: ${task.title}`,
+      `Approval: ${approval.id}`,
+      `Deployment: ${deploymentResult.rows[0].id}`,
+      `Repo: ${result.publication.repo.htmlUrl}`,
+      `Target: ${target.projectId} / ${target.environmentName} / ${target.serviceId}`,
+      `Approve: /approve ${approval.id}`,
+      `Reject: /reject ${approval.id} not ready`,
+    ].join('\n');
+
+    const sentMessage = await this.notify(message);
+
+    if (sentMessage?.message_id) {
+      await this.pool.query(
+        `UPDATE approvals
+         SET request_message_id = $2
+         WHERE id = $1`,
+        [approval.id, sentMessage.message_id.toString()]
+      );
+    }
+
+    this.logger.info(
+      {
+        taskId: task.id,
+        approvalId: approval.id,
+        deploymentId: deploymentResult.rows[0].id,
+      },
+      'Deployment approval requested'
+    );
+  }
+
+  async listPendingApprovals(limit = 10) {
+    const result = await this.pool.query(
+      `SELECT
+         approvals.id,
+         approvals.task_id,
+         approvals.requested_at,
+         tasks.title AS task_title,
+         deployments.repo_url,
+         deployments.target_env,
+         deployments.service_id
+       FROM approvals
+       JOIN tasks ON tasks.id = approvals.task_id
+       LEFT JOIN deployments ON deployments.approval_id = approvals.id
+       WHERE approvals.status = 'pending'
+         AND approvals.approval_type = 'railway_deploy'
+       ORDER BY approvals.requested_at ASC
+       LIMIT $1`,
+      [limit]
+    );
+
+    return result.rows;
+  }
+
+  async approveApproval(approvalId, options = {}) {
+    const payload = {
+      respondedVia: options.respondedVia ?? 'telegram',
+      note: options.note ?? null,
+    };
+
+    const approvalResult = await this.pool.query(
+      `UPDATE approvals
+       SET
+         status = 'approved',
+         responded_at = NOW(),
+         response_payload = COALESCE(response_payload, '{}'::jsonb) || $2::jsonb
+       WHERE id = $1
+         AND status = 'pending'
+       RETURNING id, task_id`,
+      [approvalId, JSON.stringify(payload)]
+    );
+
+    const approval = approvalResult.rows[0];
+    if (!approval) {
+      return null;
+    }
+
+    await this.pool.query(
+      `UPDATE deployments
+       SET
+         status = 'approved',
+         updated_at = NOW(),
+         last_error = NULL
+       WHERE approval_id = $1
+         AND status = 'approval_pending'`,
+      [approvalId]
+    );
+
+    return approval;
+  }
+
+  async rejectApproval(approvalId, options = {}) {
+    const reason = options.reason ?? 'Rejected via Telegram';
+    const payload = {
+      respondedVia: options.respondedVia ?? 'telegram',
+      reason,
+    };
+
+    const approvalResult = await this.pool.query(
+      `UPDATE approvals
+       SET
+         status = 'rejected',
+         responded_at = NOW(),
+         response_payload = COALESCE(response_payload, '{}'::jsonb) || $2::jsonb
+       WHERE id = $1
+         AND status = 'pending'
+       RETURNING id, task_id`,
+      [approvalId, JSON.stringify(payload)]
+    );
+
+    const approval = approvalResult.rows[0];
+    if (!approval) {
+      return null;
+    }
+
+    await this.pool.query(
+      `UPDATE deployments
+       SET
+         status = 'rejected',
+         last_error = $2,
+         updated_at = NOW(),
+         completed_at = NOW()
+       WHERE approval_id = $1`,
+      [approvalId, reason]
+    );
+
+    await this.pool.query(
+      `UPDATE tasks
+       SET
+         status = 'blocked',
+         blocked_reason = $2,
+         updated_at = NOW(),
+         locked_by = NULL,
+         lease_expires_at = NULL,
+         last_heartbeat_at = NOW()
+       WHERE id = $1`,
+      [approval.task_id, reason]
+    );
+
+    await this.logTaskStep(approval.task_id, {
+      stepNumber: 901,
+      stepType: 'approval',
+      status: 'error',
+      outputSummary: null,
+      errorMessage: reason,
+    });
+
+    return approval;
+  }
+
+  async processReadyDeployments() {
+    if (!this.deployer?.isEnabled?.()) {
+      return;
+    }
+
+    const result = await this.pool.query(
+      `SELECT
+         deployments.id AS deployment_id,
+         deployments.task_id,
+         deployments.project_id,
+         deployments.environment_id,
+         deployments.service_id,
+         deployments.repo_url,
+         tasks.title,
+         tasks.result
+       FROM deployments
+       JOIN approvals ON approvals.id = deployments.approval_id
+       JOIN tasks ON tasks.id = deployments.task_id
+       WHERE approvals.status = 'approved'
+         AND deployments.status IN ('approval_pending', 'approved')
+       ORDER BY deployments.created_at ASC`
+    );
+
+    for (const row of result.rows) {
+      await this.startApprovedDeployment(row);
+    }
+  }
+
+  async startApprovedDeployment(row) {
+    const commitSha = row.result?.publication?.commit?.sha ?? null;
+
+    try {
+      const remoteDeploymentId = await this.deployer.triggerDeployment({
+        serviceId: row.service_id,
+        environmentId: row.environment_id,
+        commitSha,
+      });
+
+      await this.pool.query(
+        `UPDATE deployments
+         SET
+           status = 'deploying',
+           remote_deployment_id = $2,
+           updated_at = NOW(),
+           last_error = NULL
+         WHERE id = $1`,
+        [row.deployment_id, remoteDeploymentId]
+      );
+
+      await this.pool.query(
+        `UPDATE tasks
+         SET
+           status = 'in_progress',
+           blocked_reason = NULL,
+           locked_by = $2,
+           lease_expires_at = NOW() + INTERVAL '15 minutes',
+           last_heartbeat_at = NOW(),
+           updated_at = NOW()
+         WHERE id = $1`,
+        [row.task_id, this.instanceId]
+      );
+
+      await this.logTaskStep(row.task_id, {
+        stepNumber: 902,
+        stepType: 'deploy',
+        status: 'success',
+        inputSummary: row.repo_url ?? row.service_id,
+        outputSummary: `Railway deployment started: ${remoteDeploymentId}`,
+      });
+
+      await this.notify(
+        [
+          `Railway deploy started.`,
+          `Task: ${row.title}`,
+          `Deployment: ${row.deployment_id}`,
+          `Remote deployment: ${remoteDeploymentId}`,
+        ].join('\n')
+      );
+    } catch (error) {
+      await this.failDeployment({
+        deploymentId: row.deployment_id,
+        taskId: row.task_id,
+        title: row.title,
+        errorMessage: error.message,
+      });
+    }
+  }
+
+  async pollActiveDeployments() {
+    if (!this.deployer?.isEnabled?.()) {
+      return;
+    }
+
+    const result = await this.pool.query(
+      `SELECT
+         deployments.id AS deployment_id,
+         deployments.task_id,
+         deployments.remote_deployment_id,
+         tasks.title
+       FROM deployments
+       JOIN tasks ON tasks.id = deployments.task_id
+       WHERE deployments.status = 'deploying'
+         AND deployments.remote_deployment_id IS NOT NULL
+       ORDER BY deployments.updated_at ASC`
+    );
+
+    for (const row of result.rows) {
+      await this.refreshDeployment(row);
+    }
+  }
+
+  async refreshDeployment(row) {
+    try {
+      const snapshot = await this.deployer.getDeployment(row.remote_deployment_id);
+
+      await this.touchTaskLease(row.task_id);
+
+      if (snapshot.state === 'pending') {
+        await this.pool.query(
+          `UPDATE deployments
+           SET
+             deploy_url = COALESCE($2, deploy_url),
+             updated_at = NOW()
+           WHERE id = $1`,
+          [row.deployment_id, snapshot.url]
+        );
+        return;
+      }
+
+      const logSnapshot = await this.captureDeploymentLogs(row.remote_deployment_id);
+
+      if (snapshot.state === 'success') {
+        await this.pool.query(
+          `UPDATE deployments
+           SET
+             status = 'success',
+             deploy_url = COALESCE($2, deploy_url),
+             log_snapshot = $3,
+             last_error = NULL,
+             updated_at = NOW(),
+             completed_at = NOW()
+           WHERE id = $1`,
+          [row.deployment_id, snapshot.url, logSnapshot]
+        );
+
+        await this.pool.query(
+          `UPDATE tasks
+           SET
+             status = 'done',
+             blocked_reason = NULL,
+             completed_at = NOW(),
+             updated_at = NOW(),
+             locked_by = NULL,
+             lease_expires_at = NULL,
+             last_heartbeat_at = NOW()
+           WHERE id = $1`,
+          [row.task_id]
+        );
+
+        await this.incrementStats('tasks_completed');
+        await this.logTaskStep(row.task_id, {
+          stepNumber: 903,
+          stepType: 'deploy',
+          status: 'success',
+          inputSummary: row.remote_deployment_id,
+          outputSummary: snapshot.url ?? snapshot.status,
+        });
+
+        await this.notify(
+          [
+            `Railway deploy succeeded.`,
+            `Task: ${row.title}`,
+            `URL: ${snapshot.url ?? 'n/a'}`,
+          ].join('\n')
+        );
+
+        return;
+      }
+
+      await this.failDeployment({
+        deploymentId: row.deployment_id,
+        taskId: row.task_id,
+        title: row.title,
+        errorMessage: `Railway deployment ${snapshot.status}`,
+        logSnapshot,
+      });
+    } catch (error) {
+      await this.failDeployment({
+        deploymentId: row.deployment_id,
+        taskId: row.task_id,
+        title: row.title,
+        errorMessage: error.message,
+      });
+    }
+  }
+
+  async captureDeploymentLogs(remoteDeploymentId) {
+    const logs = await this.deployer.getDeploymentLogs(remoteDeploymentId, 50);
+    if (logs.length === 0) {
+      return null;
+    }
+
+    return logs
+      .map((entry) => `[${entry.timestamp}] ${entry.severity ?? 'INFO'} ${entry.message}`)
+      .join('\n');
+  }
+
+  async failDeployment({ deploymentId, taskId, title, errorMessage, logSnapshot = null }) {
+    await this.pool.query(
+      `UPDATE deployments
+       SET
+         status = 'failed',
+         last_error = $2,
+         log_snapshot = COALESCE($3, log_snapshot),
+         updated_at = NOW(),
+         completed_at = NOW()
+       WHERE id = $1`,
+      [deploymentId, errorMessage, logSnapshot]
+    );
+
+    await this.pool.query(
+      `UPDATE tasks
+       SET
+         status = 'failed',
+         blocked_reason = $2,
+         updated_at = NOW(),
+         locked_by = NULL,
+         lease_expires_at = NULL,
+         last_heartbeat_at = NOW()
+       WHERE id = $1`,
+      [taskId, errorMessage]
+    );
+
+    await this.incrementStats('tasks_failed');
+    await this.logTaskStep(taskId, {
+      stepNumber: 904,
+      stepType: 'deploy',
+      status: 'error',
+      outputSummary: null,
+      errorMessage,
+    });
+
+    await this.notify(
+      [
+        `Railway deploy failed.`,
+        `Task: ${title}`,
+        `Reason: ${errorMessage}`,
+      ].join('\n')
+    );
   }
 
   async persistArtifacts(taskId, artifacts) {
@@ -471,7 +981,15 @@ export class Orchestrator {
   }
 
   async getStatusSnapshot() {
-    const [status, currentTaskId, pauseReason, stats, queueResult] =
+    const [
+      status,
+      currentTaskId,
+      pauseReason,
+      stats,
+      queueResult,
+      deploymentResult,
+      approvalResult,
+    ] =
       await Promise.all([
         this.getAgentStateValue('status', 'running'),
         this.getAgentStateValue('current_task_id', null),
@@ -485,8 +1003,20 @@ export class Orchestrator {
           `SELECT
              COUNT(*) FILTER (WHERE status = 'pending')::int AS pending_count,
              COUNT(*) FILTER (WHERE status = 'in_progress')::int AS in_progress_count,
-             COUNT(*) FILTER (WHERE status = 'blocked')::int AS blocked_count
+             COUNT(*) FILTER (WHERE status = 'blocked')::int AS blocked_count,
+             COUNT(*) FILTER (WHERE status = 'waiting_approval')::int AS waiting_approval_count
            FROM tasks`
+        ),
+        this.pool.query(
+          `SELECT COUNT(*)::int AS deploying_count
+           FROM deployments
+           WHERE status = 'deploying'`
+        ),
+        this.pool.query(
+          `SELECT COUNT(*)::int AS pending_count
+           FROM approvals
+           WHERE status = 'pending'
+             AND approval_type = 'railway_deploy'`
         ),
       ]);
 
@@ -508,6 +1038,13 @@ export class Orchestrator {
         pending_count: 0,
         in_progress_count: 0,
         blocked_count: 0,
+        waiting_approval_count: 0,
+      },
+      deployments: {
+        deploying_count: deploymentResult.rows[0]?.deploying_count ?? 0,
+      },
+      approvals: {
+        pending_count: approvalResult.rows[0]?.pending_count ?? 0,
       },
       currentTask: taskResult.rows[0] ?? null,
       instanceId: this.instanceId,

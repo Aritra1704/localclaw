@@ -13,8 +13,8 @@ As of 2026-04-08, the project status is:
 | Phase 0: Preflight | complete | SSD layout is ready, mandatory local model baseline is present, Telegram token and chat ID are available, DB credentials are verified, and Railway token can be added later. |
 | Phase 1: Foundation | complete | repo scaffold, env handling, migration runner, dedicated `localclaw` schema, orchestrator bootstrap, PM2 config, Telegram command wiring, command-handler integration testing, and live Telegram polling verification are complete. |
 | Phase 2: LLM and Tool Execution | complete | Ollama client, planner, workspace tool registry, task executor, and verifier are implemented. A live Telegram task generated `src/app.js` and `README.md` in the controlled workspace and verified successfully. |
-| Phase 3: Git and GitHub | in progress | Git wrapper, GitHub client, and auto-publish flow are implemented behind a config gate. Live GitHub push verification is still pending. |
-| Phase 4: Deploy Gate Checkpoint | not started | Railway integration and deploy approval flow are not implemented yet. |
+| Phase 3: Git and GitHub | complete | Git wrapper, GitHub client, and auto-publish flow are implemented. A live task pushed successfully to GitHub with repo linkage and publish logs captured in the DB. |
+| Phase 4: Deploy Gate Checkpoint | in progress | Railway deploy scaffolding is in place, including approval commands, deployment state tracking, and Railway API client wiring. Live deploy approval and Railway verification are still pending. |
 | Phase 5: RAG and Learnings | not started | deferred until after MVP. |
 | Phase 6: Skills Manager | not started | deferred until after MVP. |
 | Phase 7: Safe-Commit Proving Run | not started | depends on crossing Phase 4. |
