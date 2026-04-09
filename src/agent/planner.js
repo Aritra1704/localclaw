@@ -104,6 +104,10 @@ function buildPlannerPrompt(task, context) {
           .map((entry) => `- ${entry.path} (${entry.type})`)
           .join('\n')
       : '- workspace is currently empty';
+  const retrievedContext =
+    typeof context.retrievalContext === 'string' && context.retrievalContext.trim().length > 0
+      ? context.retrievalContext.trim()
+      : '- none';
 
   return `You are the LocalClaw planner.
 Return exactly one JSON object and nothing else.
@@ -133,6 +137,9 @@ ${context.workspaceRoot}
 
 Existing workspace entries:
 ${existingFiles}
+
+Retrieved historical context:
+${retrievedContext}
 
 JSON contract:
 {

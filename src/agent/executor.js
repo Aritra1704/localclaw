@@ -110,6 +110,7 @@ export function createTaskExecutor({ planner, verifier, toolRegistry }) {
         workspaceRoot,
         workspaceSnapshot,
         toolCatalog: toolRegistry.plannerCatalog(),
+        retrievalContext: hooks.retrievalContext ?? null,
       });
 
       await hooks.logStep?.({

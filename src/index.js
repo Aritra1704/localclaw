@@ -11,6 +11,7 @@ import { checkDatabaseConnection, closePool, getPool } from './db/client.js';
 import { createGitClient } from './git/cli.js';
 import { createGitHubClient } from './github/client.js';
 import { createGitHubPublisher } from './github/publisher.js';
+import { createLearningExtractor } from './learnings/extractor.js';
 import { createModelSelector } from './llm/modelSelector.js';
 import { createOllamaClient } from './llm/ollama.js';
 import { createRailwayClient } from './railway/client.js';
@@ -125,6 +126,10 @@ async function bootstrap() {
     client: ollamaClient,
     modelSelector,
   });
+  const learningExtractor = createLearningExtractor({
+    client: ollamaClient,
+    modelSelector,
+  });
   const toolRegistry = createToolRegistry();
   let publisher = null;
   let deployer = null;
@@ -191,7 +196,13 @@ async function bootstrap() {
     toolRegistry,
   });
 
-  orchestrator = new Orchestrator({ logger, taskExecutor, publisher, deployer });
+  orchestrator = new Orchestrator({
+    logger,
+    taskExecutor,
+    publisher,
+    deployer,
+    learningExtractor,
+  });
   telegramBot = await withTimeout(
     startTelegramBot({
       logger,

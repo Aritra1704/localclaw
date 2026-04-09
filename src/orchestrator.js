@@ -11,6 +11,71 @@ const logger = pino({
   level: config.nodeEnv === 'development' ? 'debug' : 'info',
 });
 
+const RETRIEVAL_STOP_WORDS = new Set([
+  'about',
+  'after',
+  'against',
+  'app',
+  'application',
+  'before',
+  'build',
+  'create',
+  'deploy',
+  'deployment',
+  'from',
+  'into',
+  'localclaw',
+  'phase',
+  'project',
+  'railway',
+  'sample',
+  'task',
+  'that',
+  'then',
+  'this',
+  'update',
+  'with',
+]);
+
+function extractKeywords(text, limit = 12) {
+  const tokens = `${text ?? ''}`
+    .toLowerCase()
+    .replace(/[^a-z0-9_\s-]+/g, ' ')
+    .split(/\s+/)
+    .map((token) => token.trim())
+    .filter(
+      (token) =>
+        token.length >= 3 &&
+        token.length <= 32 &&
+        !RETRIEVAL_STOP_WORDS.has(token)
+    );
+
+  return [...new Set(tokens)].slice(0, limit);
+}
+
+function formatRetrievedContext(learnings, documentChunks) {
+  const lines = [];
+
+  if (learnings.length > 0) {
+    lines.push('Learnings:');
+    for (const learning of learnings) {
+      lines.push(
+        `- [${learning.category}] ${learning.observation} (confidence=${learning.confidence_score})`
+      );
+    }
+  }
+
+  if (documentChunks.length > 0) {
+    lines.push('Document context:');
+    for (const chunk of documentChunks) {
+      const source = chunk.title || chunk.source_path || 'document';
+      lines.push(`- [${source}] ${chunk.content}`);
+    }
+  }
+
+  return lines.join('\n').trim();
+}
+
 export class Orchestrator {
   constructor(options = {}) {
     this.instanceId =
@@ -21,6 +86,7 @@ export class Orchestrator {
     this.taskExecutor = options.taskExecutor;
     this.publisher = options.publisher ?? null;
     this.deployer = options.deployer ?? null;
+    this.learningExtractor = options.learningExtractor ?? null;
     this.notifier = options.notifier ?? null;
     this.timer = null;
     this.isRunning = false;
@@ -249,10 +315,12 @@ export class Orchestrator {
     this.logger.info({ taskId: task.id, title: task.title }, 'Executing task');
 
     try {
+      const retrievalContext = await this.buildRetrievalContext(task);
       const result = await this.taskExecutor.executeTask(task, {
         startStepNumber: 2,
         publisher: this.publisher,
         deployer: this.deployer,
+        retrievalContext,
         logStep: async (step) => {
           await this.logTaskStep(task.id, step);
           await this.touchTaskLease(task.id);
@@ -260,6 +328,7 @@ export class Orchestrator {
       });
 
       await this.persistArtifacts(task.id, result.artifacts ?? []);
+      await this.persistLearnings(task, result);
 
       if (result.publication?.published && this.deployer?.isEnabled?.()) {
         const deploymentTargetCheck = this.deployer.validateRepositoryName?.(
@@ -411,6 +480,88 @@ export class Orchestrator {
 
   setNotifier(notifier) {
     this.notifier = notifier;
+  }
+
+  async buildRetrievalContext(task) {
+    const keywords = extractKeywords(`${task.title} ${task.description}`);
+    if (keywords.length === 0) {
+      return null;
+    }
+
+    try {
+      const learningResult = await this.pool.query(
+        `SELECT category, observation, confidence_score
+         FROM learnings
+         WHERE keywords && $1::text[]
+         ORDER BY times_applied DESC, confidence_score DESC, created_at DESC
+         LIMIT 5`,
+        [keywords]
+      );
+
+      const likePatterns = keywords.slice(0, 6).map((keyword) => `%${keyword}%`);
+      const chunkResult = await this.pool.query(
+        `SELECT
+           LEFT(document_chunks.content, 280) AS content,
+           documents.title,
+           documents.source_path
+         FROM document_chunks
+         JOIN documents ON documents.id = document_chunks.document_id
+         WHERE document_chunks.content ILIKE ANY($1::text[])
+         ORDER BY document_chunks.created_at DESC
+         LIMIT 4`,
+        [likePatterns]
+      );
+
+      const context = formatRetrievedContext(learningResult.rows, chunkResult.rows);
+      return context.length > 0 ? context : null;
+    } catch (error) {
+      this.logger.warn({ err: error, taskId: task.id }, 'Failed to retrieve Phase 5 context');
+      return null;
+    }
+  }
+
+  async persistLearnings(task, result) {
+    if (!this.learningExtractor?.extract) {
+      return;
+    }
+
+    try {
+      const learnings = await this.learningExtractor.extract(task, result);
+      if (!Array.isArray(learnings) || learnings.length === 0) {
+        return;
+      }
+
+      for (const learning of learnings.slice(0, 4)) {
+        await this.pool.query(
+          `INSERT INTO learnings (
+             task_id,
+             category,
+             observation,
+             keywords,
+             confidence_score
+           )
+           VALUES ($1, $2, $3, $4::text[], $5)`,
+          [
+            task.id,
+            learning.category ?? 'execution',
+            learning.observation,
+            Array.isArray(learning.keywords) ? learning.keywords : [],
+            Number.isFinite(learning.confidenceScore)
+              ? Math.max(1, Math.min(10, Math.round(learning.confidenceScore)))
+              : 6,
+          ]
+        );
+      }
+
+      await this.logTaskStep(task.id, {
+        stepNumber: 950,
+        stepType: 'learn',
+        status: 'success',
+        outputSummary: `Persisted ${Math.min(learnings.length, 4)} learning item(s)`,
+      });
+    } catch (error) {
+      this.logger.warn({ err: error, taskId: task.id }, 'Failed to persist learnings');
+    }
   }
 
   async notify(text, options = {}) {
@@ -701,13 +852,13 @@ export class Orchestrator {
   }
 
   async startApprovedDeployment(row) {
-    const commitSha = row.result?.publication?.commit?.sha ?? null;
-
     try {
       const remoteDeploymentId = await this.deployer.triggerDeployment({
         serviceId: row.service_id,
         environmentId: row.environment_id,
-        commitSha,
+        // Railway commit-target deploys can fail fast with no logs due to provider-side sync timing.
+        // Trigger against the service/environment head for a more reliable Phase 4 path.
+        commitSha: null,
       });
 
       await this.pool.query(
@@ -770,6 +921,9 @@ export class Orchestrator {
          deployments.id AS deployment_id,
          deployments.task_id,
          deployments.remote_deployment_id,
+         deployments.service_id,
+         deployments.environment_id,
+         deployments.last_error,
          tasks.title
        FROM deployments
        JOIN tasks ON tasks.id = deployments.task_id
@@ -851,6 +1005,16 @@ export class Orchestrator {
         return;
       }
 
+      const shouldRetryWithoutCommitTarget =
+        snapshot.status === 'FAILED' &&
+        !logSnapshot &&
+        row.last_error !== 'retrying_after_failed_no_logs';
+
+      if (shouldRetryWithoutCommitTarget) {
+        await this.retryDeploymentWithoutCommitTarget(row);
+        return;
+      }
+
       await this.failDeployment({
         deploymentId: row.deployment_id,
         taskId: row.task_id,
@@ -866,6 +1030,42 @@ export class Orchestrator {
         errorMessage: error.message,
       });
     }
+  }
+
+  async retryDeploymentWithoutCommitTarget(row) {
+    const remoteDeploymentId = await this.deployer.triggerDeployment({
+      serviceId: row.service_id,
+      environmentId: row.environment_id,
+      commitSha: null,
+    });
+
+    await this.pool.query(
+      `UPDATE deployments
+       SET
+         status = 'deploying',
+         remote_deployment_id = $2,
+         last_error = 'retrying_after_failed_no_logs',
+         updated_at = NOW()
+       WHERE id = $1`,
+      [row.deployment_id, remoteDeploymentId]
+    );
+
+    await this.logTaskStep(row.task_id, {
+      stepNumber: 905,
+      stepType: 'deploy',
+      status: 'success',
+      inputSummary: row.remote_deployment_id,
+      outputSummary: `Retrying Railway deployment: ${remoteDeploymentId}`,
+    });
+
+    await this.notify(
+      [
+        `Railway deploy retry started.`,
+        `Task: ${row.title}`,
+        `Deployment: ${row.deployment_id}`,
+        `Remote deployment: ${remoteDeploymentId}`,
+      ].join('\n')
+    );
   }
 
   async captureDeploymentLogs(remoteDeploymentId) {

@@ -1,12 +1,12 @@
 # LocalClaw Context
 
-Version: 1.0  
-Date: 2026-04-08  
+Version: 1.1  
+Date: 2026-04-09  
 Purpose: end-to-end execution context and checkpoint guide for LocalClaw delivery
 
 ## 0. Current Phase Status
 
-As of 2026-04-08, the project status is:
+As of 2026-04-09, the project status is:
 
 | Phase | Status | Notes |
 |---|---|---|
@@ -14,8 +14,8 @@ As of 2026-04-08, the project status is:
 | Phase 1: Foundation | complete | repo scaffold, env handling, migration runner, dedicated `localclaw` schema, orchestrator bootstrap, PM2 config, Telegram command wiring, command-handler integration testing, and live Telegram polling verification are complete. |
 | Phase 2: LLM and Tool Execution | complete | Ollama client, planner, workspace tool registry, task executor, and verifier are implemented. A live Telegram task generated `src/app.js` and `README.md` in the controlled workspace and verified successfully. |
 | Phase 3: Git and GitHub | complete | Git wrapper, GitHub client, and auto-publish flow are implemented. A live task pushed successfully to GitHub with repo linkage and publish logs captured in the DB. |
-| Phase 4: Deploy Gate Checkpoint | in progress | Railway deploy scaffolding is in place, startup now tracks boot phases, and generated projects will carry a mandatory repo-contract kit. Live deploy approval and dedicated `phase4-sample-app` verification are still pending. |
-| Phase 5: RAG and Learnings | not started | deferred until after MVP. |
+| Phase 4: Deploy Gate Checkpoint | complete | Railway deploy workflow now includes end-to-end approval and successful deployment evidence. Telegram inline Approve/Reject buttons are active, and deployment retry handling is in place for fast-fail/no-log Railway responses. |
+| Phase 5: RAG and Learnings | in progress | Planner now receives retrieved historical context from learnings/doc chunks, and completed tasks persist extracted learnings into the `learnings` table. |
 | Phase 6: Skills Manager | not started | deferred until after MVP. |
 | Phase 7: Safe-Commit Proving Run | not started | depends on crossing Phase 4. |
 | Phase 8: Hardening | not started | depends on live execution evidence. |
