@@ -52,6 +52,17 @@ export const TOOL_DEFINITIONS = [
       limit: z.number().int().positive().max(200).default(50),
     }),
   },
+  {
+    name: 'run_skill',
+    description:
+      'Execute an enabled LocalClaw skill from the governed skill registry.',
+    plannerArgs:
+      '{"name":"scaffold_node_http_service","input":{"projectName":"phase4-sample-app"}}',
+    argsSchema: z.object({
+      name: z.string().min(1),
+      input: z.record(z.string(), z.unknown()).default({}),
+    }),
+  },
 ];
 
 export const TOOL_NAMES = TOOL_DEFINITIONS.map((tool) => tool.name);
@@ -116,8 +127,111 @@ export async function collectWorkspaceSnapshot(workspaceRoot, options = {}) {
   return results;
 }
 
-export function createToolRegistry() {
+export function createToolRegistry(options = {}) {
+  const skillManager = options.skillManager ?? null;
   const toolMap = new Map(TOOL_DEFINITIONS.map((tool) => [tool.name, tool]));
+
+  async function runBuiltInTool(name, args, context) {
+    const workspaceRoot = context.workspaceRoot;
+
+    switch (name) {
+      case 'make_dir': {
+        const absolutePath = resolveWorkspacePath(workspaceRoot, args.path);
+        await fs.mkdir(absolutePath, { recursive: true });
+        return {
+          summary: `Created directory ${args.path}`,
+          artifacts: [
+            {
+              artifactType: 'directory',
+              artifactPath: absolutePath,
+              metadata: { relativePath: args.path },
+            },
+          ],
+        };
+      }
+
+      case 'write_file': {
+        const absolutePath = resolveWorkspacePath(workspaceRoot, args.path);
+
+        if (!args.overwrite) {
+          try {
+            await fs.access(absolutePath);
+            throw new Error(`File already exists and overwrite=false: ${args.path}`);
+          } catch (error) {
+            if (error.code !== 'ENOENT') {
+              throw error;
+            }
+          }
+        }
+
+        await fs.mkdir(path.dirname(absolutePath), { recursive: true });
+        await fs.writeFile(absolutePath, args.content, 'utf8');
+
+        return {
+          summary: `Wrote file ${args.path}`,
+          artifacts: [
+            {
+              artifactType: 'file',
+              artifactPath: absolutePath,
+              metadata: {
+                relativePath: args.path,
+                bytesWritten: Buffer.byteLength(args.content, 'utf8'),
+              },
+            },
+          ],
+        };
+      }
+
+      case 'append_file': {
+        const absolutePath = resolveWorkspacePath(workspaceRoot, args.path);
+        await fs.mkdir(path.dirname(absolutePath), { recursive: true });
+        await fs.appendFile(absolutePath, args.content, 'utf8');
+
+        return {
+          summary: `Appended content to ${args.path}`,
+          artifacts: [
+            {
+              artifactType: 'file',
+              artifactPath: absolutePath,
+              metadata: {
+                relativePath: args.path,
+                bytesAppended: Buffer.byteLength(args.content, 'utf8'),
+              },
+            },
+          ],
+        };
+      }
+
+      case 'read_file': {
+        const absolutePath = resolveWorkspacePath(workspaceRoot, args.path);
+        const content = await fs.readFile(absolutePath, 'utf8');
+        const truncatedContent = content.slice(0, args.maxChars);
+
+        return {
+          summary: `Read ${args.path}`,
+          output: truncatedContent,
+          artifacts: [],
+        };
+      }
+
+      case 'list_files': {
+        const entries = await collectWorkspaceSnapshot(workspaceRoot, {
+          path: args.path,
+          recursive: args.recursive,
+          limit: args.limit,
+        });
+
+        return {
+          summary: `Listed ${entries.length} workspace entries`,
+          output: entries,
+          artifacts: [],
+        };
+      }
+
+      default:
+        throw new Error(`Unhandled LocalClaw tool: ${name}`);
+    }
+  }
 
   return {
     listTools() {
@@ -128,10 +242,17 @@ export function createToolRegistry() {
     },
 
     plannerCatalog() {
-      return TOOL_DEFINITIONS.map(
+      const baseCatalog = TOOL_DEFINITIONS.map(
         (tool) =>
           `- ${tool.name}: ${tool.description} Args example: ${tool.plannerArgs}`
       ).join('\n');
+
+      const skillSummary =
+        typeof skillManager?.plannerSkillSummary === 'function'
+          ? skillManager.plannerSkillSummary()
+          : 'Skill manager not configured.';
+
+      return `${baseCatalog}\n\nEnabled skill registry:\n${skillSummary}`;
     },
 
     async runTool(name, rawArgs, context) {
@@ -141,105 +262,41 @@ export function createToolRegistry() {
       }
 
       const args = definition.argsSchema.parse(rawArgs ?? {});
-      const workspaceRoot = context.workspaceRoot;
 
-      switch (name) {
-        case 'make_dir': {
-          const absolutePath = resolveWorkspacePath(workspaceRoot, args.path);
-          await fs.mkdir(absolutePath, { recursive: true });
-          return {
-            summary: `Created directory ${args.path}`,
-            artifacts: [
-              {
-                artifactType: 'directory',
-                artifactPath: absolutePath,
-                metadata: { relativePath: args.path },
-              },
-            ],
-          };
+      if (name === 'run_skill') {
+        if (!skillManager?.executeSkill) {
+          throw new Error('Skill manager is not configured.');
         }
 
-        case 'write_file': {
-          const absolutePath = resolveWorkspacePath(workspaceRoot, args.path);
+        if (context?.invokedBySkill) {
+          throw new Error('Nested run_skill execution is blocked by policy.');
+        }
 
-          if (!args.overwrite) {
-            try {
-              await fs.access(absolutePath);
-              throw new Error(`File already exists and overwrite=false: ${args.path}`);
-            } catch (error) {
-              if (error.code !== 'ENOENT') {
-                throw error;
-              }
+        return skillManager.executeSkill({
+          name: args.name,
+          input: args.input,
+          workspaceRoot: context.workspaceRoot,
+          taskId: context.taskId ?? null,
+          toolRunner: async (childToolName, childArgs) => {
+            if (childToolName === 'run_skill') {
+              throw new Error('Skills cannot invoke run_skill recursively.');
             }
-          }
 
-          await fs.mkdir(path.dirname(absolutePath), { recursive: true });
-          await fs.writeFile(absolutePath, args.content, 'utf8');
+            const childDefinition = toolMap.get(childToolName);
+            if (!childDefinition) {
+              throw new Error(`Unsupported skill tool: ${childToolName}`);
+            }
 
-          return {
-            summary: `Wrote file ${args.path}`,
-            artifacts: [
-              {
-                artifactType: 'file',
-                artifactPath: absolutePath,
-                metadata: {
-                  relativePath: args.path,
-                  bytesWritten: Buffer.byteLength(args.content, 'utf8'),
-                },
-              },
-            ],
-          };
-        }
-
-        case 'append_file': {
-          const absolutePath = resolveWorkspacePath(workspaceRoot, args.path);
-          await fs.mkdir(path.dirname(absolutePath), { recursive: true });
-          await fs.appendFile(absolutePath, args.content, 'utf8');
-
-          return {
-            summary: `Appended content to ${args.path}`,
-            artifacts: [
-              {
-                artifactType: 'file',
-                artifactPath: absolutePath,
-                metadata: {
-                  relativePath: args.path,
-                  bytesAppended: Buffer.byteLength(args.content, 'utf8'),
-                },
-              },
-            ],
-          };
-        }
-
-        case 'read_file': {
-          const absolutePath = resolveWorkspacePath(workspaceRoot, args.path);
-          const content = await fs.readFile(absolutePath, 'utf8');
-          const truncatedContent = content.slice(0, args.maxChars);
-
-          return {
-            summary: `Read ${args.path}`,
-            output: truncatedContent,
-            artifacts: [],
-          };
-        }
-
-        case 'list_files': {
-          const entries = await collectWorkspaceSnapshot(workspaceRoot, {
-            path: args.path,
-            recursive: args.recursive,
-            limit: args.limit,
-          });
-
-          return {
-            summary: `Listed ${entries.length} workspace entries`,
-            output: entries,
-            artifacts: [],
-          };
-        }
-
-        default:
-          throw new Error(`Unhandled LocalClaw tool: ${name}`);
+            const validatedChildArgs = childDefinition.argsSchema.parse(childArgs ?? {});
+            return runBuiltInTool(childToolName, validatedChildArgs, {
+              ...context,
+              invokedBySkill: args.name,
+            });
+          },
+        });
       }
+
+      return runBuiltInTool(name, args, context);
     },
   };
 }

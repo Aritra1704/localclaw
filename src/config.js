@@ -51,6 +51,11 @@ const envSchema = z.object({
     .enum(['true', 'false'])
     .default('false')
     .transform((value) => value === 'true'),
+  SKILLS_BUILTIN_DIR: z.string().default('skills/builtin'),
+  SKILLS_ALLOW_GENERATED: z
+    .enum(['true', 'false'])
+    .default('false')
+    .transform((value) => value === 'true'),
 });
 
 const parsedEnv = envSchema.safeParse(process.env);
@@ -98,6 +103,8 @@ export const config = {
   taskTimeoutHours: env.TASK_TIMEOUT_HOURS,
   maxConsecutiveFailures: env.MAX_CONSECUTIVE_FAILURES,
   dockerSandboxEnabled: env.DOCKER_SANDBOX_ENABLED,
+  skillsBuiltinDir: env.SKILLS_BUILTIN_DIR,
+  skillsAllowGenerated: env.SKILLS_ALLOW_GENERATED,
 };
 
 export function requireConfig(...keys) {

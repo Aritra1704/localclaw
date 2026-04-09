@@ -25,7 +25,35 @@ ${task.description}
 - priority: ${task.priority}
 - source: ${task.source}
 - created_at: ${task.created_at}
-`;
+  `;
+}
+
+export function shouldAttemptAutoPublish(task, plan) {
+  const taskText = `${task.title ?? ''}\n${task.description ?? ''}`.toLowerCase();
+
+  const explicitlyLocalOnly =
+    /\b(local[-\s]?only|no\s+publish|no\s+deploy|dry\s+run|test\s+only)\b/.test(taskText);
+  if (explicitlyLocalOnly) {
+    return false;
+  }
+
+  const explicitPublishIntent =
+    /\b(github|publish|repository|repo|deploy|railway|release|ship)\b/.test(taskText);
+  if (explicitPublishIntent) {
+    return true;
+  }
+
+  const planSteps = Array.isArray(plan?.steps) ? plan.steps : [];
+  if (planSteps.length === 0) {
+    return true;
+  }
+
+  const runSkillOnly = planSteps.every((step) => step?.tool === 'run_skill');
+  if (runSkillOnly) {
+    return false;
+  }
+
+  return true;
 }
 
 export function createTaskExecutor({ planner, verifier, toolRegistry }) {
@@ -74,7 +102,7 @@ export function createTaskExecutor({ planner, verifier, toolRegistry }) {
           path: 'TASK.md',
           content: buildTaskBrief(task),
         },
-        { workspaceRoot }
+        { workspaceRoot, taskId: task.id }
       );
 
       artifacts.push(...seedWorkspaceResult.artifacts);
@@ -130,6 +158,7 @@ export function createTaskExecutor({ planner, verifier, toolRegistry }) {
         try {
           const toolResult = await toolRegistry.runTool(planStep.tool, planStep.args, {
             workspaceRoot,
+            taskId: task.id,
           });
 
           toolRuns.push({
@@ -194,7 +223,13 @@ export function createTaskExecutor({ planner, verifier, toolRegistry }) {
       });
       logStepNumber += 1;
 
-      if (verification.review.status === 'passed' && hooks.publisher?.isEnabled?.()) {
+      const publishRequested = shouldAttemptAutoPublish(task, planning.plan);
+
+      if (
+        verification.review.status === 'passed' &&
+        hooks.publisher?.isEnabled?.() &&
+        publishRequested
+      ) {
         const publishStartedAt = Date.now();
         try {
           publication = await hooks.publisher.publishWorkspace(task, {
@@ -243,6 +278,16 @@ export function createTaskExecutor({ planner, verifier, toolRegistry }) {
             durationMs: Date.now() - publishStartedAt,
           });
         }
+
+        logStepNumber += 1;
+      } else if (verification.review.status === 'passed' && !publishRequested) {
+        await hooks.logStep?.({
+          stepNumber: logStepNumber,
+          stepType: 'publish',
+          status: 'success',
+          inputSummary: workspaceName,
+          outputSummary: 'Skipped auto-publish for local-only skill execution task',
+        });
 
         logStepNumber += 1;
       }

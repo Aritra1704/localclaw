@@ -24,7 +24,7 @@ export function createTelegramHandlers(dependencies) {
   return {
     start: async (ctx) => {
       await ctx.reply(
-        'LocalClaw bot is connected.\nCommands: /status /pause /resume /tasks /add /approvals /approve /reject /kill'
+        'LocalClaw bot is connected.\nCommands: /status /pause /resume /tasks /add /approvals /approve /reject /skills /enable_skill /disable_skill /kill'
       );
     },
 
@@ -127,6 +127,62 @@ export function createTelegramHandlers(dependencies) {
       );
 
       await ctx.reply(lines.join('\n\n'));
+    },
+
+    skills: async (ctx) => {
+      const skills = await orchestrator.listSkills({
+        includeDisabled: true,
+        limit: 20,
+      });
+
+      if (skills.length === 0) {
+        await ctx.reply('No skills are registered.');
+        return;
+      }
+
+      const lines = skills.map((skill) =>
+        [
+          `- ${skill.name} (v${skill.version})`,
+          `  source: ${skill.source_type}`,
+          `  enabled: ${skill.is_enabled ? 'yes' : 'no'}`,
+          `  runs: ${skill.total_runs} (success=${skill.success_runs}, failed=${skill.failed_runs})`,
+          `  last run: ${formatTimestamp(skill.last_run_at)}`,
+        ].join('\n')
+      );
+
+      await ctx.reply(lines.join('\n\n'));
+    },
+
+    enableSkill: async (ctx) => {
+      const name = ctx.message.text.replace(/^\/enable_skill\s*/, '').trim();
+      if (!name) {
+        await ctx.reply('Usage: /enable_skill <skill_name>');
+        return;
+      }
+
+      const updated = await orchestrator.setSkillEnabled(name, true);
+      if (!updated) {
+        await ctx.reply(`Skill not found: ${name}`);
+        return;
+      }
+
+      await ctx.reply(`Skill enabled.\nName: ${updated.name}\nVersion: ${updated.version}`);
+    },
+
+    disableSkill: async (ctx) => {
+      const name = ctx.message.text.replace(/^\/disable_skill\s*/, '').trim();
+      if (!name) {
+        await ctx.reply('Usage: /disable_skill <skill_name>');
+        return;
+      }
+
+      const updated = await orchestrator.setSkillEnabled(name, false);
+      if (!updated) {
+        await ctx.reply(`Skill not found: ${name}`);
+        return;
+      }
+
+      await ctx.reply(`Skill disabled.\nName: ${updated.name}\nVersion: ${updated.version}`);
     },
 
     approve: async (ctx) => {
@@ -261,6 +317,9 @@ export function registerTelegramCommands(bot, dependencies) {
   bot.command('approvals', handlers.approvals);
   bot.command('approve', handlers.approve);
   bot.command('reject', handlers.reject);
+  bot.command('skills', handlers.skills);
+  bot.command('enable_skill', handlers.enableSkill);
+  bot.command('disable_skill', handlers.disableSkill);
   bot.command('kill', handlers.kill);
   bot.action(APPROVAL_ACTION_PATTERN, handlers.approvalAction);
 }

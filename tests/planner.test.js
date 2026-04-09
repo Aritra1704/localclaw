@@ -100,3 +100,63 @@ test('planner defaults execution mode and verifier notes when omitted', async ()
   assert.deepEqual(result.plan.notesForVerifier, []);
   assert.equal(result.plan.steps[0].tool, 'write_file');
 });
+
+test('planner falls back to deterministic run_skill plan when model output is malformed twice', async () => {
+  let callCount = 0;
+
+  const planner = createPlanner({
+    client: {
+      async generate() {
+        callCount += 1;
+
+        if (callCount === 1) {
+          return {
+            responseText: JSON.stringify({
+              summary: 'attempt',
+              reasoning: 'attempt',
+              executionMode: 'workspace_controlled',
+              steps: ['not-an-object-step'],
+              successCriteria: [],
+            }),
+          };
+        }
+
+        return {
+          responseText: JSON.stringify({
+            summary: 'repair-attempt',
+            reasoning: 'repair-attempt',
+            executionMode: 'workspace_controlled',
+            steps: ['still-invalid-step'],
+            successCriteria: [],
+          }),
+        };
+      },
+    },
+    modelSelector: {
+      select(kind) {
+        return kind === 'planner' ? 'planner-model' : 'fast-model';
+      },
+    },
+  });
+
+  const result = await planner.planTask(
+    {
+      id: 'task-planner-3',
+      title:
+        'Use run_skill scaffold_node_http_service to scaffold a Node service named phase6-smoke on port 4100',
+      description: 'Skill-based scaffold request.',
+    },
+    {
+      workspaceRoot: '/tmp/localclaw-test-workspace',
+      workspaceSnapshot: [],
+      toolCatalog: 'run_skill(name, input)',
+    }
+  );
+
+  assert.equal(result.modelUsed, 'deterministic_fallback');
+  assert.equal(result.fallback, true);
+  assert.equal(result.plan.steps[0].tool, 'run_skill');
+  assert.equal(result.plan.steps[0].args.name, 'scaffold_node_http_service');
+  assert.equal(result.plan.steps[0].args.input.projectName, 'phase6-smoke');
+  assert.equal(result.plan.steps[0].args.input.servicePort, '4100');
+});

@@ -54,7 +54,7 @@ function extractKeywords(text, limit = 12) {
   return [...new Set(tokens)].slice(0, limit);
 }
 
-function formatRetrievedContext(learnings, documentChunks) {
+function formatRetrievedContext(learnings, documentChunks, suggestedSkills = []) {
   const lines = [];
 
   if (learnings.length > 0) {
@@ -74,6 +74,13 @@ function formatRetrievedContext(learnings, documentChunks) {
     }
   }
 
+  if (suggestedSkills.length > 0) {
+    lines.push('Suggested skills:');
+    for (const skill of suggestedSkills) {
+      lines.push(`- ${skill.name} (v${skill.version}) ${skill.description}`);
+    }
+  }
+
   return lines.join('\n').trim();
 }
 
@@ -90,6 +97,7 @@ export class Orchestrator {
     this.learningExtractor = options.learningExtractor ?? null;
     this.ragIngestor = options.ragIngestor ?? null;
     this.ragRetriever = options.ragRetriever ?? null;
+    this.skillManager = options.skillManager ?? null;
     this.notifier = options.notifier ?? null;
     this.timer = null;
     this.isRunning = false;
@@ -568,8 +576,15 @@ export class Orchestrator {
       }
 
       const documentChunks = [...documentChunkMap.values()].slice(0, 6);
+      const suggestedSkills = this.skillManager?.suggestSkillsForTask
+        ? await this.skillManager.suggestSkillsForTask(task, { limit: 4 })
+        : [];
 
-      const context = formatRetrievedContext(learningResult.rows, documentChunks);
+      const context = formatRetrievedContext(
+        learningResult.rows,
+        documentChunks,
+        suggestedSkills
+      );
 
       try {
         await this.bumpLearningUsage(
@@ -662,6 +677,22 @@ export class Orchestrator {
       this.logger.error({ err: error }, 'Failed to send Telegram notification');
       return null;
     }
+  }
+
+  async listSkills(options = {}) {
+    if (!this.skillManager?.listSkills) {
+      return [];
+    }
+
+    return this.skillManager.listSkills(options);
+  }
+
+  async setSkillEnabled(name, enabled) {
+    if (!this.skillManager?.setSkillEnabled) {
+      throw new Error('Skill manager is not configured');
+    }
+
+    return this.skillManager.setSkillEnabled(name, enabled);
   }
 
   async queueDeploymentApproval(task, result) {

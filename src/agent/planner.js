@@ -23,6 +23,28 @@ const plannerOutputSchema = z.object({
   notesForVerifier: z.array(z.string().min(1)).max(6).default([]),
 });
 
+function coerceStepCandidate(step) {
+  if (!step || typeof step === 'undefined') {
+    return null;
+  }
+
+  if (typeof step === 'string') {
+    const trimmed = step.trim();
+    if (!trimmed.startsWith('{') || !trimmed.endsWith('}')) {
+      return null;
+    }
+
+    try {
+      const parsed = JSON.parse(trimmed);
+      return parsed && typeof parsed === 'object' ? parsed : null;
+    } catch {
+      return null;
+    }
+  }
+
+  return typeof step === 'object' ? step : null;
+}
+
 function deriveSuccessCriteria(candidate) {
   const normalizedCriteria = Array.isArray(candidate.successCriteria)
     ? candidate.successCriteria
@@ -53,6 +75,10 @@ function deriveSuccessCriteria(candidate) {
 }
 
 function sanitizePlannerCandidate(candidate) {
+  const normalizedSteps = Array.isArray(candidate.steps)
+    ? candidate.steps.map((step) => coerceStepCandidate(step)).filter(Boolean)
+    : candidate.steps;
+
   return {
     ...candidate,
     summary:
@@ -65,6 +91,7 @@ function sanitizePlannerCandidate(candidate) {
       typeof candidate.executionMode === 'string' && candidate.executionMode.trim().length > 0
         ? candidate.executionMode.trim()
         : 'workspace_controlled',
+    steps: normalizedSteps,
     successCriteria: deriveSuccessCriteria(candidate),
     notesForVerifier: Array.isArray(candidate.notesForVerifier)
       ? candidate.notesForVerifier
@@ -73,6 +100,135 @@ function sanitizePlannerCandidate(candidate) {
           .slice(0, 6)
       : [],
   };
+}
+
+function extractRequestedSkillName(task) {
+  const text = `${task.title ?? ''}\n${task.description ?? ''}`;
+  const runSkillMatch = text.match(/\brun_skill\s+([a-z][a-z0-9_.-]{2,63})\b/i);
+  if (runSkillMatch) {
+    return runSkillMatch[1];
+  }
+
+  const scaffoldSkillMatch = text.match(
+    /\b(scaffold_node_http_service|add_deploy_readiness_notes)\b/i
+  );
+  if (scaffoldSkillMatch) {
+    return scaffoldSkillMatch[1];
+  }
+
+  return null;
+}
+
+function extractProjectName(task) {
+  const text = `${task.title ?? ''}\n${task.description ?? ''}`;
+  const namedMatch = text.match(/\bnamed\s+([a-z0-9][a-z0-9-]{1,63})\b/i);
+  if (namedMatch) {
+    return namedMatch[1];
+  }
+
+  return null;
+}
+
+function extractServicePort(task) {
+  const text = `${task.title ?? ''}\n${task.description ?? ''}`;
+  const portMatch = text.match(/\bport\s+(\d{2,5})\b/i);
+  if (!portMatch) {
+    return null;
+  }
+
+  const parsed = Number(portMatch[1]);
+  if (!Number.isInteger(parsed) || parsed < 1 || parsed > 65535) {
+    return null;
+  }
+
+  return String(parsed);
+}
+
+function buildDeterministicFallbackPlan(task) {
+  const skillName = extractRequestedSkillName(task);
+  const projectName = extractProjectName(task);
+  const servicePort = extractServicePort(task);
+
+  if (skillName) {
+    const skillInput = {};
+    if (projectName) {
+      skillInput.projectName = projectName;
+    }
+    if (servicePort) {
+      skillInput.servicePort = servicePort;
+    }
+
+    return normalizePlan({
+      summary: `Execute requested skill ${skillName} with deterministic fallback planning.`,
+      reasoning:
+        'Model output was malformed after repair. Falling back to a safe, schema-valid skill execution path.',
+      executionMode: 'workspace_controlled',
+      steps: [
+        {
+          stepNumber: 1,
+          objective: `Run skill ${skillName}`,
+          tool: 'run_skill',
+          args: {
+            name: skillName,
+            input: skillInput,
+          },
+        },
+        {
+          stepNumber: 2,
+          objective: 'List generated workspace files for verification context',
+          tool: 'list_files',
+          args: {
+            path: '.',
+            recursive: true,
+            limit: 80,
+          },
+        },
+      ],
+      successCriteria: [
+        `Skill ${skillName} executes successfully`,
+        'Workspace includes generated service files',
+      ],
+      notesForVerifier: [
+        'Planner used deterministic fallback due to invalid LLM JSON output.',
+      ],
+    });
+  }
+
+  return normalizePlan({
+    summary: 'Deterministic fallback plan created due to malformed planner output.',
+    reasoning:
+      'Both primary and repair planner outputs were invalid. Fallback keeps execution bounded and verifiable.',
+    executionMode: 'workspace_controlled',
+    steps: [
+      {
+        stepNumber: 1,
+        objective: 'Inspect current workspace entries',
+        tool: 'list_files',
+        args: {
+          path: '.',
+          recursive: true,
+          limit: 80,
+        },
+      },
+      {
+        stepNumber: 2,
+        objective: 'Write fallback execution note',
+        tool: 'write_file',
+        args: {
+          path: 'FALLBACK_PLAN.md',
+          content: `# Fallback Plan\n\nTask: ${task.title}\n\n${task.description}\n`,
+          overwrite: true,
+        },
+      },
+    ],
+    successCriteria: [
+      'Workspace is inspected',
+      'Fallback plan note is created for operator follow-up',
+    ],
+    notesForVerifier: [
+      'Planner used deterministic fallback due to invalid LLM JSON output.',
+    ],
+  });
 }
 
 function normalizePlan(plan) {
@@ -210,15 +366,27 @@ export function createPlanner({ client, modelSelector }) {
             temperature: 0,
           },
         });
+        try {
+          const plan = parsePlannerOutput(repairedResponse.responseText);
 
-        const plan = parsePlannerOutput(repairedResponse.responseText);
+          return {
+            plan,
+            modelUsed: repairModel,
+            repaired: true,
+            durationMs: Date.now() - startedAt,
+          };
+        } catch (repairError) {
+          const plan = buildDeterministicFallbackPlan(task);
 
-        return {
-          plan,
-          modelUsed: repairModel,
-          repaired: true,
-          durationMs: Date.now() - startedAt,
-        };
+          return {
+            plan,
+            modelUsed: 'deterministic_fallback',
+            repaired: true,
+            fallback: true,
+            fallbackReason: `${error.message} | ${repairError.message}`,
+            durationMs: Date.now() - startedAt,
+          };
+        }
       }
     },
   };

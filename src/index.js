@@ -18,6 +18,7 @@ import { createRagIngestor } from './rag/ingestor.js';
 import { createRagRetriever } from './rag/retriever.js';
 import { createRailwayClient } from './railway/client.js';
 import { createRailwayDeployer } from './railway/deployer.js';
+import { createSkillManager } from './skills/manager.js';
 import { runMigrations } from './db/migrate.js';
 import { Orchestrator } from './orchestrator.js';
 import { startTelegramBot } from './telegram/bot.js';
@@ -140,7 +141,12 @@ async function bootstrap() {
     embeddingClient: ollamaClient,
     logger,
   });
-  const toolRegistry = createToolRegistry();
+  const skillManager = createSkillManager({ logger });
+  const skillSummary = await skillManager.syncRegistry();
+  logger.info({ skillSummary }, 'Skill registry synchronized');
+  const toolRegistry = createToolRegistry({
+    skillManager,
+  });
   let publisher = null;
   let deployer = null;
 
@@ -199,6 +205,7 @@ async function bootstrap() {
   }
 
   await setBootPhase('boot_railway_ready');
+  await setBootPhase('boot_skills_ready');
 
   const taskExecutor = createTaskExecutor({
     planner,
@@ -214,6 +221,7 @@ async function bootstrap() {
     learningExtractor,
     ragIngestor,
     ragRetriever,
+    skillManager,
   });
   telegramBot = await withTimeout(
     startTelegramBot({
