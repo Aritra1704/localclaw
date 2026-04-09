@@ -5,13 +5,13 @@ import path from 'node:path';
 import { promisify } from 'node:util';
 
 import { config } from '../config.js';
+import {
+  collectWorkspaceJunk,
+  ensureBaselineGitIgnore,
+  removeWorkspaceJunk,
+} from '../project/contract.js';
 
 const execFileAsync = promisify(execFile);
-
-function buildGitHubPushHeader(token) {
-  const credentials = Buffer.from(`x-access-token:${token}`).toString('base64');
-  return `AUTHORIZATION: basic ${credentials}`;
-}
 
 async function runGit(args, options = {}) {
   try {
@@ -145,7 +145,23 @@ export function createGitClient(options = {}) {
     },
 
     async commitAll(cwd, message) {
+      await ensureBaselineGitIgnore(cwd);
+      const removedJunk = await removeWorkspaceJunk(cwd);
+      const remainingJunk = await collectWorkspaceJunk(cwd);
+
+      if (remainingJunk.length > 0) {
+        throw new Error(
+          `Workspace still contains ignored junk paths: ${remainingJunk
+            .map((targetPath) => path.relative(cwd, targetPath))
+            .join(', ')}`
+        );
+      }
+
       await this.addAll(cwd);
+
+      if (removedJunk.length > 0) {
+        await runGit(['add', '-A'], { cwd });
+      }
 
       if (!(await this.hasStagedOrWorkingChanges(cwd))) {
         const shaResult = await runGit(['rev-parse', 'HEAD'], { cwd }).catch(() => ({

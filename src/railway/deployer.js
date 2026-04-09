@@ -64,6 +64,7 @@ export function createRailwayDeployer(options = {}) {
     projectId: options.projectId ?? config.railwayProjectId,
     environmentId: options.environmentId ?? config.railwayEnvironmentId,
     serviceId: options.serviceId ?? config.railwayServiceId,
+    serviceName: options.serviceName ?? null,
     environmentName:
       options.environmentName ??
       config.railwayEnvironmentId ??
@@ -87,6 +88,21 @@ export function createRailwayDeployer(options = {}) {
 
     getTarget() {
       return target;
+    },
+
+    validateRepositoryName(repositoryName) {
+      if (!target.serviceName || !repositoryName) {
+        return { ok: true };
+      }
+
+      if (repositoryName.toLowerCase() === target.serviceName.toLowerCase()) {
+        return { ok: true };
+      }
+
+      return {
+        ok: false,
+        error: `Publish target ${repositoryName} does not match Railway service ${target.serviceName}. Update the Railway service or rerun the task with the dedicated deploy target.`,
+      };
     },
 
     async triggerDeployment(input = {}) {

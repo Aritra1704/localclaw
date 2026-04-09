@@ -1,6 +1,7 @@
 import path from 'node:path';
 
 import { config } from '../config.js';
+import { removeWorkspaceJunk, seedRepoContract } from '../project/contract.js';
 import { collectWorkspaceSnapshot } from '../tools/registry.js';
 
 function slugifyTaskTitle(value) {
@@ -51,6 +52,22 @@ export function createTaskExecutor({ planner, verifier, toolRegistry }) {
         error: null,
       };
 
+      const repoContractResult = await seedRepoContract({
+        workspaceRoot,
+        task,
+      });
+
+      artifacts.push(...repoContractResult.artifacts);
+
+      await hooks.logStep?.({
+        stepNumber: logStepNumber,
+        stepType: 'system',
+        status: 'success',
+        inputSummary: 'Seed repo contract kit',
+        outputSummary: repoContractResult.summary,
+      });
+      logStepNumber += 1;
+
       const seedWorkspaceResult = await toolRegistry.runTool(
         'write_file',
         {
@@ -71,6 +88,18 @@ export function createTaskExecutor({ planner, verifier, toolRegistry }) {
         outputSummary: seedWorkspaceResult.summary,
       });
       logStepNumber += 1;
+
+      const removedJunk = await removeWorkspaceJunk(workspaceRoot);
+      if (removedJunk.length > 0) {
+        await hooks.logStep?.({
+          stepNumber: logStepNumber,
+          stepType: 'system',
+          status: 'success',
+          inputSummary: 'Remove OS junk before planning',
+          outputSummary: `Removed ${removedJunk.length} ignored workspace path(s)`,
+        });
+        logStepNumber += 1;
+      }
 
       const workspaceSnapshot = await collectWorkspaceSnapshot(workspaceRoot, {
         recursive: true,
@@ -218,9 +247,11 @@ export function createTaskExecutor({ planner, verifier, toolRegistry }) {
       }
 
       return {
-        executionMode: hooks.publisher?.isEnabled?.()
-          ? 'phase3_controlled'
-          : 'phase2_controlled',
+        executionMode: hooks.deployer?.isEnabled?.()
+          ? 'phase4_controlled'
+          : hooks.publisher?.isEnabled?.()
+            ? 'phase3_controlled'
+            : 'phase2_controlled',
         workspaceRoot,
         workspaceName,
         plan: planning.plan,

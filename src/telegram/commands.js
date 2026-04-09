@@ -34,6 +34,8 @@ export function createTelegramHandlers(dependencies) {
 
       const lines = [
         `Status: ${snapshot.status}`,
+        `Boot phase: ${snapshot.bootPhase}`,
+        `Polling active: ${snapshot.pollingActive ? 'yes' : 'no'}`,
         `Instance: ${snapshot.instanceId}`,
         `Poll interval: ${snapshot.pollIntervalMs} ms`,
         `Pending: ${snapshot.queue.pending_count}`,
@@ -50,6 +52,10 @@ export function createTelegramHandlers(dependencies) {
 
       if (snapshot.pauseReason) {
         lines.push(`Pause reason: ${snapshot.pauseReason}`);
+      }
+
+      if (snapshot.bootError) {
+        lines.push(`Boot error: ${snapshot.bootError}`);
       }
 
       await ctx.reply(lines.join('\n'));

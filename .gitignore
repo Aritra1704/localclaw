@@ -3,8 +3,13 @@ logs/
 .env
 .env.local
 .DS_Store
+._*
+.Spotlight-V100
+.Trashes
 coverage/
 dist/
 tmp/
 *.log
 npm-debug.log*
+PROJECT_CONTEXT.local.md
+.opskit/settings.local.json

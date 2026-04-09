@@ -50,18 +50,25 @@ export class Orchestrator {
       await this.setAgentStateValue('stats', stats);
     }
 
+    await this.recoverInterruptedTasks();
+    await this.setAgentStateValue('polling_active', true);
+
     this.logger.info(
       { instanceId: this.instanceId, pollIntervalMs: this.pollIntervalMs },
       'Orchestrator started'
     );
-
-    await this.tick();
 
     this.timer = setInterval(() => {
       this.tick().catch((error) => {
         this.logger.error({ err: error }, 'Polling tick failed');
       });
     }, this.pollIntervalMs);
+
+    queueMicrotask(() => {
+      this.tick().catch((error) => {
+        this.logger.error({ err: error }, 'Initial polling tick failed');
+      });
+    });
   }
 
   async stop(options = {}) {
@@ -74,6 +81,7 @@ export class Orchestrator {
       this.timer = null;
     }
 
+    await this.setAgentStateValue('polling_active', false);
     await this.setAgentStateValue('current_task_id', null);
 
     if (status) {
@@ -129,6 +137,45 @@ export class Orchestrator {
     } finally {
       this.tickInFlight = false;
     }
+  }
+
+  async recoverInterruptedTasks() {
+    const result = await this.pool.query(
+      `UPDATE tasks
+       SET
+         status = 'pending',
+         blocked_reason = CASE
+           WHEN blocked_reason IS NULL
+             THEN 'Recovered after LocalClaw restart before task completion.'
+           ELSE blocked_reason
+         END,
+         locked_by = NULL,
+         lease_expires_at = NULL,
+         last_heartbeat_at = NOW(),
+         updated_at = NOW()
+       WHERE status IN ('in_progress', 'verifying')
+       RETURNING id, title`
+    );
+
+    if (result.rowCount === 0) {
+      return;
+    }
+
+    for (const row of result.rows) {
+      await this.logTaskStep(row.id, {
+        stepNumber: 0,
+        stepType: 'system',
+        status: 'success',
+        outputSummary: 'Re-queued after LocalClaw restart recovery',
+      });
+    }
+
+    this.logger.warn(
+      {
+        recoveredTaskIds: result.rows.map((row) => row.id),
+      },
+      'Recovered interrupted tasks during startup'
+    );
   }
 
   async getPendingTaskCount() {
@@ -205,6 +252,7 @@ export class Orchestrator {
       const result = await this.taskExecutor.executeTask(task, {
         startStepNumber: 2,
         publisher: this.publisher,
+        deployer: this.deployer,
         logStep: async (step) => {
           await this.logTaskStep(task.id, step);
           await this.touchTaskLease(task.id);
@@ -214,6 +262,56 @@ export class Orchestrator {
       await this.persistArtifacts(task.id, result.artifacts ?? []);
 
       if (result.publication?.published && this.deployer?.isEnabled?.()) {
+        const deploymentTargetCheck = this.deployer.validateRepositoryName?.(
+          result.publication.repo?.name ?? null
+        );
+
+        if (deploymentTargetCheck?.ok === false) {
+          await this.logTaskStep(task.id, {
+            stepNumber: 899,
+            stepType: 'deploy',
+            status: 'error',
+            inputSummary: result.publication.repo?.name ?? null,
+            outputSummary: null,
+            errorMessage: deploymentTargetCheck.error,
+          });
+
+          await this.pool.query(
+            `UPDATE tasks
+             SET
+               status = 'blocked',
+               project_name = COALESCE(project_name, $2),
+               project_path = COALESCE(project_path, $3),
+               repo_url = COALESCE(repo_url, $4),
+               blocked_reason = $5,
+               result = $6::jsonb,
+               updated_at = NOW(),
+               locked_by = NULL,
+               lease_expires_at = NULL,
+               last_heartbeat_at = NOW()
+             WHERE id = $1`,
+            [
+              task.id,
+              result.publication.repo?.name ?? result.workspaceName ?? null,
+              result.workspaceRoot,
+              result.publication.repo?.htmlUrl ?? null,
+              deploymentTargetCheck.error,
+              JSON.stringify(result),
+            ]
+          );
+
+          this.logger.warn(
+            {
+              taskId: task.id,
+              repositoryName: result.publication.repo?.name ?? null,
+              deployTarget: this.deployer.getTarget(),
+            },
+            'Published repository does not match the configured Railway service'
+          );
+
+          return;
+        }
+
         await this.queueDeploymentApproval(task, result);
         return;
       }
@@ -414,7 +512,7 @@ export class Orchestrator {
       `Approval: ${approval.id}`,
       `Deployment: ${deploymentResult.rows[0].id}`,
       `Repo: ${result.publication.repo.htmlUrl}`,
-      `Target: ${target.projectId} / ${target.environmentName} / ${target.serviceId}`,
+      `Target: ${target.projectId} / ${target.environmentName} / ${target.serviceName ?? target.serviceId}`,
       `Approve: /approve ${approval.id}`,
       `Reject: /reject ${approval.id} not ready`,
     ].join('\n');
@@ -986,6 +1084,9 @@ export class Orchestrator {
       currentTaskId,
       pauseReason,
       stats,
+      bootPhase,
+      bootError,
+      pollingActive,
       queueResult,
       deploymentResult,
       approvalResult,
@@ -999,6 +1100,9 @@ export class Orchestrator {
           tasks_failed: 0,
           uptime_start: null,
         }),
+        this.getAgentStateValue('boot_phase', 'unknown'),
+        this.getAgentStateValue('boot_error', null),
+        this.getAgentStateValue('polling_active', false),
         this.pool.query(
           `SELECT
              COUNT(*) FILTER (WHERE status = 'pending')::int AS pending_count,
@@ -1031,6 +1135,9 @@ export class Orchestrator {
 
     return {
       status,
+      bootPhase,
+      bootError,
+      pollingActive,
       currentTaskId,
       pauseReason,
       stats,

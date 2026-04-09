@@ -23,6 +23,58 @@ const plannerOutputSchema = z.object({
   notesForVerifier: z.array(z.string().min(1)).max(6).default([]),
 });
 
+function deriveSuccessCriteria(candidate) {
+  const normalizedCriteria = Array.isArray(candidate.successCriteria)
+    ? candidate.successCriteria
+        .map((item) => (typeof item === 'string' ? item.trim() : ''))
+        .filter(Boolean)
+        .slice(0, 6)
+    : [];
+
+  if (normalizedCriteria.length > 0) {
+    return normalizedCriteria;
+  }
+
+  const stepDerivedCriteria = Array.isArray(candidate.steps)
+    ? candidate.steps
+        .map((step) =>
+          typeof step?.objective === 'string' ? step.objective.trim() : ''
+        )
+        .filter(Boolean)
+        .slice(0, 3)
+        .map((objective) => `Complete: ${objective}`)
+    : [];
+
+  if (stepDerivedCriteria.length > 0) {
+    return stepDerivedCriteria;
+  }
+
+  return ['Leave the workspace ready for verification.'];
+}
+
+function sanitizePlannerCandidate(candidate) {
+  return {
+    ...candidate,
+    summary:
+      typeof candidate.summary === 'string' ? candidate.summary.trim() : candidate.summary,
+    reasoning:
+      typeof candidate.reasoning === 'string'
+        ? candidate.reasoning.trim()
+        : candidate.reasoning,
+    executionMode:
+      typeof candidate.executionMode === 'string' && candidate.executionMode.trim().length > 0
+        ? candidate.executionMode.trim()
+        : 'workspace_controlled',
+    successCriteria: deriveSuccessCriteria(candidate),
+    notesForVerifier: Array.isArray(candidate.notesForVerifier)
+      ? candidate.notesForVerifier
+          .map((item) => (typeof item === 'string' ? item.trim() : ''))
+          .filter(Boolean)
+          .slice(0, 6)
+      : [],
+  };
+}
+
 function normalizePlan(plan) {
   const normalizedSteps = [...plan.steps]
     .sort((left, right) => left.stepNumber - right.stepNumber)
@@ -39,7 +91,9 @@ function normalizePlan(plan) {
 }
 
 function parsePlannerOutput(text) {
-  const candidate = JSON.parse(extractJsonObjectText(text));
+  const candidate = sanitizePlannerCandidate(
+    JSON.parse(extractJsonObjectText(text))
+  );
   return normalizePlan(plannerOutputSchema.parse(candidate));
 }
 
@@ -110,6 +164,7 @@ Required rules:
 - stepNumber values must be sequential starting at 1
 - tool must be one of: ${TOOL_NAMES.join(', ')}
 - the args object must include every required field for the selected tool
+- successCriteria must contain at least one concrete item
 
 Malformed planner output:
 ${rawOutput}`;

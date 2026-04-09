@@ -2,6 +2,7 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 
 import { z } from 'zod';
+import { shouldIgnoreWorkspaceEntry } from '../project/contract.js';
 
 export const TOOL_DEFINITIONS = [
   {
@@ -89,6 +90,10 @@ async function walkWorkspace(currentPath, workspaceRoot, recursive, limit, resul
 
     const absolutePath = path.join(currentPath, entry.name);
     const relativePath = path.relative(workspaceRoot, absolutePath) || '.';
+
+    if (shouldIgnoreWorkspaceEntry(relativePath)) {
+      continue;
+    }
 
     results.push({
       path: relativePath,

@@ -1,0 +1,15 @@
+{
+  "version": 1,
+  "project": "localclaw",
+  "mode": "agent-platform",
+  "deploy": {
+    "provider": "railway",
+    "approvalRequired": true,
+    "dedicatedPhase4Target": true
+  },
+  "hygiene": {
+    "ignoreOsJunk": true,
+    "seedRepoContract": true,
+    "sanitizeBeforePublish": true
+  }
+}

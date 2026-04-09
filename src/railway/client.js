@@ -169,5 +169,21 @@ export function createRailwayClient(options = {}) {
 
       return data.deploymentLogs ?? [];
     },
+
+    async getService(serviceId) {
+      const data = await request(
+        `
+          query Service($id: String!) {
+            service(id: $id) {
+              id
+              name
+            }
+          }
+        `,
+        { id: serviceId }
+      );
+
+      return data.service;
+    },
   };
 }

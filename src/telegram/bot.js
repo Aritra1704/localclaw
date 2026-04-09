@@ -69,7 +69,19 @@ export async function startTelegramBot(dependencies) {
     'Timed out while validating the Telegram bot token with getMe().'
   );
 
-  await bot.launch();
+  await withTimeout(
+    bot.telegram.deleteWebhook({ drop_pending_updates: false }),
+    5000,
+    'Timed out while clearing the Telegram webhook before polling startup.'
+  );
+
+  const launchPromise = bot
+    .launch({ dropPendingUpdates: false })
+    .catch((error) => {
+      logger.error({ err: error }, 'Telegram polling stopped unexpectedly');
+      throw error;
+    });
+
   logger.info(
     { chatId: config.telegramChatId, username: bot.botInfo.username },
     'Telegram bot started'
@@ -84,6 +96,7 @@ export async function startTelegramBot(dependencies) {
     },
     async stop() {
       await bot.stop();
+      await launchPromise.catch(() => {});
       logger.info('Telegram bot stopped');
     },
   };
