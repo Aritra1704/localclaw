@@ -10,6 +10,7 @@ const logger = pino({
   name: 'localclaw-orchestrator',
   level: config.nodeEnv === 'development' ? 'debug' : 'info',
 });
+const RAG_SYNC_INTERVAL_MS = 10 * 60 * 1000;
 
 const RETRIEVAL_STOP_WORDS = new Set([
   'about',
@@ -87,10 +88,15 @@ export class Orchestrator {
     this.publisher = options.publisher ?? null;
     this.deployer = options.deployer ?? null;
     this.learningExtractor = options.learningExtractor ?? null;
+    this.ragIngestor = options.ragIngestor ?? null;
+    this.ragRetriever = options.ragRetriever ?? null;
     this.notifier = options.notifier ?? null;
     this.timer = null;
     this.isRunning = false;
     this.tickInFlight = false;
+    this.ragSyncInFlight = false;
+    this.lastRagSyncAt = 0;
+    this.ragSyncIntervalMs = options.ragSyncIntervalMs ?? RAG_SYNC_INTERVAL_MS;
   }
 
   async start() {
@@ -169,6 +175,7 @@ export class Orchestrator {
     this.tickInFlight = true;
 
     try {
+      await this.syncRagCorpusIfDue();
       await this.pollActiveDeployments();
 
       const status = await this.getAgentStateValue('status', 'running');
@@ -202,6 +209,36 @@ export class Orchestrator {
       await this.executeTask(task);
     } finally {
       this.tickInFlight = false;
+    }
+  }
+
+  async syncRagCorpusIfDue(force = false) {
+    if (!this.ragIngestor?.ingestProjectDocuments) {
+      return;
+    }
+
+    if (this.ragSyncInFlight) {
+      return;
+    }
+
+    const now = Date.now();
+    if (!force && now - this.lastRagSyncAt < this.ragSyncIntervalMs) {
+      return;
+    }
+
+    this.ragSyncInFlight = true;
+
+    try {
+      const summary = await this.ragIngestor.ingestProjectDocuments({
+        projectRoot: process.cwd(),
+      });
+
+      this.logger.info({ ragSummary: summary }, 'RAG corpus sync completed');
+    } catch (error) {
+      this.logger.warn({ err: error }, 'RAG corpus sync failed');
+    } finally {
+      this.lastRagSyncAt = Date.now();
+      this.ragSyncInFlight = false;
     }
   }
 
@@ -483,41 +520,91 @@ export class Orchestrator {
   }
 
   async buildRetrievalContext(task) {
-    const keywords = extractKeywords(`${task.title} ${task.description}`);
-    if (keywords.length === 0) {
-      return null;
-    }
+    const queryText = `${task.title} ${task.description}`.trim();
+    const keywords = extractKeywords(queryText);
 
     try {
-      const learningResult = await this.pool.query(
-        `SELECT category, observation, confidence_score
-         FROM learnings
-         WHERE keywords && $1::text[]
-         ORDER BY times_applied DESC, confidence_score DESC, created_at DESC
-         LIMIT 5`,
-        [keywords]
-      );
+      const learningResult =
+        keywords.length > 0
+          ? await this.pool.query(
+              `SELECT id, category, observation, confidence_score
+               FROM learnings
+               WHERE keywords && $1::text[]
+               ORDER BY times_applied DESC, confidence_score DESC, created_at DESC
+               LIMIT 5`,
+              [keywords]
+            )
+          : { rows: [] };
 
-      const likePatterns = keywords.slice(0, 6).map((keyword) => `%${keyword}%`);
-      const chunkResult = await this.pool.query(
-        `SELECT
-           LEFT(document_chunks.content, 280) AS content,
-           documents.title,
-           documents.source_path
-         FROM document_chunks
-         JOIN documents ON documents.id = document_chunks.document_id
-         WHERE document_chunks.content ILIKE ANY($1::text[])
-         ORDER BY document_chunks.created_at DESC
-         LIMIT 4`,
-        [likePatterns]
-      );
+      const keywordChunkResult =
+        keywords.length > 0
+          ? await this.pool.query(
+              `SELECT
+                 LEFT(document_chunks.content, 280) AS content,
+                 documents.title,
+                 documents.source_path
+               FROM document_chunks
+               JOIN documents ON documents.id = document_chunks.document_id
+               WHERE document_chunks.content ILIKE ANY($1::text[])
+               ORDER BY document_chunks.created_at DESC
+               LIMIT 4`,
+              [keywords.slice(0, 6).map((keyword) => `%${keyword}%`)]
+            )
+          : { rows: [] };
 
-      const context = formatRetrievedContext(learningResult.rows, chunkResult.rows);
+      const semanticChunks = this.ragRetriever?.retrieveRelevantDocumentChunks
+        ? await this.ragRetriever.retrieveRelevantDocumentChunks(queryText, {
+            topK: 4,
+            candidateLimit: 260,
+          })
+        : [];
+
+      const documentChunkMap = new Map();
+      for (const chunk of [...keywordChunkResult.rows, ...semanticChunks]) {
+        const key = `${chunk.source_path ?? ''}:${chunk.content ?? ''}`;
+        if (!documentChunkMap.has(key)) {
+          documentChunkMap.set(key, chunk);
+        }
+      }
+
+      const documentChunks = [...documentChunkMap.values()].slice(0, 6);
+
+      const context = formatRetrievedContext(learningResult.rows, documentChunks);
+
+      try {
+        await this.bumpLearningUsage(
+          learningResult.rows.map((row) => row.id).filter(Boolean)
+        );
+      } catch (error) {
+        this.logger.warn(
+          { err: error, taskId: task.id },
+          'Failed to update learning usage counters'
+        );
+      }
+
       return context.length > 0 ? context : null;
     } catch (error) {
       this.logger.warn({ err: error, taskId: task.id }, 'Failed to retrieve Phase 5 context');
       return null;
     }
+  }
+
+  async bumpLearningUsage(learningIds) {
+    if (!Array.isArray(learningIds) || learningIds.length === 0) {
+      return;
+    }
+
+    const deduplicated = [...new Set(learningIds)].filter(Boolean);
+    if (deduplicated.length === 0) {
+      return;
+    }
+
+    await this.pool.query(
+      `UPDATE learnings
+       SET times_applied = times_applied + 1
+       WHERE id = ANY($1::uuid[])`,
+      [deduplicated]
+    );
   }
 
   async persistLearnings(task, result) {

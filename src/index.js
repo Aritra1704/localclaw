@@ -14,6 +14,8 @@ import { createGitHubPublisher } from './github/publisher.js';
 import { createLearningExtractor } from './learnings/extractor.js';
 import { createModelSelector } from './llm/modelSelector.js';
 import { createOllamaClient } from './llm/ollama.js';
+import { createRagIngestor } from './rag/ingestor.js';
+import { createRagRetriever } from './rag/retriever.js';
 import { createRailwayClient } from './railway/client.js';
 import { createRailwayDeployer } from './railway/deployer.js';
 import { runMigrations } from './db/migrate.js';
@@ -130,6 +132,14 @@ async function bootstrap() {
     client: ollamaClient,
     modelSelector,
   });
+  const ragIngestor = createRagIngestor({
+    embeddingClient: ollamaClient,
+    logger,
+  });
+  const ragRetriever = createRagRetriever({
+    embeddingClient: ollamaClient,
+    logger,
+  });
   const toolRegistry = createToolRegistry();
   let publisher = null;
   let deployer = null;
@@ -202,6 +212,8 @@ async function bootstrap() {
     publisher,
     deployer,
     learningExtractor,
+    ragIngestor,
+    ragRetriever,
   });
   telegramBot = await withTimeout(
     startTelegramBot({

@@ -138,5 +138,77 @@ export function createOllamaClient(options = {}) {
         raw: payload,
       };
     },
+
+    async embed(input) {
+      const model = input.model;
+      const content = `${input.input ?? ''}`.trim();
+
+      if (!model) {
+        throw new Error('embed requires a model');
+      }
+
+      if (!content) {
+        throw new Error('embed requires non-empty input');
+      }
+
+      let firstError = null;
+
+      try {
+        const payload = await request('/api/embed', {
+          method: 'POST',
+          body: {
+            model,
+            input: [content],
+            keep_alive: keepAlive,
+          },
+        });
+
+        const vector =
+          Array.isArray(payload?.embeddings) && Array.isArray(payload.embeddings[0])
+            ? payload.embeddings[0]
+            : Array.isArray(payload?.embedding)
+              ? payload.embedding
+              : null;
+
+        if (!vector) {
+          throw new Error('Ollama /api/embed returned no embedding vector');
+        }
+
+        return {
+          embedding: vector,
+          endpoint: '/api/embed',
+          raw: payload,
+        };
+      } catch (error) {
+        firstError = error;
+      }
+
+      try {
+        const payload = await request('/api/embeddings', {
+          method: 'POST',
+          body: {
+            model,
+            prompt: content,
+            keep_alive: keepAlive,
+          },
+        });
+
+        const vector = Array.isArray(payload?.embedding) ? payload.embedding : null;
+        if (!vector) {
+          throw new Error('Ollama /api/embeddings returned no embedding vector');
+        }
+
+        return {
+          embedding: vector,
+          endpoint: '/api/embeddings',
+          raw: payload,
+        };
+      } catch (fallbackError) {
+        const details = [firstError?.message, fallbackError?.message]
+          .filter(Boolean)
+          .join(' | ');
+        throw new Error(`Failed to generate embedding: ${details}`);
+      }
+    },
   };
 }
