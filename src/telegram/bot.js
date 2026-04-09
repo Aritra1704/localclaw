@@ -89,9 +89,10 @@ export async function startTelegramBot(dependencies) {
 
   return {
     bot,
-    async sendMessage(text) {
+    async sendMessage(text, options = {}) {
       return bot.telegram.sendMessage(config.telegramChatId, text, {
         disable_web_page_preview: true,
+        ...options,
       });
     },
     async stop() {

@@ -205,6 +205,16 @@ export function createGitClient(options = {}) {
         username = config.githubUsername || 'x-access-token',
       } = options;
       const args = ['push', '-u', remoteName, branch];
+      const autoMergeArgs = [
+        'pull',
+        '--no-rebase',
+        '--no-edit',
+        '--allow-unrelated-histories',
+        '-X',
+        'ours',
+        remoteName,
+        branch,
+      ];
 
       if (!token) {
         await runGit(args, { cwd });
@@ -213,18 +223,43 @@ export function createGitClient(options = {}) {
 
       const askPassScript = await createAskPassScript();
       const sanitize = createTokenSanitizer(token);
+      const authEnv = {
+        GIT_TERMINAL_PROMPT: '0',
+        GIT_ASKPASS: askPassScript,
+        LOCALCLAW_GIT_USERNAME: username,
+        LOCALCLAW_GIT_TOKEN: token,
+      };
 
       try {
-        await runGit(args, {
-          cwd,
-          sanitize,
-          env: {
-            GIT_TERMINAL_PROMPT: '0',
-            GIT_ASKPASS: askPassScript,
-            LOCALCLAW_GIT_USERNAME: username,
-            LOCALCLAW_GIT_TOKEN: token,
-          },
-        });
+        try {
+          await runGit(args, {
+            cwd,
+            sanitize,
+            env: authEnv,
+          });
+        } catch (error) {
+          const details = `${error.message}\n${error.stderr ?? ''}\n${error.stdout ?? ''}`;
+          const isNonFastForward =
+            details.includes('fetch first') ||
+            details.includes('non-fast-forward') ||
+            details.includes('failed to push some refs');
+
+          if (!isNonFastForward) {
+            throw error;
+          }
+
+          await runGit(autoMergeArgs, {
+            cwd,
+            sanitize,
+            env: authEnv,
+          });
+
+          await runGit(args, {
+            cwd,
+            sanitize,
+            env: authEnv,
+          });
+        }
       } finally {
         await fs.unlink(askPassScript).catch(() => {});
       }

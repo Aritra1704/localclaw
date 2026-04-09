@@ -413,13 +413,13 @@ export class Orchestrator {
     this.notifier = notifier;
   }
 
-  async notify(text) {
+  async notify(text, options = {}) {
     if (!this.notifier?.sendMessage) {
       return null;
     }
 
     try {
-      return await this.notifier.sendMessage(text);
+      return await this.notifier.sendMessage(text, options);
     } catch (error) {
       this.logger.error({ err: error }, 'Failed to send Telegram notification');
       return null;
@@ -517,7 +517,22 @@ export class Orchestrator {
       `Reject: /reject ${approval.id} not ready`,
     ].join('\n');
 
-    const sentMessage = await this.notify(message);
+    const sentMessage = await this.notify(message, {
+      reply_markup: {
+        inline_keyboard: [
+          [
+            {
+              text: 'Approve deploy',
+              callback_data: `approval:approve:${approval.id}`,
+            },
+            {
+              text: 'Reject deploy',
+              callback_data: `approval:reject:${approval.id}`,
+            },
+          ],
+        ],
+      },
+    });
 
     if (sentMessage?.message_id) {
       await this.pool.query(

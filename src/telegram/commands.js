@@ -6,6 +6,8 @@ function formatTimestamp(value) {
   return new Date(value).toISOString();
 }
 
+const APPROVAL_ACTION_PATTERN = /^approval:(approve|reject):([0-9a-f-]{36})$/i;
+
 function formatTaskLine(task) {
   return [
     `- ${task.title}`,
@@ -176,6 +178,59 @@ export function createTelegramHandlers(dependencies) {
       );
     },
 
+    approvalAction: async (ctx) => {
+      const data = ctx.callbackQuery?.data ?? '';
+      const match = data.match(APPROVAL_ACTION_PATTERN);
+
+      if (!match) {
+        await ctx.answerCbQuery('Invalid approval action.');
+        return;
+      }
+
+      const action = match[1].toLowerCase();
+      const approvalId = match[2];
+
+      if (action === 'approve') {
+        const approval = await orchestrator.approveApproval(approvalId, {
+          respondedVia: 'telegram_button',
+        });
+
+        if (!approval) {
+          await ctx.answerCbQuery('Approval already handled.');
+          return;
+        }
+
+        logger.info({ approvalId }, 'Deploy approval granted from Telegram button');
+        await ctx.answerCbQuery('Deployment approved.');
+        await ctx.reply(
+          `Deployment approved.\nApproval: ${approval.id}\nTask: ${approval.task_id}\nRailway deploy will be triggered on the next processing cycle.`
+        );
+      } else {
+        const reason = 'Rejected via Telegram button';
+        const approval = await orchestrator.rejectApproval(approvalId, {
+          respondedVia: 'telegram_button',
+          reason,
+        });
+
+        if (!approval) {
+          await ctx.answerCbQuery('Approval already handled.');
+          return;
+        }
+
+        logger.info({ approvalId, reason }, 'Deploy approval rejected from Telegram button');
+        await ctx.answerCbQuery('Deployment rejected.');
+        await ctx.reply(
+          `Deployment rejected.\nApproval: ${approval.id}\nTask: ${approval.task_id}\nReason: ${reason}`
+        );
+      }
+
+      try {
+        await ctx.editMessageReplyMarkup({ inline_keyboard: [] });
+      } catch (error) {
+        logger.debug({ err: error }, 'Could not clear approval inline keyboard');
+      }
+    },
+
     kill: async (ctx) => {
       const reason =
         ctx.message.text.replace(/^\/kill\s*/, '').trim() || 'Killed via Telegram';
@@ -207,4 +262,5 @@ export function registerTelegramCommands(bot, dependencies) {
   bot.command('approve', handlers.approve);
   bot.command('reject', handlers.reject);
   bot.command('kill', handlers.kill);
+  bot.action(APPROVAL_ACTION_PATTERN, handlers.approvalAction);
 }

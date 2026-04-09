@@ -333,3 +333,23 @@ Project completion means all of the following are true:
 - keep one active task in MVP
 - treat model output as suggestions until validated through tools or tests
 - require human approval for deploy and unsafe external actions
+
+## 9. Backlog
+
+### 9.1 Per-Project Deploy Targets
+
+After the fixed-service Phase 4 checkpoint is crossed, move Railway deploy targeting out of global `.env` state and into the database.
+
+Backlog intent:
+
+- keep only account-level provider credentials in `.env`
+- store GitHub repo and Railway target mapping per generated project
+- allow LocalClaw to manage multiple projects without changing runtime env vars
+- preserve approval-gated deploys even when a project has its own repo and service
+
+Expected implementation shape:
+
+- add project-level records for repository and deploy target mapping
+- persist `railway_project_id`, `railway_environment_id`, and `railway_service_id` per project
+- make tasks resolve their deploy target from DB, not a single global service
+- keep dynamic repo and service creation out of the current MVP until the fixed-target path is proven stable
