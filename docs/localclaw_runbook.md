@@ -1,5 +1,12 @@
 # LocalClaw Runbook
 
+## Phase Schedule
+
+- Phase 7A: CLI control, `.env` token discovery, project allowlist, chat sessions, actors, and plan-gated task creation.
+- Phase 7B: React/Vite operator UI served by the local control API with dashboard, tasks, approvals, projects, skills, and chat.
+- Phase 7C: Operator cockpit polish and reliability. Scope: sidebar navigation, chat-first workspace, visible token state, faster chat fallbacks, task timeline, approval UX, diagnostics, and clearer empty/error states.
+- Phase 8: Safe-Commit workflow after the Phase 7 operator surface is usable for normal project intake.
+
 ## Start LocalClaw
 
 From the project root:

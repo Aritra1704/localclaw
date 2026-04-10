@@ -1,7 +1,6 @@
 import { z } from 'zod';
 
 import {
-  actorModelRole,
   actorSchema,
   actorSystemPrompt,
   listActors,
@@ -36,7 +35,7 @@ const draftTaskSchema = z
   .partial()
   .strict();
 
-const CHAT_MODEL_TIMEOUT_MS = 12000;
+const CHAT_MODEL_TIMEOUT_MS = 7000;
 
 function compact(value, limit = 4000) {
   const text = `${value ?? ''}`.trim();
@@ -253,11 +252,8 @@ export function createChatService({
       });
     }
 
-    const role = actorModelRole(actor);
-    const models = [
-      ...modelSelector.selectWithFallback('fast'),
-      ...modelSelector.selectWithFallback(role),
-    ].filter((model, index, all) => model && all.indexOf(model) === index);
+    // Chat should feel responsive; deeper role-specific models are used by planning/execution.
+    const models = modelSelector.selectWithFallback('fast').slice(0, 1);
     let lastError = null;
 
     for (const model of models) {
