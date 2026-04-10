@@ -2,10 +2,10 @@
 
 ## Phase Schedule
 
-- Phase 7A: CLI control, `.env` token discovery, project allowlist, chat sessions, actors, and plan-gated task creation.
-- Phase 7B: React/Vite operator UI served by the local control API with dashboard, tasks, approvals, projects, skills, and chat.
-- Phase 7C: Operator cockpit polish and reliability. Scope: sidebar navigation, chat-first workspace, visible token state, faster chat fallbacks, task timeline, approval UX, diagnostics, and clearer empty/error states.
-- Phase 8: Safe-Commit workflow after the Phase 7 operator surface is usable for normal project intake.
+- Phase 7A: complete. CLI control, `.env` token discovery, project allowlist, chat sessions, actors, and plan-gated task creation are implemented.
+- Phase 7B: complete. React/Vite operator UI is served by the local control API with dashboard, tasks, approvals, projects, skills, and chat.
+- Phase 7C: complete. Operator cockpit polish and reliability pass includes sidebar navigation, chat-first workspace, visible token state, faster chat fallbacks, task timeline, approval UX, diagnostics, and clearer empty/error states.
+- Phase 8: not started. Safe-Commit workflow begins after the Phase 7 operator surface is usable for normal project intake.
 
 ## Start LocalClaw
 

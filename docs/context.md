@@ -1,12 +1,12 @@
 # LocalClaw Context
 
-Version: 1.1  
-Date: 2026-04-09  
+Version: 1.2  
+Date: 2026-04-11  
 Purpose: end-to-end execution context and checkpoint guide for LocalClaw delivery
 
 ## 0. Current Phase Status
 
-As of 2026-04-09, the project status is:
+As of 2026-04-11, the project status is:
 
 | Phase | Status | Notes |
 |---|---|---|
@@ -15,10 +15,13 @@ As of 2026-04-09, the project status is:
 | Phase 2: LLM and Tool Execution | complete | Ollama client, planner, workspace tool registry, task executor, and verifier are implemented. A live Telegram task generated `src/app.js` and `README.md` in the controlled workspace and verified successfully. |
 | Phase 3: Git and GitHub | complete | Git wrapper, GitHub client, and auto-publish flow are implemented. A live task pushed successfully to GitHub with repo linkage and publish logs captured in the DB. |
 | Phase 4: Deploy Gate Checkpoint | complete | Railway deploy workflow now includes end-to-end approval and successful deployment evidence. Telegram inline Approve/Reject buttons are active, and deployment retry handling is in place for fast-fail/no-log Railway responses. |
-| Phase 5: RAG and Learnings | in progress | Planner now receives retrieved historical context from learnings/doc chunks, and completed tasks persist extracted learnings into the `learnings` table. |
-| Phase 6: Skills Manager | not started | deferred until after MVP. |
-| Phase 7: Safe-Commit Proving Run | not started | depends on crossing Phase 4. |
-| Phase 8: Hardening | not started | depends on live execution evidence. |
+| Phase 5: RAG and Learnings | complete | Planner receives retrieved historical context from learnings/doc chunks, completed tasks persist extracted learnings, and retrieval behavior is covered by tests. |
+| Phase 6: Skills Manager | complete | Built-in skill registry, enablement policy, skill run logging, guarded generated skills, and skill tests are implemented. |
+| Phase 7A: CLI Control Plane | complete | Local control API, `.env` token discovery, `doctor`, project allowlist, chat sessions, actors, and plan-gated task creation are implemented. |
+| Phase 7B: Browser Operator UI | complete | React/Vite UI is served by LocalClaw and covers dashboard, tasks, approvals, projects, skills, and chat. |
+| Phase 7C: Operator Cockpit Reliability | complete | Sidebar navigation, chat-first workspace, visible token state, faster chat fallbacks, task timeline, approval UX, diagnostics, and clearer empty/error states are implemented. |
+| Phase 8: Safe-Commit Proving Run | not started | next phase; depends on the Phase 7 operator surface being usable for normal project intake. |
+| Phase 9: Hardening | not started | depends on Safe-Commit execution evidence and operational pain points. |
 
 ## 1. Mission
 
@@ -223,12 +226,68 @@ Outputs:
 
 - repeated workflows become reusable and governed
 
-### Phase 7: Safe-Commit Proving Run
+### Phase 7A: CLI Control Plane
+
+Inputs:
+
+- LocalClaw deploy and skill foundations are available
+- operator needs a first-class terminal workflow
+
+Actions:
+
+- add local control API
+- add CLI `.env` token discovery and `doctor`
+- add project allowlist
+- add chat sessions and actors
+- keep execution plan-gated
+
+Outputs:
+
+- LocalClaw can be controlled from CLI without copying tokens
+- chat can draft and plan tasks without bypassing approval
+
+### Phase 7B: Browser Operator UI
+
+Inputs:
+
+- local control API
+- CLI-first workflow
+
+Actions:
+
+- add React/Vite app served by LocalClaw
+- expose dashboard, tasks, approvals, projects, skills, and chat
+- keep mutations token-protected
+
+Outputs:
+
+- browser UI provides a local operator console
+
+### Phase 7C: Operator Cockpit Reliability
+
+Inputs:
+
+- browser UI and chat control plane
+
+Actions:
+
+- add sidebar navigation
+- make chat the primary workspace
+- add visible token state
+- reduce chat latency with bounded model fallback
+- add task timeline, approval UX, diagnostics, and clear empty/error states
+
+Outputs:
+
+- LocalClaw has a usable cockpit for normal project intake
+
+### Phase 8: Safe-Commit Proving Run
 
 Inputs:
 
 - LocalClaw Phase 4 checkpoint cleared
 - RAG and skills available or at least partially available
+- operator cockpit available
 
 Actions:
 
@@ -241,7 +300,7 @@ Outputs:
 
 - LocalClaw proves value on a real project
 
-### Phase 8: Hardening
+### Phase 9: Hardening
 
 Inputs:
 

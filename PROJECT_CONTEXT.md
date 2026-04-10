@@ -10,13 +10,19 @@ LocalClaw is a local-first autonomous engineering platform that plans work, exec
 - Phase 1: complete
 - Phase 2: complete
 - Phase 3: complete
-- Phase 4: in progress
+- Phase 4: complete
+- Phase 5: complete
+- Phase 6: complete
+- Phase 7A: complete
+- Phase 7B: complete
+- Phase 7C: complete
+- Phase 8: not started
 
 ## Current Focus
 
-- Keep boot health explicit and observable
-- Keep generated workspaces and repos clean
-- Verify the dedicated `phase4-sample-app` deploy path end to end
+- Use the Phase 7 operator cockpit for normal project intake
+- Start the Safe-Commit proving run as Phase 8
+- Keep execution and deploy approval-gated
 
 ## Local Overrides
 
