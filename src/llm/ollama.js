@@ -61,6 +61,7 @@ export function createOllamaClient(options = {}) {
   async function request(pathname, requestOptions = {}) {
     const response = await fetchImpl(`${baseUrl}${pathname}`, {
       method: requestOptions.method ?? 'GET',
+      signal: requestOptions.signal,
       headers: {
         'content-type': 'application/json',
         ...(requestOptions.headers ?? {}),
@@ -123,6 +124,7 @@ export function createOllamaClient(options = {}) {
     async generate(input) {
       const payload = await request('/api/generate', {
         method: 'POST',
+        signal: input.signal,
         body: buildGenerateBody({
           ...input,
           keepAlive,

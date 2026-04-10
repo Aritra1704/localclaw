@@ -36,6 +36,8 @@ const draftTaskSchema = z
   .partial()
   .strict();
 
+const CHAT_MODEL_TIMEOUT_MS = 12000;
+
 function compact(value, limit = 4000) {
   const text = `${value ?? ''}`.trim();
   return text.length > limit ? `${text.slice(0, limit - 3)}...` : text;
@@ -47,6 +49,13 @@ function buildFallbackChatResponse({ actor, userMessage, projectPath }) {
     `I can help as ${actor}. I will discuss and plan safely without executing anything until you explicitly approve a task.${projectLine}\n\nNext useful step: tell me the objective, constraints, and success criteria, or ask me to draft a task plan.\n\nYour message: ${userMessage}`,
     2000
   );
+}
+
+function buildGreetingResponse({ actor, projectPath }) {
+  const projectLine = projectPath ? `\nProject: ${projectPath}` : '';
+  return `Hi. I am LocalClaw in ${actor} mode.${projectLine}
+
+I can discuss, review, plan, draft a task contract, or create an approval-gated execution plan. I will not execute anything until you explicitly approve it.`;
 }
 
 function buildDraftContract({ session, messages, objective }) {
@@ -229,6 +238,13 @@ export function createChatService({
   }
 
   async function generateAssistantResponse({ session, actor, messages, userMessage }) {
+    if (/^(hi|hello|hey|yo|hola)$/i.test(userMessage.trim())) {
+      return buildGreetingResponse({
+        actor,
+        projectPath: session.project_path,
+      });
+    }
+
     if (!llmClient?.generate || !modelSelector?.selectWithFallback) {
       return buildFallbackChatResponse({
         actor,
@@ -238,22 +254,33 @@ export function createChatService({
     }
 
     const role = actorModelRole(actor);
-    const models = modelSelector.selectWithFallback(role);
+    const models = [
+      ...modelSelector.selectWithFallback('fast'),
+      ...modelSelector.selectWithFallback(role),
+    ].filter((model, index, all) => model && all.indexOf(model) === index);
     let lastError = null;
 
     for (const model of models) {
+      const controller = new AbortController();
+      const timer = setTimeout(() => {
+        controller.abort();
+      }, CHAT_MODEL_TIMEOUT_MS);
+
       try {
         const response = await llmClient.generate({
           model,
           system: actorSystemPrompt(actor),
           prompt: await buildChatPrompt({ session, messages, userMessage }),
           temperature: 0.2,
+          signal: controller.signal,
         });
 
         return compact(response.responseText, 8000);
       } catch (error) {
         lastError = error;
         logger?.warn?.({ err: error, model, actor }, 'Chat model failed; trying fallback');
+      } finally {
+        clearTimeout(timer);
       }
     }
 

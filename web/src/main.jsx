@@ -156,6 +156,8 @@ function Chat({ sessions, actors, projects, onRefresh }) {
   const [message, setMessage] = useState('');
   const [actor, setActor] = useState('architect');
   const [projectPath, setProjectPath] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState('');
 
   async function loadSession(id) {
     setActiveSession(id);
@@ -163,6 +165,7 @@ function Chat({ sessions, actors, projects, onRefresh }) {
   }
 
   async function createSession() {
+    setError('');
     const session = await api('/v1/chat/sessions', {
       method: 'POST',
       body: {
@@ -173,27 +176,48 @@ function Chat({ sessions, actors, projects, onRefresh }) {
     });
     await onRefresh();
     await loadSession(session.id);
+    return session;
   }
 
   async function sendMessage() {
-    if (!activeSession || !message.trim()) return;
-    await api(`/v1/chat/sessions/${activeSession}/messages`, {
-      method: 'POST',
-      body: { content: message, actor },
-    });
-    setMessage('');
-    await loadSession(activeSession);
+    if (!message.trim() || busy) return;
+    setBusy(true);
+    setError('');
+
+    try {
+      const sessionId = activeSession || (await createSession()).id;
+      await api(`/v1/chat/sessions/${sessionId}/messages`, {
+        method: 'POST',
+        body: { content: message, actor },
+      });
+      setMessage('');
+      await loadSession(sessionId);
+    } catch (nextError) {
+      setError(nextError.message);
+    } finally {
+      setBusy(false);
+    }
   }
 
   async function planTask() {
-    if (!activeSession || !message.trim()) return;
-    await api(`/v1/chat/sessions/${activeSession}/plan-task`, {
-      method: 'POST',
-      body: { objective: message },
-    });
-    setMessage('');
-    await loadSession(activeSession);
-    await onRefresh();
+    if (!message.trim() || busy) return;
+    setBusy(true);
+    setError('');
+
+    try {
+      const sessionId = activeSession || (await createSession()).id;
+      await api(`/v1/chat/sessions/${sessionId}/plan-task`, {
+        method: 'POST',
+        body: { objective: message },
+      });
+      setMessage('');
+      await loadSession(sessionId);
+      await onRefresh();
+    } catch (nextError) {
+      setError(nextError.message);
+    } finally {
+      setBusy(false);
+    }
   }
 
   return (
@@ -228,6 +252,12 @@ function Chat({ sessions, actors, projects, onRefresh }) {
         </aside>
         <main>
           <div className="messages">
+            {!sessionDetail && (
+              <div className="message assistant">
+                <b>assistant</b>
+                <p>Select a session or type a message and I will create one automatically.</p>
+              </div>
+            )}
             {(sessionDetail?.messages || []).map((item) => (
               <div className={`message ${item.role}`} key={item.id}>
                 <b>{item.role}</b>
@@ -235,10 +265,11 @@ function Chat({ sessions, actors, projects, onRefresh }) {
               </div>
             ))}
           </div>
+          {error && <div className="error">{error}</div>}
           <textarea value={message} onChange={(event) => setMessage(event.target.value)} />
           <div className="actions">
-            <button onClick={sendMessage}>Send</button>
-            <button onClick={planTask}>Plan task</button>
+            <button disabled={busy} onClick={sendMessage}>{busy ? 'Working...' : 'Send'}</button>
+            <button disabled={busy} onClick={planTask}>Plan task</button>
           </div>
         </main>
       </div>
