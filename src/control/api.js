@@ -1,7 +1,11 @@
 import http from 'node:http';
+import fs from 'node:fs/promises';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 
 import { z } from 'zod';
 
+import { listActors } from './actors.js';
 import { normalizeTaskContract } from './taskContract.js';
 
 const jsonHeaders = {
@@ -35,6 +39,61 @@ const pauseSchema = z
   })
   .partial()
   .strict();
+
+const createChatSessionSchema = z
+  .object({
+    title: z.string().trim().min(1).max(160).optional(),
+    actor: z.string().trim().min(1).optional(),
+    projectPath: z.string().trim().min(1).optional(),
+  })
+  .strict();
+
+const chatMessageSchema = z
+  .object({
+    content: z.string().trim().min(1).max(12000),
+    actor: z.string().trim().min(1).optional(),
+  })
+  .strict();
+
+const draftTaskSchema = z
+  .object({
+    objective: z.string().trim().min(1).max(2000).optional(),
+    actor: z.string().trim().min(1).optional(),
+  })
+  .partial()
+  .strict();
+
+const planChatTaskSchema = z
+  .object({
+    objective: z.string().trim().min(1).max(2000).optional(),
+    contract: z.unknown().optional(),
+  })
+  .partial()
+  .strict();
+
+const approveChatTaskSchema = z
+  .object({
+    taskId: z.string().uuid(),
+  })
+  .strict();
+
+const addProjectSchema = z
+  .object({
+    name: z.string().trim().min(1).max(120).optional(),
+    rootPath: z.string().trim().min(1),
+  })
+  .strict();
+
+const staticTypes = new Map([
+  ['.html', 'text/html; charset=utf-8'],
+  ['.js', 'text/javascript; charset=utf-8'],
+  ['.css', 'text/css; charset=utf-8'],
+  ['.json', 'application/json; charset=utf-8'],
+  ['.svg', 'image/svg+xml'],
+  ['.ico', 'image/x-icon'],
+]);
+const controlModuleDir = path.dirname(fileURLToPath(import.meta.url));
+const repoRoot = path.resolve(controlModuleDir, '../..');
 
 function sendJson(res, statusCode, payload) {
   res.writeHead(statusCode, jsonHeaders);
@@ -116,12 +175,50 @@ function isMutatingRequest(req) {
   return req.method !== 'GET' && req.method !== 'HEAD';
 }
 
+async function sendStaticFile(req, res, uiConfig, pathname) {
+  if (!uiConfig?.enabled || !uiConfig.distDir) {
+    return false;
+  }
+
+  const distRoot = path.isAbsolute(uiConfig.distDir)
+    ? uiConfig.distDir
+    : path.resolve(repoRoot, uiConfig.distDir);
+  const requestPath = pathname === '/' ? '/index.html' : pathname;
+  const candidate = path.resolve(distRoot, `.${requestPath}`);
+  const relative = path.relative(distRoot, candidate);
+
+  if (relative.startsWith('..') || path.isAbsolute(relative)) {
+    return false;
+  }
+
+  let filePath = candidate;
+  let data = await fs.readFile(filePath).catch(() => null);
+
+  if (!data && !path.extname(candidate)) {
+    filePath = path.join(distRoot, 'index.html');
+    data = await fs.readFile(filePath).catch(() => null);
+  }
+
+  if (!data) {
+    return false;
+  }
+
+  res.writeHead(200, {
+    'content-type': staticTypes.get(path.extname(filePath)) ?? 'application/octet-stream',
+  });
+  res.end(req.method === 'HEAD' ? undefined : data);
+  return true;
+}
+
 export function createControlApiServer({
   orchestrator,
   logger,
   host,
   port,
   token,
+  chatService = null,
+  projectService = null,
+  uiConfig = null,
 }) {
   if (!orchestrator) {
     throw new Error('Control API requires an orchestrator instance');
@@ -178,6 +275,165 @@ export function createControlApiServer({
         const limit = parseLimit(requestUrl.searchParams.get('limit'), 20);
         const skills = await orchestrator.listSkills({ includeDisabled, limit });
         sendJson(res, 200, { data: skills });
+        return;
+      }
+
+      if (pathname === '/v1/chat/actors' && req.method === 'GET') {
+        sendJson(res, 200, { data: listActors() });
+        return;
+      }
+
+      if (pathname === '/v1/projects' && req.method === 'GET') {
+        if (!projectService) {
+          sendJson(res, 503, {
+            error: 'unavailable',
+            message: 'Project service is not configured',
+          });
+          return;
+        }
+
+        sendJson(res, 200, { data: await projectService.listProjects() });
+        return;
+      }
+
+      if (pathname === '/v1/projects' && req.method === 'POST') {
+        if (!projectService) {
+          sendJson(res, 503, {
+            error: 'unavailable',
+            message: 'Project service is not configured',
+          });
+          return;
+        }
+
+        const parsed = addProjectSchema.parse(await readJsonBody(req));
+        const project = await projectService.addProject(parsed);
+        sendJson(res, 201, { data: project });
+        return;
+      }
+
+      if (pathname === '/v1/chat/sessions' && req.method === 'GET') {
+        if (!chatService) {
+          sendJson(res, 503, {
+            error: 'unavailable',
+            message: 'Chat service is not configured',
+          });
+          return;
+        }
+
+        const limit = parseLimit(requestUrl.searchParams.get('limit'), 30);
+        sendJson(res, 200, { data: await chatService.listSessions(limit) });
+        return;
+      }
+
+      if (pathname === '/v1/chat/sessions' && req.method === 'POST') {
+        if (!chatService) {
+          sendJson(res, 503, {
+            error: 'unavailable',
+            message: 'Chat service is not configured',
+          });
+          return;
+        }
+
+        const parsed = createChatSessionSchema.parse(await readJsonBody(req));
+        const session = await chatService.createSession(parsed);
+        sendJson(res, 201, { data: session });
+        return;
+      }
+
+      const chatSessionMatch = pathname.match(/^\/v1\/chat\/sessions\/([0-9a-f-]{36})$/i);
+      if (chatSessionMatch && req.method === 'GET') {
+        if (!chatService) {
+          sendJson(res, 503, {
+            error: 'unavailable',
+            message: 'Chat service is not configured',
+          });
+          return;
+        }
+
+        const session = await chatService.getSession(chatSessionMatch[1]);
+        if (!session) {
+          sendJson(res, 404, {
+            error: 'not_found',
+            message: 'Chat session not found',
+          });
+          return;
+        }
+
+        sendJson(res, 200, { data: session });
+        return;
+      }
+
+      const chatMessagesMatch = pathname.match(
+        /^\/v1\/chat\/sessions\/([0-9a-f-]{36})\/messages$/i
+      );
+      if (chatMessagesMatch && req.method === 'POST') {
+        const parsed = chatMessageSchema.parse(await readJsonBody(req));
+        const result = await chatService?.appendMessage(chatMessagesMatch[1], parsed);
+        if (!result) {
+          sendJson(res, chatService ? 404 : 503, {
+            error: chatService ? 'not_found' : 'unavailable',
+            message: chatService ? 'Chat session not found' : 'Chat service is not configured',
+          });
+          return;
+        }
+
+        sendJson(res, 201, { data: result });
+        return;
+      }
+
+      const draftTaskMatch = pathname.match(
+        /^\/v1\/chat\/sessions\/([0-9a-f-]{36})\/draft-task$/i
+      );
+      if (draftTaskMatch && req.method === 'POST') {
+        const parsed = draftTaskSchema.parse(await readJsonBody(req));
+        const result = await chatService?.draftTask(draftTaskMatch[1], parsed);
+        if (!result) {
+          sendJson(res, chatService ? 404 : 503, {
+            error: chatService ? 'not_found' : 'unavailable',
+            message: chatService ? 'Chat session not found' : 'Chat service is not configured',
+          });
+          return;
+        }
+
+        sendJson(res, 201, { data: result });
+        return;
+      }
+
+      const planTaskMatch = pathname.match(
+        /^\/v1\/chat\/sessions\/([0-9a-f-]{36})\/plan-task$/i
+      );
+      if (planTaskMatch && req.method === 'POST') {
+        const parsed = planChatTaskSchema.parse(await readJsonBody(req));
+        const result = await chatService?.planTask(planTaskMatch[1], parsed);
+        if (!result) {
+          sendJson(res, chatService ? 404 : 503, {
+            error: chatService ? 'not_found' : 'unavailable',
+            message: chatService ? 'Chat session not found' : 'Chat service is not configured',
+          });
+          return;
+        }
+
+        sendJson(res, 201, { data: result });
+        return;
+      }
+
+      const approveChatTaskMatch = pathname.match(
+        /^\/v1\/chat\/sessions\/([0-9a-f-]{36})\/approve-task$/i
+      );
+      if (approveChatTaskMatch && req.method === 'POST') {
+        const parsed = approveChatTaskSchema.parse(await readJsonBody(req));
+        const result = await chatService?.approveTask(approveChatTaskMatch[1], parsed);
+        if (!result) {
+          sendJson(res, chatService ? 409 : 503, {
+            error: chatService ? 'conflict' : 'unavailable',
+            message: chatService
+              ? 'Task is not waiting execution approval'
+              : 'Chat service is not configured',
+          });
+          return;
+        }
+
+        sendJson(res, 200, { data: result });
         return;
       }
 
@@ -348,6 +604,14 @@ export function createControlApiServer({
       if (pathname === '/v1/resume' && req.method === 'POST') {
         await orchestrator.resume();
         sendJson(res, 200, { data: { status: 'running' } });
+        return;
+      }
+
+      if (
+        (req.method === 'GET' || req.method === 'HEAD') &&
+        !pathname.startsWith('/v1/') &&
+        (await sendStaticFile(req, res, uiConfig, pathname))
+      ) {
         return;
       }
 

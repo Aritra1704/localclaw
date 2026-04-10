@@ -69,6 +69,13 @@ const envSchema = z.object({
     ),
   CONTROL_API_PORT: z.coerce.number().int().positive().default(4173),
   CONTROL_API_TOKEN: z.string().optional(),
+  LOCALCLAW_WORKSPACE_ROOTS: z.string().optional(),
+  UI_ENABLED: z
+    .enum(['true', 'false'])
+    .default('true')
+    .transform((value) => value === 'true'),
+  UI_DIST_DIR: z.string().default('web/dist'),
+  UI_DEV_ORIGIN: z.string().url().default('http://127.0.0.1:5173'),
 });
 
 const parsedEnv = envSchema.safeParse(process.env);
@@ -122,6 +129,13 @@ export const config = {
   controlApiHost: env.CONTROL_API_HOST,
   controlApiPort: env.CONTROL_API_PORT,
   controlApiToken: env.CONTROL_API_TOKEN ?? '',
+  workspaceRoots: (env.LOCALCLAW_WORKSPACE_ROOTS ?? process.cwd())
+    .split(',')
+    .map((value) => value.trim())
+    .filter(Boolean),
+  uiEnabled: env.UI_ENABLED,
+  uiDistDir: env.UI_DIST_DIR,
+  uiDevOrigin: env.UI_DEV_ORIGIN,
 };
 
 export function requireConfig(...keys) {

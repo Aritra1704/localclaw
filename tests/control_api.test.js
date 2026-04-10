@@ -185,3 +185,151 @@ test('control API enforces token on mutating routes and returns deterministic re
     await api.stop();
   }
 });
+
+test('control API exposes project and chat operator endpoints', async () => {
+  const orchestrator = {
+    async getStatusSnapshot() {
+      return { status: 'running', queue: {} };
+    },
+    async listTasks() {
+      return [];
+    },
+    async listPendingApprovals() {
+      return [];
+    },
+    async listSkills() {
+      return [];
+    },
+    async pause() {},
+    async resume() {},
+  };
+  const projectService = {
+    async listProjects() {
+      return {
+        allowedRoots: ['/tmp'],
+        projects: [],
+      };
+    },
+    async addProject(input) {
+      return {
+        id: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
+        name: input.name ?? 'demo',
+        root_path: input.rootPath,
+      };
+    },
+  };
+  const chatService = {
+    async listSessions() {
+      return [];
+    },
+    async createSession(input) {
+      return {
+        id: 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb',
+        title: input.title,
+        actor: input.actor,
+        project_path: input.projectPath,
+      };
+    },
+    async getSession(id) {
+      return {
+        session: { id, title: 'Operator', actor: 'architect' },
+        messages: [],
+        tasks: [],
+      };
+    },
+    async appendMessage(id, input) {
+      return {
+        user: { session_id: id, content: input.content },
+        assistant: { content: 'Safe response' },
+      };
+    },
+    async draftTask() {
+      return {
+        contract: validContract,
+      };
+    },
+    async planTask() {
+      return {
+        task: {
+          id: '11111111-1111-4111-8111-111111111111',
+          status: 'waiting_approval',
+        },
+        plan: {
+          summary: 'Plan preview',
+        },
+      };
+    },
+    async approveTask() {
+      return {
+        task_id: '11111111-1111-4111-8111-111111111111',
+        status: 'approved',
+      };
+    },
+  };
+
+  const api = createControlApiServer({
+    orchestrator,
+    logger,
+    host: '127.0.0.1',
+    port: 0,
+    token: 'test-token',
+    projectService,
+    chatService,
+  });
+
+  const bound = await api.start();
+  const baseUrl = `http://${bound.host}:${bound.port}`;
+
+  try {
+    const projects = await fetch(`${baseUrl}/v1/projects`);
+    assert.equal(projects.status, 200);
+
+    const unauthorizedProject = await fetch(`${baseUrl}/v1/projects`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ rootPath: '/tmp/demo' }),
+    });
+    assert.equal(unauthorizedProject.status, 401);
+
+    const project = await fetch(`${baseUrl}/v1/projects`, {
+      method: 'POST',
+      headers: {
+        authorization: 'Bearer test-token',
+        'content-type': 'application/json',
+      },
+      body: JSON.stringify({ rootPath: '/tmp/demo', name: 'demo' }),
+    });
+    assert.equal(project.status, 201);
+
+    const session = await fetch(`${baseUrl}/v1/chat/sessions`, {
+      method: 'POST',
+      headers: {
+        authorization: 'Bearer test-token',
+        'content-type': 'application/json',
+      },
+      body: JSON.stringify({
+        title: 'Operator',
+        actor: 'architect',
+        projectPath: '/tmp/demo',
+      }),
+    });
+    assert.equal(session.status, 201);
+    const sessionPayload = await session.json();
+    assert.equal(sessionPayload.data.actor, 'architect');
+
+    const message = await fetch(
+      `${baseUrl}/v1/chat/sessions/${sessionPayload.data.id}/messages`,
+      {
+        method: 'POST',
+        headers: {
+          authorization: 'Bearer test-token',
+          'content-type': 'application/json',
+        },
+        body: JSON.stringify({ content: 'Review this project', actor: 'analyst' }),
+      }
+    );
+    assert.equal(message.status, 201);
+  } finally {
+    await api.stop();
+  }
+});

@@ -1381,11 +1381,21 @@ export class Orchestrator {
          priority,
          source,
          project_name,
+         project_path,
+         chat_session_id,
          status
        )
-       VALUES ($1, $2, $3, $4, $5, 'pending')
+       VALUES ($1, $2, $3, $4, $5, $6, $7, 'pending')
        RETURNING id, title, description, status, priority, source, created_at`,
-      [title, description, contract.priority, source, contract.projectName]
+      [
+        title,
+        description,
+        contract.priority,
+        source,
+        contract.projectName,
+        options.projectPath ?? null,
+        options.chatSessionId ?? null,
+      ]
     );
 
     const task = inserted.rows[0];
@@ -1421,7 +1431,7 @@ export class Orchestrator {
          SET
            status = 'waiting_approval',
            project_name = COALESCE(project_name, $2),
-           project_path = COALESCE(project_path, $3),
+           project_path = COALESCE($3, project_path),
            blocked_reason = NULL,
            result = $4::jsonb,
            updated_at = NOW(),
@@ -1429,7 +1439,12 @@ export class Orchestrator {
            lease_expires_at = NULL,
            last_heartbeat_at = NOW()
          WHERE id = $1`,
-        [task.id, contract.projectName, workspaceRoot, JSON.stringify(resultPayload)]
+        [
+          task.id,
+          contract.projectName,
+          options.projectPath ?? workspaceRoot,
+          JSON.stringify(resultPayload),
+        ]
       );
 
       await this.pool.query(

@@ -75,6 +75,9 @@ CONTROL_API_ENABLED=true
 CONTROL_API_HOST=127.0.0.1
 CONTROL_API_PORT=4173
 CONTROL_API_TOKEN=change_me
+LOCALCLAW_WORKSPACE_ROOTS=/Users/aritrarpal/Documents/workspace_biz
+UI_ENABLED=true
+UI_DIST_DIR=web/dist
 ```
 
 Restart with env refresh:
@@ -86,16 +89,38 @@ pm2 restart localclaw --update-env
 Use CLI from project root:
 
 ```bash
+npm run cli -- doctor
 npm run cli -- status
+npm run cli -- projects list
+npm run cli -- projects add /Users/aritrarpal/Documents/workspace_biz/localclaw --name localclaw
+npm run cli -- chat --project /Users/aritrarpal/Documents/workspace_biz/localclaw --actor architect
 npm run cli -- task init --file localclaw.task.json
-npm run cli -- task plan --file localclaw.task.json --token "$CONTROL_API_TOKEN"
-npm run cli -- task run --file localclaw.task.json --approve --token "$CONTROL_API_TOKEN"
+npm run cli -- task plan --file localclaw.task.json
+npm run cli -- task run --file localclaw.task.json --approve
 ```
 
-The CLI waits briefly for the local API before mutating commands. To make manual checks deterministic after a restart:
+The CLI discovers `CONTROL_API_TOKEN` from `.env`, so normal usage should not require pasting the token. It waits briefly for the local API before mutating commands. To make manual checks deterministic after a restart:
 
 ```bash
 until curl -sf http://127.0.0.1:4173/health >/dev/null; do sleep 1; done
 ```
 
 Telegram remains focused on alerts and deploy approvals.
+
+## Browser Operator UI
+
+Install/build the Vite UI when dependencies are available:
+
+```bash
+npm --prefix web install
+npm run ui:build
+pm2 restart localclaw --update-env
+```
+
+Open:
+
+```text
+http://127.0.0.1:4173/
+```
+
+The dashboard is read-only without a token. Paste `CONTROL_API_TOKEN` into the mutation token box only when you need to approve, reject, create sessions, add projects, or plan tasks. The UI stores the token in browser session storage only.

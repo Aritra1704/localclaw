@@ -265,3 +265,161 @@ test('cli waits for control API health before mutating requests', async () => {
   assert.match(calls[2].url, /\/v1\/tasks\/plan$/);
   assert.match(capture.out.join(''), /33333333-3333-4333-8333-333333333333/);
 });
+
+test('cli loads CONTROL_API_TOKEN from nearest .env for mutating requests', async () => {
+  const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'localclaw-cli-env-'));
+  const contractPath = path.join(tempRoot, 'task.json');
+  const previousToken = process.env.CONTROL_API_TOKEN;
+  const previousHost = process.env.CONTROL_API_HOST;
+  const previousPort = process.env.CONTROL_API_PORT;
+
+  delete process.env.CONTROL_API_TOKEN;
+  delete process.env.CONTROL_API_HOST;
+  delete process.env.CONTROL_API_PORT;
+
+  const contract = {
+    version: 'task_contract_v1',
+    projectName: 'phase7-env',
+    objective: 'Verify CLI discovers the control API token from the nearest env file.',
+    inScope: ['Load env file'],
+    outOfScope: ['Prompt user for token'],
+    constraints: ['Do not print token'],
+    successCriteria: ['Authorization header is sent'],
+    priority: 'medium',
+    skillHints: [],
+    repoIntent: { publish: false, deploy: false },
+  };
+
+  await fs.writeFile(contractPath, JSON.stringify(contract, null, 2));
+  await fs.writeFile(
+    path.join(tempRoot, '.env'),
+    [
+      'CONTROL_API_HOST=127.0.0.1',
+      'CONTROL_API_PORT=4173',
+      'CONTROL_API_TOKEN=nearest-env-token',
+    ].join('\n')
+  );
+
+  const calls = [];
+  const fetchImpl = async (url, options = {}) => {
+    calls.push({ url, options });
+    if (url.endsWith('/health')) {
+      return {
+        ok: true,
+        status: 200,
+        async json() {
+          return { ok: true };
+        },
+      };
+    }
+
+    return {
+      ok: true,
+      status: 201,
+      async json() {
+        return {
+          data: {
+            task: {
+              id: '44444444-4444-4444-8444-444444444444',
+              status: 'waiting_approval',
+            },
+            plan: {
+              summary: 'Plan generated',
+            },
+          },
+        };
+      },
+    };
+  };
+
+  try {
+    const capture = createIO();
+    const exitCode = await runCli(
+      ['task', 'plan', '--file', contractPath],
+      capture.io,
+      { fetchImpl, cwd: tempRoot }
+    );
+
+    assert.equal(exitCode, 0);
+    assert.equal(calls[1].options.headers.authorization, 'Bearer nearest-env-token');
+    assert.doesNotMatch(capture.out.join(''), /nearest-env-token/);
+  } finally {
+    if (previousToken === undefined) {
+      delete process.env.CONTROL_API_TOKEN;
+    } else {
+      process.env.CONTROL_API_TOKEN = previousToken;
+    }
+    if (previousHost === undefined) {
+      delete process.env.CONTROL_API_HOST;
+    } else {
+      process.env.CONTROL_API_HOST = previousHost;
+    }
+    if (previousPort === undefined) {
+      delete process.env.CONTROL_API_PORT;
+    } else {
+      process.env.CONTROL_API_PORT = previousPort;
+    }
+  }
+});
+
+test('cli doctor reports token without printing its value', async () => {
+  const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'localclaw-cli-doctor-'));
+  const previousToken = process.env.CONTROL_API_TOKEN;
+  delete process.env.CONTROL_API_TOKEN;
+  await fs.writeFile(path.join(tempRoot, '.env'), 'CONTROL_API_TOKEN=doctor-secret\n');
+
+  const fetchImpl = async (url) => {
+    if (url.endsWith('/health')) {
+      return {
+        ok: true,
+        status: 200,
+        async json() {
+          return { ok: true };
+        },
+      };
+    }
+    if (url.endsWith('/v1/status')) {
+      return {
+        ok: true,
+        status: 200,
+        async json() {
+          return {
+            data: {
+              bootPhase: 'boot_complete',
+              pollingActive: true,
+            },
+          };
+        },
+      };
+    }
+    if (url.endsWith('/api/tags')) {
+      return {
+        ok: true,
+        status: 200,
+        async json() {
+          return { models: [] };
+        },
+      };
+    }
+    throw new Error(`unexpected url ${url}`);
+  };
+
+  try {
+    const capture = createIO();
+    const exitCode = await runCli(['doctor'], capture.io, {
+      fetchImpl,
+      cwd: tempRoot,
+      execFileImpl: async () => ({ stdout: '[]' }),
+    });
+
+    assert.equal(exitCode, 0);
+    assert.match(capture.out.join(''), /control token: present/);
+    assert.doesNotMatch(capture.out.join(''), /doctor-secret/);
+  } finally {
+    if (previousToken === undefined) {
+      delete process.env.CONTROL_API_TOKEN;
+    } else {
+      process.env.CONTROL_API_TOKEN = previousToken;
+    }
+  }
+});

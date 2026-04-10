@@ -20,6 +20,8 @@ import { createRailwayClient } from './railway/client.js';
 import { createRailwayDeployer } from './railway/deployer.js';
 import { createSkillManager } from './skills/manager.js';
 import { createControlApiServer } from './control/api.js';
+import { createChatService } from './control/chat.js';
+import { createProjectService } from './control/projects.js';
 import { runMigrations } from './db/migrate.js';
 import { Orchestrator } from './orchestrator.js';
 import { startTelegramBot } from './telegram/bot.js';
@@ -33,6 +35,8 @@ const logger = pino({
 let orchestrator;
 let telegramBot;
 let controlApi;
+let projectService;
+let chatService;
 const BOOT_STAGE_TIMEOUT_MS = 10_000;
 
 async function ensureSsdBasePath() {
@@ -225,6 +229,20 @@ async function bootstrap() {
     ragRetriever,
     skillManager,
   });
+
+  projectService = createProjectService({
+    pool: getPool(),
+    workspaceRoots: config.workspaceRoots,
+  });
+  chatService = createChatService({
+    pool: getPool(),
+    projectService,
+    orchestrator,
+    llmClient: ollamaClient,
+    modelSelector,
+    logger,
+  });
+
   telegramBot = await withTimeout(
     startTelegramBot({
       logger,
@@ -254,6 +272,12 @@ async function bootstrap() {
       host: config.controlApiHost,
       port: config.controlApiPort,
       token: config.controlApiToken,
+      projectService,
+      chatService,
+      uiConfig: {
+        enabled: config.uiEnabled,
+        distDir: config.uiDistDir,
+      },
     });
 
     const bound = await withTimeout(
