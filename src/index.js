@@ -19,6 +19,7 @@ import { createRagRetriever } from './rag/retriever.js';
 import { createRailwayClient } from './railway/client.js';
 import { createRailwayDeployer } from './railway/deployer.js';
 import { createSkillManager } from './skills/manager.js';
+import { createControlApiServer } from './control/api.js';
 import { runMigrations } from './db/migrate.js';
 import { Orchestrator } from './orchestrator.js';
 import { startTelegramBot } from './telegram/bot.js';
@@ -31,6 +32,7 @@ const logger = pino({
 
 let orchestrator;
 let telegramBot;
+let controlApi;
 const BOOT_STAGE_TIMEOUT_MS = 10_000;
 
 async function ensureSsdBasePath() {
@@ -243,6 +245,32 @@ async function bootstrap() {
     'Timed out while starting orchestrator.'
   );
   await setBootPhase('boot_orchestrator_ready');
+
+  if (config.controlApiEnabled) {
+    requireConfig('controlApiToken');
+    controlApi = createControlApiServer({
+      orchestrator,
+      logger,
+      host: config.controlApiHost,
+      port: config.controlApiPort,
+      token: config.controlApiToken,
+    });
+
+    const bound = await withTimeout(
+      controlApi.start(),
+      BOOT_STAGE_TIMEOUT_MS,
+      'Timed out while starting control API.'
+    );
+
+    logger.info(
+      {
+        controlApiHost: bound.host,
+        controlApiPort: bound.port,
+      },
+      'Control API started'
+    );
+  }
+  await setBootPhase('boot_control_api_ready');
   await setBootPhase('boot_complete');
 
   logger.info('LocalClaw bootstrap complete');
@@ -254,6 +282,11 @@ async function shutdown(signal) {
   if (telegramBot) {
     await telegramBot.stop();
     telegramBot = null;
+  }
+
+  if (controlApi) {
+    await controlApi.stop();
+    controlApi = null;
   }
 
   if (orchestrator) {

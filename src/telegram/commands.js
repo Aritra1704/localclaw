@@ -24,7 +24,7 @@ export function createTelegramHandlers(dependencies) {
   return {
     start: async (ctx) => {
       await ctx.reply(
-        'LocalClaw bot is connected.\nCommands: /status /pause /resume /tasks /add /approvals /approve /reject /skills /enable_skill /disable_skill /kill'
+        'LocalClaw bot is connected.\nPrimary control: localclaw CLI (plan/run).\nTelegram commands: /status /tasks /approvals /approve /reject /skills /enable_skill /disable_skill /pause /resume /kill'
       );
     },
 

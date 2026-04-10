@@ -65,3 +65,37 @@ pm2 delete localclaw
 ```bash
 pm2 status
 ```
+
+## CLI-First Control
+
+Enable local control API in `.env`:
+
+```bash
+CONTROL_API_ENABLED=true
+CONTROL_API_HOST=127.0.0.1
+CONTROL_API_PORT=4173
+CONTROL_API_TOKEN=change_me
+```
+
+Restart with env refresh:
+
+```bash
+pm2 restart localclaw --update-env
+```
+
+Use CLI from project root:
+
+```bash
+npm run cli -- status
+npm run cli -- task init --file localclaw.task.json
+npm run cli -- task plan --file localclaw.task.json --token "$CONTROL_API_TOKEN"
+npm run cli -- task run --file localclaw.task.json --approve --token "$CONTROL_API_TOKEN"
+```
+
+The CLI waits briefly for the local API before mutating commands. To make manual checks deterministic after a restart:
+
+```bash
+until curl -sf http://127.0.0.1:4173/health >/dev/null; do sleep 1; done
+```
+
+Telegram remains focused on alerts and deploy approvals.

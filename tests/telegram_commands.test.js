@@ -105,6 +105,13 @@ test('telegram command handlers update agent_state and tasks', async () => {
   assert.equal(taskResult.rows[0].source, 'telegram');
   assert.equal(taskResult.rows[0].status, 'pending');
 
+  await pool.query(
+    `UPDATE tasks
+     SET priority = 'critical'
+     WHERE title = 'LC_TEST_create hello world api'
+       AND source = 'telegram'`
+  );
+
   const tasksReply = await runCommand('tasks', '/tasks');
   assert.match(tasksReply, /LC_TEST_create hello world api/);
 

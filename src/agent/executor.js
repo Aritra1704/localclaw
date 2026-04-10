@@ -57,7 +57,26 @@ export function shouldAttemptAutoPublish(task, plan) {
 }
 
 export function createTaskExecutor({ planner, verifier, toolRegistry }) {
+  async function previewTaskPlan(task, options = {}) {
+    const workspaceRoot = options.workspaceRoot ?? '.';
+    const workspaceSnapshot =
+      options.workspaceSnapshot ??
+      (await collectWorkspaceSnapshot(workspaceRoot, {
+        recursive: true,
+        limit: 50,
+      }));
+
+    return planner.planTask(task, {
+      workspaceRoot,
+      workspaceSnapshot,
+      toolCatalog: toolRegistry.plannerCatalog(),
+      retrievalContext: options.retrievalContext ?? null,
+    });
+  }
+
   return {
+    previewTaskPlan,
+
     async executeTask(task, hooks = {}) {
       const workspaceName = `${slugifyTaskTitle(task.title) || 'task'}-${task.id.slice(0, 8)}`;
       const workspaceRoot = path.join(config.ssdBasePath, 'workspace', workspaceName);
@@ -129,15 +148,8 @@ export function createTaskExecutor({ planner, verifier, toolRegistry }) {
         logStepNumber += 1;
       }
 
-      const workspaceSnapshot = await collectWorkspaceSnapshot(workspaceRoot, {
-        recursive: true,
-        limit: 50,
-      });
-
-      const planning = await planner.planTask(task, {
+      const planning = await previewTaskPlan(task, {
         workspaceRoot,
-        workspaceSnapshot,
-        toolCatalog: toolRegistry.plannerCatalog(),
         retrievalContext: hooks.retrievalContext ?? null,
       });
 

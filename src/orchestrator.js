@@ -1,9 +1,14 @@
 import os from 'node:os';
+import path from 'node:path';
 import process from 'node:process';
 
 import pino from 'pino';
 
 import { config } from './config.js';
+import {
+  buildTaskDescriptionFromContract,
+  buildTaskTitleFromContract,
+} from './control/taskContract.js';
 import { getPool } from './db/client.js';
 
 const logger = pino({
@@ -82,6 +87,14 @@ function formatRetrievedContext(learnings, documentChunks, suggestedSkills = [])
   }
 
   return lines.join('\n').trim();
+}
+
+function slugifyTaskTitle(value) {
+  return `${value ?? ''}`
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '')
+    .slice(0, 40);
 }
 
 export class Orchestrator {
@@ -1352,6 +1365,278 @@ export class Orchestrator {
     await this.setAgentStateValue('pause_reason', reason);
   }
 
+  async createPlannedTask(contract, options = {}) {
+    if (!this.taskExecutor?.previewTaskPlan) {
+      throw new Error('Task executor preview mode is not configured');
+    }
+
+    const source = options.source ?? 'control_api';
+    const title = buildTaskTitleFromContract(contract);
+    const description = buildTaskDescriptionFromContract(contract);
+
+    const inserted = await this.pool.query(
+      `INSERT INTO tasks (
+         title,
+         description,
+         priority,
+         source,
+         project_name,
+         status
+       )
+       VALUES ($1, $2, $3, $4, $5, 'pending')
+       RETURNING id, title, description, status, priority, source, created_at`,
+      [title, description, contract.priority, source, contract.projectName]
+    );
+
+    const task = inserted.rows[0];
+    const workspaceName = `${slugifyTaskTitle(task.title) || 'task'}-${task.id.slice(0, 8)}`;
+    const workspaceRoot = path.join(config.ssdBasePath, 'workspace', workspaceName);
+
+    try {
+      const retrievalContext = await this.buildRetrievalContext(task);
+      const planning = await this.taskExecutor.previewTaskPlan(task, {
+        workspaceRoot,
+        workspaceSnapshot: [],
+        retrievalContext,
+      });
+      const requestedAt = new Date().toISOString();
+
+      const resultPayload = {
+        taskContract: contract,
+        preExecutionPlan: {
+          status: 'pending',
+          requested_at: requestedAt,
+          responded_at: null,
+          responded_via: null,
+          workspace_root: workspaceRoot,
+          model_used: planning.modelUsed,
+          repaired: planning.repaired === true,
+          fallback: planning.fallback === true,
+          plan: planning.plan,
+        },
+      };
+
+      await this.pool.query(
+        `UPDATE tasks
+         SET
+           status = 'waiting_approval',
+           project_name = COALESCE(project_name, $2),
+           project_path = COALESCE(project_path, $3),
+           blocked_reason = NULL,
+           result = $4::jsonb,
+           updated_at = NOW(),
+           locked_by = NULL,
+           lease_expires_at = NULL,
+           last_heartbeat_at = NOW()
+         WHERE id = $1`,
+        [task.id, contract.projectName, workspaceRoot, JSON.stringify(resultPayload)]
+      );
+
+      await this.pool.query(
+        `INSERT INTO task_artifacts (
+           task_id,
+           artifact_type,
+           artifact_path,
+           metadata
+         )
+         VALUES
+           ($1, 'task_contract_v1', $2, $3::jsonb),
+           ($1, 'plan_preview', $4, $5::jsonb)`,
+        [
+          task.id,
+          `task://${task.id}/task_contract_v1`,
+          JSON.stringify({ contract }),
+          `task://${task.id}/plan_preview`,
+          JSON.stringify({
+            summary: planning.plan.summary,
+            modelUsed: planning.modelUsed,
+            repaired: planning.repaired === true,
+            fallback: planning.fallback === true,
+          }),
+        ]
+      );
+
+      await this.logTaskStep(task.id, {
+        stepNumber: 1,
+        stepType: 'plan',
+        modelUsed: planning.modelUsed,
+        status: 'success',
+        inputSummary: task.title,
+        outputSummary: planning.plan.summary,
+        durationMs: planning.durationMs,
+      });
+
+      await this.logTaskStep(task.id, {
+        stepNumber: 2,
+        stepType: 'approval',
+        status: 'success',
+        outputSummary: 'Execution approval requested via control API',
+      });
+
+      return {
+        task: {
+          id: task.id,
+          title: task.title,
+          status: 'waiting_approval',
+          priority: task.priority,
+          source: task.source,
+          project_name: contract.projectName,
+          created_at: task.created_at,
+        },
+        plan: planning.plan,
+        planner: {
+          modelUsed: planning.modelUsed,
+          repaired: planning.repaired === true,
+          fallback: planning.fallback === true,
+        },
+      };
+    } catch (error) {
+      await this.pool.query(
+        `UPDATE tasks
+         SET
+           status = 'failed',
+           blocked_reason = $2,
+           updated_at = NOW(),
+           locked_by = NULL,
+           lease_expires_at = NULL,
+           last_heartbeat_at = NOW()
+         WHERE id = $1`,
+        [task.id, error.message]
+      );
+
+      await this.logTaskStep(task.id, {
+        stepNumber: 999,
+        stepType: 'system',
+        status: 'error',
+        outputSummary: null,
+        errorMessage: error.message,
+      });
+
+      throw error;
+    }
+  }
+
+  async approveTaskExecution(taskId, options = {}) {
+    const result = await this.pool.query(
+      `SELECT id, status, result
+       FROM tasks
+       WHERE id = $1`,
+      [taskId]
+    );
+
+    const task = result.rows[0];
+    const planState = task?.result?.preExecutionPlan;
+    if (
+      !task ||
+      task.status !== 'waiting_approval' ||
+      !planState ||
+      planState.status !== 'pending'
+    ) {
+      return null;
+    }
+
+    const respondedAt = new Date().toISOString();
+    const nextResult = {
+      ...(task.result ?? {}),
+      preExecutionPlan: {
+        ...planState,
+        status: 'approved',
+        responded_at: respondedAt,
+        responded_via: options.respondedVia ?? 'control_api',
+        note: options.note ?? null,
+      },
+    };
+
+    await this.pool.query(
+      `UPDATE tasks
+       SET
+         status = 'pending',
+         blocked_reason = NULL,
+         result = $2::jsonb,
+         updated_at = NOW(),
+         locked_by = NULL,
+         lease_expires_at = NULL,
+         last_heartbeat_at = NOW()
+       WHERE id = $1`,
+      [taskId, JSON.stringify(nextResult)]
+    );
+
+    await this.logTaskStep(taskId, {
+      stepNumber: 3,
+      stepType: 'approval',
+      status: 'success',
+      outputSummary: 'Execution approved; task returned to pending queue',
+    });
+
+    return {
+      task_id: taskId,
+      status: 'approved',
+      responded_at: respondedAt,
+    };
+  }
+
+  async rejectTaskExecution(taskId, options = {}) {
+    const result = await this.pool.query(
+      `SELECT id, status, result
+       FROM tasks
+       WHERE id = $1`,
+      [taskId]
+    );
+
+    const task = result.rows[0];
+    const planState = task?.result?.preExecutionPlan;
+    if (
+      !task ||
+      task.status !== 'waiting_approval' ||
+      !planState ||
+      planState.status !== 'pending'
+    ) {
+      return null;
+    }
+
+    const reason = options.reason ?? 'Execution rejected via control API';
+    const respondedAt = new Date().toISOString();
+    const nextResult = {
+      ...(task.result ?? {}),
+      preExecutionPlan: {
+        ...planState,
+        status: 'rejected',
+        responded_at: respondedAt,
+        responded_via: options.respondedVia ?? 'control_api',
+        reason,
+      },
+    };
+
+    await this.pool.query(
+      `UPDATE tasks
+       SET
+         status = 'blocked',
+         blocked_reason = $2,
+         result = $3::jsonb,
+         updated_at = NOW(),
+         locked_by = NULL,
+         lease_expires_at = NULL,
+         last_heartbeat_at = NOW()
+       WHERE id = $1`,
+      [taskId, reason, JSON.stringify(nextResult)]
+    );
+
+    await this.logTaskStep(taskId, {
+      stepNumber: 3,
+      stepType: 'approval',
+      status: 'error',
+      outputSummary: null,
+      errorMessage: reason,
+    });
+
+    return {
+      task_id: taskId,
+      status: 'rejected',
+      reason,
+      responded_at: respondedAt,
+    };
+  }
+
   async createTask(description, options = {}) {
     const trimmedDescription = description.trim();
     const title =
@@ -1409,6 +1694,63 @@ export class Orchestrator {
     );
 
     return result.rows;
+  }
+
+  async getTaskDetails(taskId, options = {}) {
+    const taskResult = await this.pool.query(
+      `SELECT
+         id,
+         title,
+         description,
+         priority,
+         status,
+         source,
+         project_name,
+         project_path,
+         repo_url,
+         blocked_reason,
+         result,
+         created_at,
+         started_at,
+         completed_at,
+         updated_at
+       FROM tasks
+       WHERE id = $1`,
+      [taskId]
+    );
+
+    const task = taskResult.rows[0];
+    if (!task) {
+      return null;
+    }
+
+    const logLimit =
+      Number.isInteger(options.logLimit) && options.logLimit > 0
+        ? Math.min(options.logLimit, 300)
+        : 120;
+    const logsResult = await this.pool.query(
+      `SELECT
+         step_number,
+         step_type,
+         model_used,
+         tool_called,
+         status,
+         input_summary,
+         output_summary,
+         duration_ms,
+         error_message,
+         created_at
+       FROM agent_logs
+       WHERE task_id = $1
+       ORDER BY created_at ASC
+       LIMIT $2`,
+      [taskId, logLimit]
+    );
+
+    return {
+      task,
+      logs: logsResult.rows,
+    };
   }
 
   async getStatusSnapshot() {

@@ -56,6 +56,19 @@ const envSchema = z.object({
     .enum(['true', 'false'])
     .default('false')
     .transform((value) => value === 'true'),
+  CONTROL_API_ENABLED: z
+    .enum(['true', 'false'])
+    .default('false')
+    .transform((value) => value === 'true'),
+  CONTROL_API_HOST: z
+    .string()
+    .default('127.0.0.1')
+    .refine(
+      (value) => value === '127.0.0.1' || value === 'localhost',
+      'CONTROL_API_HOST must be localhost or 127.0.0.1'
+    ),
+  CONTROL_API_PORT: z.coerce.number().int().positive().default(4173),
+  CONTROL_API_TOKEN: z.string().optional(),
 });
 
 const parsedEnv = envSchema.safeParse(process.env);
@@ -105,6 +118,10 @@ export const config = {
   dockerSandboxEnabled: env.DOCKER_SANDBOX_ENABLED,
   skillsBuiltinDir: env.SKILLS_BUILTIN_DIR,
   skillsAllowGenerated: env.SKILLS_ALLOW_GENERATED,
+  controlApiEnabled: env.CONTROL_API_ENABLED,
+  controlApiHost: env.CONTROL_API_HOST,
+  controlApiPort: env.CONTROL_API_PORT,
+  controlApiToken: env.CONTROL_API_TOKEN ?? '',
 };
 
 export function requireConfig(...keys) {
