@@ -2,6 +2,7 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 
 import { z } from 'zod';
+import { runTerminalCommand } from '../sandbox/manager.js';
 import { shouldIgnoreWorkspaceEntry } from '../project/contract.js';
 
 export const TOOL_DEFINITIONS = [
@@ -69,6 +70,23 @@ export const TOOL_DEFINITIONS = [
     plannerArgs: '{"url":"https://example.com/docs"}',
     argsSchema: z.object({
       url: z.string().url(),
+    }),
+  },
+  {
+    name: 'run_terminal_command',
+    description: 'Execute a bash command to fetch dependencies, run tests, or manage packages locally.',
+    plannerArgs: '{"command":"npm install"}',
+    argsSchema: z.object({
+      command: z.string().min(1),
+    }),
+  },
+  {
+    name: 'bootstrap_model',
+    description: 'Safely download massive external neural network weights (Civitai/HF) to the secure external SSD.',
+    plannerArgs: '{"url":"https://civitai.com/api/...", "filename":"AnimeArt.safetensors"}',
+    argsSchema: z.object({
+      url: z.string().url(),
+      filename: z.string().min(1),
     }),
   },
 ];
@@ -241,14 +259,13 @@ export function createToolRegistry(options = {}) {
           const response = await fetch(args.url);
           if (!response.ok) throw new Error(`HTTP ${response.status}`);
           const text = await response.text();
-          // Basic stripping of HTML tags and scripts to feed clean text to LLM
           const cleanText = text
             .replace(/<style[^>]*>.*<\/style>/gis, '')
             .replace(/<script[^>]*>.*<\/script>/gis, '')
             .replace(/<[^>]+>/g, ' ')
             .replace(/\s+/g, ' ')
             .trim()
-            .slice(0, 15000); // 15k chars is safe for modern context windows
+            .slice(0, 15000);
             
           return {
             summary: `Fetched text from ${args.url}`,
@@ -258,6 +275,36 @@ export function createToolRegistry(options = {}) {
         } catch (error) {
           throw new Error(`Failed to surf web: ${error.message}`);
         }
+      }
+
+      case 'run_terminal_command': {
+        const result = await runTerminalCommand({
+          command: args.command,
+          workspaceRoot,
+        });
+        return {
+          summary: `Executed terminal command: ${args.command}`,
+          output: result.output.length > 8000 ? result.output.slice(0, 8000) + '... (truncated)' : result.output,
+          artifacts: [],
+        };
+      }
+
+      case 'bootstrap_model': {
+        const ssdPath = process.env.OLLAMA_MODELS || '/Volumes/Ari_SSD_01/ollama-models';
+        const absolutePath = path.join(ssdPath, args.filename);
+        
+        const command = `curl -L "${args.url}" -o "${absolutePath}"`;
+        const result = await runTerminalCommand({
+          command,
+          workspaceRoot,
+          timeoutMs: 900000, 
+        });
+
+        return {
+          summary: `Downloaded external model to ${absolutePath}`,
+          output: result.output,
+          artifacts: [],
+        };
       }
 
       default:
