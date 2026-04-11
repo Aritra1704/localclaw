@@ -56,7 +56,7 @@ export function shouldAttemptAutoPublish(task, plan) {
   return true;
 }
 
-export function createTaskExecutor({ planner, verifier, toolRegistry }) {
+export function createTaskExecutor({ planner, verifier, toolRegistry, router }) {
   async function previewTaskPlan(task, options = {}) {
     const workspaceRoot = options.workspaceRoot ?? '.';
     const workspaceSnapshot =
@@ -69,8 +69,10 @@ export function createTaskExecutor({ planner, verifier, toolRegistry }) {
     return planner.planTask(task, {
       workspaceRoot,
       workspaceSnapshot,
+      workspaceSnapshot,
       toolCatalog: toolRegistry.plannerCatalog(),
       retrievalContext: options.retrievalContext ?? null,
+      overrideRole: options.overrideRole ?? null,
     });
   }
 
@@ -148,9 +150,12 @@ export function createTaskExecutor({ planner, verifier, toolRegistry }) {
         logStepNumber += 1;
       }
 
+      const actorRole = router ? await router.classifyTask(task) : 'planner';
+
       const planning = await previewTaskPlan(task, {
         workspaceRoot,
         retrievalContext: hooks.retrievalContext ?? null,
+        overrideRole: actorRole,
       });
 
       await hooks.logStep?.({

@@ -26,6 +26,8 @@ import { runMigrations } from './db/migrate.js';
 import { Orchestrator } from './orchestrator.js';
 import { startTelegramBot } from './telegram/bot.js';
 import { createToolRegistry } from './tools/registry.js';
+import { ReflectionEngine } from './selfimprovement/reflectionEngine.js';
+import { createDynamicRouter } from './agent/router.js';
 
 const logger = pino({
   name: 'localclaw',
@@ -217,6 +219,13 @@ async function bootstrap() {
     planner,
     verifier,
     toolRegistry,
+    router: createDynamicRouter({ client: ollamaClient, modelSelector }),
+  });
+
+  const reflectionEngine = new ReflectionEngine({
+    pool: getPool(),
+    ollamaClient,
+    logger,
   });
 
   orchestrator = new Orchestrator({
@@ -228,6 +237,7 @@ async function bootstrap() {
     ragIngestor,
     ragRetriever,
     skillManager,
+    reflectionEngine,
   });
 
   projectService = createProjectService({

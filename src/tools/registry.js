@@ -63,6 +63,14 @@ export const TOOL_DEFINITIONS = [
       input: z.record(z.string(), z.unknown()).default({}),
     }),
   },
+  {
+    name: 'surf_web',
+    description: 'Fetch and extract text content from a public URL.',
+    plannerArgs: '{"url":"https://example.com/docs"}',
+    argsSchema: z.object({
+      url: z.string().url(),
+    }),
+  },
 ];
 
 export const TOOL_NAMES = TOOL_DEFINITIONS.map((tool) => tool.name);
@@ -226,6 +234,30 @@ export function createToolRegistry(options = {}) {
           output: entries,
           artifacts: [],
         };
+      }
+
+      case 'surf_web': {
+        try {
+          const response = await fetch(args.url);
+          if (!response.ok) throw new Error(`HTTP ${response.status}`);
+          const text = await response.text();
+          // Basic stripping of HTML tags and scripts to feed clean text to LLM
+          const cleanText = text
+            .replace(/<style[^>]*>.*<\/style>/gis, '')
+            .replace(/<script[^>]*>.*<\/script>/gis, '')
+            .replace(/<[^>]+>/g, ' ')
+            .replace(/\s+/g, ' ')
+            .trim()
+            .slice(0, 15000); // 15k chars is safe for modern context windows
+            
+          return {
+            summary: `Fetched text from ${args.url}`,
+            output: cleanText || 'No visible text found on page.',
+            artifacts: [],
+          };
+        } catch (error) {
+          throw new Error(`Failed to surf web: ${error.message}`);
+        }
       }
 
       default:

@@ -1,3 +1,4 @@
+import { statfs } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import process from 'node:process';
@@ -10,6 +11,7 @@ import {
   buildTaskTitleFromContract,
 } from './control/taskContract.js';
 import { getPool } from './db/client.js';
+import { ReflectionEngine } from './selfimprovement/reflectionEngine.js';
 
 const logger = pino({
   name: 'localclaw-orchestrator',
@@ -112,12 +114,18 @@ export class Orchestrator {
     this.ragRetriever = options.ragRetriever ?? null;
     this.skillManager = options.skillManager ?? null;
     this.notifier = options.notifier ?? null;
+    this.reflectionEngine = options.reflectionEngine ?? null;
+    this.reflectionInFlight = false;
+    this.lastReflectionAt = 0;
     this.timer = null;
     this.isRunning = false;
     this.tickInFlight = false;
     this.ragSyncInFlight = false;
     this.lastRagSyncAt = 0;
     this.ragSyncIntervalMs = options.ragSyncIntervalMs ?? RAG_SYNC_INTERVAL_MS;
+    
+    this.activeTasks = new Set();
+    this.maxConcurrency = options.maxConcurrency ?? parseInt(process.env.MAX_CONCURRENT_TASKS || '3', 10);
   }
 
   async start() {
@@ -185,6 +193,7 @@ export class Orchestrator {
       await this.setAgentStateValue('pause_reason', reason);
     }
 
+    await Promise.all(Array.from(this.activeTasks).map(t => t.promise).filter(Boolean));
     this.logger.info('Orchestrator stopped');
   }
 
@@ -196,7 +205,9 @@ export class Orchestrator {
     this.tickInFlight = true;
 
     try {
+      await this.checkSystemHealth();
       await this.syncRagCorpusIfDue();
+      await this.runSelfReflectionIfDue();
       await this.pollActiveDeployments();
 
       const status = await this.getAgentStateValue('status', 'running');
@@ -207,8 +218,12 @@ export class Orchestrator {
 
       await this.processReadyDeployments();
 
+      if (this.activeTasks.size >= this.maxConcurrency) {
+        return;
+      }
+
       const pendingCount = await this.getPendingTaskCount();
-      this.logger.debug({ pendingCount }, 'Polling task queue');
+      this.logger.debug({ pendingCount, activeCount: this.activeTasks.size }, 'Polling task queue');
 
       if (pendingCount === 0) {
         return;
@@ -227,7 +242,11 @@ export class Orchestrator {
         outputSummary: `Picked task "${task.title}" for controlled execution`,
       });
 
-      await this.executeTask(task);
+      const taskObj = { id: task.id, promise: null };
+      taskObj.promise = this.executeTask(task).finally(() => {
+        this.activeTasks.delete(taskObj);
+      });
+      this.activeTasks.add(taskObj);
     } finally {
       this.tickInFlight = false;
     }
@@ -260,6 +279,43 @@ export class Orchestrator {
     } finally {
       this.lastRagSyncAt = Date.now();
       this.ragSyncInFlight = false;
+    }
+  }
+
+  async checkSystemHealth() {
+    try {
+      const stats = await statfs(config.ssdBasePath);
+      const freeGiB = (stats.bavail * stats.bsize) / (1024 ** 3);
+      if (freeGiB < 10) {
+        this.logger.error({ freeGiB }, 'SYSTEM_LOCKDOWN: Free disk space critical (<10GB)');
+        if (this.notifier) {
+          await this.notifier.sendNotification(`🚨 *SYSTEM LOCKDOWN*\nAvailable SSD space dropped to \`${freeGiB.toFixed(2)} GB\`.\nLocalClaw has paused the execution loop to prevent corruption.`);
+        }
+        await this.stop({ status: 'paused', reason: `Disk space critical (<10GB on ${config.ssdBasePath})` });
+        throw new Error('SYSTEM_LOCKDOWN');
+      }
+    } catch (err) {
+      if (err.message === 'SYSTEM_LOCKDOWN') throw err;
+      this.logger.warn({ err }, 'Failed to check system health statfs');
+    }
+  }
+
+  async runSelfReflectionIfDue(force = false) {
+    if (!this.reflectionEngine) return;
+    if (this.reflectionInFlight) return;
+    
+    const now = Date.now();
+    // Run every 4 hours or customizable. 
+    if (!force && now - this.lastReflectionAt < 4 * 60 * 60 * 1000) return;
+
+    this.reflectionInFlight = true;
+    try {
+      await this.reflectionEngine.runReflectionCycle();
+    } catch (error) {
+      this.logger.error({ err: error }, 'Self-reflection cycle failed');
+    } finally {
+      this.lastReflectionAt = Date.now();
+      this.reflectionInFlight = false;
     }
   }
 

@@ -338,7 +338,7 @@ export function createPlanner({ client, modelSelector }) {
     async planTask(task, context) {
       const prompt = buildPlannerPrompt(task, context);
       const startedAt = Date.now();
-      const primaryModel = modelSelector.select('planner');
+      const primaryModel = modelSelector.select(context.overrideRole ?? 'planner');
       const primaryResponse = await client.generate({
         model: primaryModel,
         prompt,
