@@ -1,0 +1,381 @@
+import fs from 'node:fs/promises';
+import path from 'node:path';
+
+import { z } from 'zod';
+import { runTerminalCommand } from '../sandbox/manager.js';
+import { shouldIgnoreWorkspaceEntry } from '../project/contract.js';
+
+export const TOOL_DEFINITIONS = [
+  {
+    name: 'make_dir',
+    description: 'Create a directory inside the workspace.',
+    plannerArgs: '{"path":"docs"}',
+    argsSchema: z.object({
+      path: z.string().min(1),
+    }),
+  },
+  {
+    name: 'write_file',
+    description: 'Create or overwrite a UTF-8 file inside the workspace.',
+    plannerArgs:
+      '{"path":"README.md","content":"Full file contents here","overwrite":true}',
+    argsSchema: z.object({
+      path: z.string().min(1),
+      content: z.string(),
+      overwrite: z.boolean().default(true),
+    }),
+  },
+  {
+    name: 'append_file',
+    description: 'Append UTF-8 content to an existing or new file inside the workspace.',
+    plannerArgs: '{"path":"README.md","content":"Additional text"}',
+    argsSchema: z.object({
+      path: z.string().min(1),
+      content: z.string().min(1),
+    }),
+  },
+  {
+    name: 'read_file',
+    description: 'Read a UTF-8 file from the workspace.',
+    plannerArgs: '{"path":"README.md","maxChars":4000}',
+    argsSchema: z.object({
+      path: z.string().min(1),
+      maxChars: z.number().int().positive().max(50000).default(8000),
+    }),
+  },
+  {
+    name: 'list_files',
+    description: 'List files and directories inside the workspace.',
+    plannerArgs: '{"path":".","recursive":true,"limit":50}',
+    argsSchema: z.object({
+      path: z.string().default('.'),
+      recursive: z.boolean().default(false),
+      limit: z.number().int().positive().max(200).default(50),
+    }),
+  },
+  {
+    name: 'run_skill',
+    description:
+      'Execute an enabled LocalClaw skill from the governed skill registry.',
+    plannerArgs:
+      '{"name":"scaffold_node_http_service","input":{"projectName":"phase4-sample-app"}}',
+    argsSchema: z.object({
+      name: z.string().min(1),
+      input: z.record(z.string(), z.unknown()).default({}),
+    }),
+  },
+  {
+    name: 'surf_web',
+    description: 'Fetch and extract text content from a public URL.',
+    plannerArgs: '{"url":"https://example.com/docs"}',
+    argsSchema: z.object({
+      url: z.string().url(),
+    }),
+  },
+  {
+    name: 'run_terminal_command',
+    description: 'Execute a bash command to fetch dependencies, run tests, or manage packages locally.',
+    plannerArgs: '{"command":"npm install"}',
+    argsSchema: z.object({
+      command: z.string().min(1),
+    }),
+  },
+  {
+    name: 'bootstrap_model',
+    description: 'Safely download massive external neural network weights (Civitai/HF) to the secure external SSD.',
+    plannerArgs: '{"url":"https://civitai.com/api/...", "filename":"AnimeArt.safetensors"}',
+    argsSchema: z.object({
+      url: z.string().url(),
+      filename: z.string().min(1),
+    }),
+  },
+];
+
+export const TOOL_NAMES = TOOL_DEFINITIONS.map((tool) => tool.name);
+
+function assertRelativePath(value) {
+  if (path.isAbsolute(value)) {
+    throw new Error(`Absolute paths are not allowed: ${value}`);
+  }
+}
+
+function resolveWorkspacePath(workspaceRoot, relativePath = '.') {
+  assertRelativePath(relativePath);
+
+  const resolvedPath = path.resolve(workspaceRoot, relativePath);
+  const relative = path.relative(workspaceRoot, resolvedPath);
+
+  if (relative.startsWith('..') || path.isAbsolute(relative)) {
+    throw new Error(`Path escapes workspace root: ${relativePath}`);
+  }
+
+  return resolvedPath;
+}
+
+async function walkWorkspace(currentPath, workspaceRoot, recursive, limit, results) {
+  if (results.length >= limit) {
+    return;
+  }
+
+  const entries = await fs.readdir(currentPath, { withFileTypes: true });
+  const sortedEntries = entries.sort((left, right) => left.name.localeCompare(right.name));
+
+  for (const entry of sortedEntries) {
+    if (results.length >= limit) {
+      break;
+    }
+
+    const absolutePath = path.join(currentPath, entry.name);
+    const relativePath = path.relative(workspaceRoot, absolutePath) || '.';
+
+    if (shouldIgnoreWorkspaceEntry(relativePath)) {
+      continue;
+    }
+
+    results.push({
+      path: relativePath,
+      type: entry.isDirectory() ? 'directory' : 'file',
+    });
+
+    if (recursive && entry.isDirectory()) {
+      await walkWorkspace(absolutePath, workspaceRoot, recursive, limit, results);
+    }
+  }
+}
+
+export async function collectWorkspaceSnapshot(workspaceRoot, options = {}) {
+  const startPath = resolveWorkspacePath(workspaceRoot, options.path ?? '.');
+  const recursive = options.recursive ?? true;
+  const limit = options.limit ?? 100;
+  const results = [];
+
+  await walkWorkspace(startPath, workspaceRoot, recursive, limit, results);
+  return results;
+}
+
+export function createToolRegistry(options = {}) {
+  const skillManager = options.skillManager ?? null;
+  const toolMap = new Map(TOOL_DEFINITIONS.map((tool) => [tool.name, tool]));
+
+  async function runBuiltInTool(name, args, context) {
+    const workspaceRoot = context.workspaceRoot;
+
+    switch (name) {
+      case 'make_dir': {
+        const absolutePath = resolveWorkspacePath(workspaceRoot, args.path);
+        await fs.mkdir(absolutePath, { recursive: true });
+        return {
+          summary: `Created directory ${args.path}`,
+          artifacts: [
+            {
+              artifactType: 'directory',
+              artifactPath: absolutePath,
+              metadata: { relativePath: args.path },
+            },
+          ],
+        };
+      }
+
+      case 'write_file': {
+        const absolutePath = resolveWorkspacePath(workspaceRoot, args.path);
+
+        if (!args.overwrite) {
+          try {
+            await fs.access(absolutePath);
+            throw new Error(`File already exists and overwrite=false: ${args.path}`);
+          } catch (error) {
+            if (error.code !== 'ENOENT') {
+              throw error;
+            }
+          }
+        }
+
+        await fs.mkdir(path.dirname(absolutePath), { recursive: true });
+        await fs.writeFile(absolutePath, args.content, 'utf8');
+
+        return {
+          summary: `Wrote file ${args.path}`,
+          artifacts: [
+            {
+              artifactType: 'file',
+              artifactPath: absolutePath,
+              metadata: {
+                relativePath: args.path,
+                bytesWritten: Buffer.byteLength(args.content, 'utf8'),
+              },
+            },
+          ],
+        };
+      }
+
+      case 'append_file': {
+        const absolutePath = resolveWorkspacePath(workspaceRoot, args.path);
+        await fs.mkdir(path.dirname(absolutePath), { recursive: true });
+        await fs.appendFile(absolutePath, args.content, 'utf8');
+
+        return {
+          summary: `Appended content to ${args.path}`,
+          artifacts: [
+            {
+              artifactType: 'file',
+              artifactPath: absolutePath,
+              metadata: {
+                relativePath: args.path,
+                bytesAppended: Buffer.byteLength(args.content, 'utf8'),
+              },
+            },
+          ],
+        };
+      }
+
+      case 'read_file': {
+        const absolutePath = resolveWorkspacePath(workspaceRoot, args.path);
+        const content = await fs.readFile(absolutePath, 'utf8');
+        const truncatedContent = content.slice(0, args.maxChars);
+
+        return {
+          summary: `Read ${args.path}`,
+          output: truncatedContent,
+          artifacts: [],
+        };
+      }
+
+      case 'list_files': {
+        const entries = await collectWorkspaceSnapshot(workspaceRoot, {
+          path: args.path,
+          recursive: args.recursive,
+          limit: args.limit,
+        });
+
+        return {
+          summary: `Listed ${entries.length} workspace entries`,
+          output: entries,
+          artifacts: [],
+        };
+      }
+
+      case 'surf_web': {
+        try {
+          const response = await fetch(args.url);
+          if (!response.ok) throw new Error(`HTTP ${response.status}`);
+          const text = await response.text();
+          const cleanText = text
+            .replace(/<style[^>]*>.*<\/style>/gis, '')
+            .replace(/<script[^>]*>.*<\/script>/gis, '')
+            .replace(/<[^>]+>/g, ' ')
+            .replace(/\s+/g, ' ')
+            .trim()
+            .slice(0, 15000);
+            
+          return {
+            summary: `Fetched text from ${args.url}`,
+            output: cleanText || 'No visible text found on page.',
+            artifacts: [],
+          };
+        } catch (error) {
+          throw new Error(`Failed to surf web: ${error.message}`);
+        }
+      }
+
+      case 'run_terminal_command': {
+        const result = await runTerminalCommand({
+          command: args.command,
+          workspaceRoot,
+        });
+        return {
+          summary: `Executed terminal command: ${args.command}`,
+          output: result.output.length > 8000 ? result.output.slice(0, 8000) + '... (truncated)' : result.output,
+          artifacts: [],
+        };
+      }
+
+      case 'bootstrap_model': {
+        const ssdPath = process.env.OLLAMA_MODELS || '/Volumes/Ari_SSD_01/ollama-models';
+        const absolutePath = path.join(ssdPath, args.filename);
+        
+        const command = `curl -L "${args.url}" -o "${absolutePath}"`;
+        const result = await runTerminalCommand({
+          command,
+          workspaceRoot,
+          timeoutMs: 900000, 
+        });
+
+        return {
+          summary: `Downloaded external model to ${absolutePath}`,
+          output: result.output,
+          artifacts: [],
+        };
+      }
+
+      default:
+        throw new Error(`Unhandled LocalClaw tool: ${name}`);
+    }
+  }
+
+  return {
+    listTools() {
+      return TOOL_DEFINITIONS.map((tool) => ({
+        name: tool.name,
+        description: tool.description,
+      }));
+    },
+
+    plannerCatalog() {
+      const baseCatalog = TOOL_DEFINITIONS.map(
+        (tool) =>
+          `- ${tool.name}: ${tool.description} Args example: ${tool.plannerArgs}`
+      ).join('\n');
+
+      const skillSummary =
+        typeof skillManager?.plannerSkillSummary === 'function'
+          ? skillManager.plannerSkillSummary()
+          : 'Skill manager not configured.';
+
+      return `${baseCatalog}\n\nEnabled skill registry:\n${skillSummary}`;
+    },
+
+    async runTool(name, rawArgs, context) {
+      const definition = toolMap.get(name);
+      if (!definition) {
+        throw new Error(`Unsupported LocalClaw tool: ${name}`);
+      }
+
+      const args = definition.argsSchema.parse(rawArgs ?? {});
+
+      if (name === 'run_skill') {
+        if (!skillManager?.executeSkill) {
+          throw new Error('Skill manager is not configured.');
+        }
+
+        if (context?.invokedBySkill) {
+          throw new Error('Nested run_skill execution is blocked by policy.');
+        }
+
+        return skillManager.executeSkill({
+          name: args.name,
+          input: args.input,
+          workspaceRoot: context.workspaceRoot,
+          taskId: context.taskId ?? null,
+          toolRunner: async (childToolName, childArgs) => {
+            if (childToolName === 'run_skill') {
+              throw new Error('Skills cannot invoke run_skill recursively.');
+            }
+
+            const childDefinition = toolMap.get(childToolName);
+            if (!childDefinition) {
+              throw new Error(`Unsupported skill tool: ${childToolName}`);
+            }
+
+            const validatedChildArgs = childDefinition.argsSchema.parse(childArgs ?? {});
+            return runBuiltInTool(childToolName, validatedChildArgs, {
+              ...context,
+              invokedBySkill: args.name,
+            });
+          },
+        });
+      }
+
+      return runBuiltInTool(name, args, context);
+    },
+  };
+}

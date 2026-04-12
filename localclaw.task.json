@@ -1,0 +1,29 @@
+{
+  "version": "task_contract_v1",
+  "projectName": "safe-commit",
+  "objective": "Implement the requested feature with tests and keep deployment behavior approval-gated.",
+  "inScope": [
+    "Update source code",
+    "Add or update tests",
+    "Update docs if behavior changes"
+  ],
+  "outOfScope": [
+    "Infrastructure migration",
+    "Unrelated refactors"
+  ],
+  "constraints": [
+    "Use existing architecture",
+    "Do not bypass approval gates"
+  ],
+  "successCriteria": [
+    "Tests pass",
+    "Changes are reviewable and production-safe"
+  ],
+  "priority": "medium",
+  "skillHints": [],
+  "repoIntent": {
+    "publish": false,
+    "deploy": false
+  },
+  "notes": "Optional operator notes"
+}
