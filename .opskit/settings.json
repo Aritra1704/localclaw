@@ -1,0 +1,14 @@
+{
+  "version": 1,
+  "generatedBy": "localclaw",
+  "projectTaskId": "3a374a0b-5bfb-48af-8335-d495cf49ccf3",
+  "projectTaskTitle": "localclaw: Create a minimal landing page in the selected workspace using React +",
+  "deploy": {
+    "provider": "railway",
+    "approvalRequired": true
+  },
+  "hygiene": {
+    "ignoreOsJunk": true,
+    "enforceRepoContract": true
+  }
+}
