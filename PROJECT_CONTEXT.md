@@ -16,13 +16,14 @@ LocalClaw is a local-first autonomous engineering platform that plans work, exec
 - Phase 7A: complete
 - Phase 7B: complete
 - Phase 7C: complete
-- Phase 8: not started
+- Phase 8: complete (V2 Upgrade: Multi-Agent Routing, Reflection Engine, Web Dashboard, Auto-Tooling Sandbox)
+- Phase 9: not started (Live Production Field Testing & Complex Project Execution)
 
 ## Current Focus
 
-- Use the Phase 7 operator cockpit for normal project intake
-- Start the Safe-Commit proving run as Phase 8
-- Keep execution and deploy approval-gated
+- Deploy workloads using the newly unlocked Control Center Web Dashboard `http://localhost:5173`.
+- Test autonomous Auto-Tooling (asking it to download external modules) and watch it route requests dynamically between `gemma4:e4b` and `qwen2.5`.
+- Monitor the `PROJECT_RULES.md` to watch LocalClaw learn from its own mistakes natively overnight.
 
 ## Local Overrides
 

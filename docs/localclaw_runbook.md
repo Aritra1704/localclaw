@@ -9,11 +9,47 @@
 
 ## Start LocalClaw
 
+### First-Time Bootstrap
+
 From the project root:
 
 ```bash
 cd /Users/aritrarpal/Documents/workspace_biz/localclaw
+npm install
+npm --prefix web install
+npm run ui:build
 pm2 start pm2.config.cjs
+until curl -sf http://127.0.0.1:4173/health >/dev/null; do sleep 1; done
+pm2 status
+pm2 logs localclaw
+```
+
+This assumes `.env` is already populated with at least:
+
+```bash
+DATABASE_URL=...
+SSD_BASE_PATH=...
+TELEGRAM_BOT_TOKEN=...
+TELEGRAM_CHAT_ID=...
+OLLAMA_BASE_URL=http://127.0.0.1:11434
+CONTROL_API_ENABLED=true
+CONTROL_API_HOST=127.0.0.1
+CONTROL_API_PORT=4173
+CONTROL_API_TOKEN=...
+UI_ENABLED=true
+UI_DIST_DIR=web/dist
+```
+
+The app runs migrations automatically during boot, so you do not need a separate migrate step for normal startup.
+
+### Normal Startup
+
+If dependencies are already installed and the UI has already been built:
+
+```bash
+cd /Users/aritrarpal/Documents/workspace_biz/localclaw
+pm2 start pm2.config.cjs
+until curl -sf http://127.0.0.1:4173/health >/dev/null; do sleep 1; done
 pm2 status
 pm2 logs localclaw
 ```
@@ -23,6 +59,7 @@ If `localclaw` is already registered in PM2:
 ```bash
 cd /Users/aritrarpal/Documents/workspace_biz/localclaw
 pm2 restart localclaw
+until curl -sf http://127.0.0.1:4173/health >/dev/null; do sleep 1; done
 pm2 logs localclaw
 ```
 
@@ -31,8 +68,45 @@ If you changed `.env`, reload the process with the new environment:
 ```bash
 cd /Users/aritrarpal/Documents/workspace_biz/localclaw
 pm2 restart localclaw --update-env
+until curl -sf http://127.0.0.1:4173/health >/dev/null; do sleep 1; done
 pm2 logs localclaw
 ```
+
+### Foreground Startup
+
+If you want to run LocalClaw in the current terminal instead of PM2:
+
+```bash
+cd /Users/aritrarpal/Documents/workspace_biz/localclaw
+npm start
+```
+
+For watch mode during backend development:
+
+```bash
+cd /Users/aritrarpal/Documents/workspace_biz/localclaw
+npm run dev
+```
+
+### UI Development Mode
+
+For live frontend changes with Vite on `http://127.0.0.1:5173`:
+
+Terminal 1:
+
+```bash
+cd /Users/aritrarpal/Documents/workspace_biz/localclaw
+npm run dev
+```
+
+Terminal 2:
+
+```bash
+cd /Users/aritrarpal/Documents/workspace_biz/localclaw
+npm run ui:dev
+```
+
+Vite proxies `/v1` requests to the control API on `http://127.0.0.1:4173`, so the LocalClaw backend must still be running.
 
 ## Confirm Boot Complete
 
@@ -131,3 +205,15 @@ http://127.0.0.1:4173/
 ```
 
 The dashboard is read-only without a token. Paste `CONTROL_API_TOKEN` into the mutation token box only when you need to approve, reject, create sessions, add projects, or plan tasks. The UI stores the token in browser session storage only.
+
+
+Terminal 1:
+cd /Users/aritrarpal/Documents/workspace_biz/localclaw
+npm run dev
+
+Terminal 2:
+cd /Users/aritrarpal/Documents/workspace_biz/localclaw
+npm run ui:dev
+
+UI:
+http://127.0.0.1:5173/

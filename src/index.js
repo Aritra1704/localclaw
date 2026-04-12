@@ -115,9 +115,7 @@ async function bootstrap() {
   });
 
   if (!ollamaHealth.ok) {
-    throw new Error(
-      `Missing required Ollama models: ${ollamaHealth.missingModels.join(', ')}`
-    );
+    logger.warn({ missing: ollamaHealth.missingModels }, 'Missing required Ollama models. Booting anyway, but execution may fail until weights finish downloading.');
   }
 
   logger.info(

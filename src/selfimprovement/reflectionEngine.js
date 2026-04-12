@@ -118,13 +118,13 @@ Respond ONLY with a JSON object in this format:
     try {
       let currentRules = await fs.readFile(rulesPath, 'utf8');
       if (!currentRules.includes(parsed.new_rule)) {
-        await fs.appendFile(rulesPath, \`\n- \${parsed.new_rule}\n\`);
+        await fs.appendFile(rulesPath, `\n- ${parsed.new_rule}\n`);
         this.logger.info({ rule: parsed.new_rule }, 'Appended new self-improvement rule to PROJECT_RULES.md');
       }
     } catch (fsError) {
       this.logger.warn({ err: fsError }, 'Could not append to PROJECT_RULES.md. It may not exist.');
       // If it doesn't exist, create it
-      await fs.writeFile(rulesPath, \`# LocalClaw Dynamic Rules\n\n- \${parsed.new_rule}\n\`);
+      await fs.writeFile(rulesPath, `# LocalClaw Dynamic Rules\n\n- ${parsed.new_rule}\n`);
     }
   }
 }
