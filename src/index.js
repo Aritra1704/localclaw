@@ -156,10 +156,12 @@ async function bootstrap() {
   const ragIngestor = createRagIngestor({
     embeddingClient: ollamaClient,
     logger,
+    mcpRegistry,
   });
   const ragRetriever = createRagRetriever({
     embeddingClient: ollamaClient,
     logger,
+    mcpRegistry,
   });
   const skillManager = createSkillManager({
     logger,
@@ -248,6 +250,7 @@ async function bootstrap() {
     pool: getPool(),
     ollamaClient,
     logger,
+    mcpRegistry,
   });
 
   orchestrator = new Orchestrator({

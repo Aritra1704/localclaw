@@ -98,6 +98,15 @@ export function createRagIngestor(options = {}) {
   const embeddingClient = options.embeddingClient;
   const logger = options.logger;
   const embedModel = options.embedModel ?? config.modelEmbed;
+  const mcpRegistry = options.mcpRegistry ?? null;
+  const postgresServer = mcpRegistry?.getServer?.('postgres') ?? null;
+
+  async function callPostgresTool(toolName, args, fallback) {
+    if (postgresServer) {
+      return postgresServer.callTool(toolName, args);
+    }
+    return fallback();
+  }
 
   return {
     async ingestProjectDocuments(input = {}) {
@@ -124,12 +133,19 @@ export function createRagIngestor(options = {}) {
         const checksum = createChecksum(normalizedContent);
         const title = deriveTitle(relativePath, normalizedContent);
 
-        const existingResult = await pool.query(
-          `SELECT id, checksum
-           FROM documents
-           WHERE source_path = $1
-           LIMIT 1`,
-          [relativePath]
+        const existingResult = await callPostgresTool(
+          'get_document_by_source_path',
+          {
+            sourcePath: relativePath,
+          },
+          () =>
+            pool.query(
+              `SELECT id, checksum
+               FROM documents
+               WHERE source_path = $1
+               LIMIT 1`,
+              [relativePath]
+            )
         );
 
         const existing = existingResult.rows[0] ?? null;
@@ -139,39 +155,68 @@ export function createRagIngestor(options = {}) {
         }
 
         let documentId = existing?.id ?? null;
-        if (!documentId) {
-          const created = await pool.query(
-            `INSERT INTO documents (source_type, source_path, title, checksum)
-             VALUES ('project_doc', $1, $2, $3)
-             RETURNING id`,
-            [relativePath, title, checksum]
-          );
-          documentId = created.rows[0].id;
-        } else {
-          await pool.query(
-            `UPDATE documents
-             SET title = $2, checksum = $3
-             WHERE id = $1`,
-            [documentId, title, checksum]
-          );
-        }
-
-        await pool.query(
-          `DELETE FROM embeddings_index
-           WHERE document_chunk_id IN (
-             SELECT id FROM document_chunks WHERE document_id = $1
-           )`,
-          [documentId]
+        const upsertedDocument = await callPostgresTool(
+          'upsert_document_record',
+          {
+            id: documentId,
+            sourceType: 'project_doc',
+            sourcePath: relativePath,
+            title,
+            checksum,
+          },
+          () =>
+            !documentId
+              ? pool.query(
+                  `INSERT INTO documents (source_type, source_path, title, checksum)
+                   VALUES ('project_doc', $1, $2, $3)
+                   RETURNING id`,
+                  [relativePath, title, checksum]
+                )
+              : pool.query(
+                  `UPDATE documents
+                   SET title = $2, checksum = $3
+                   WHERE id = $1
+                   RETURNING id`,
+                  [documentId, title, checksum]
+                )
         );
-        await pool.query('DELETE FROM document_chunks WHERE document_id = $1', [documentId]);
+        documentId = upsertedDocument.rows[0].id;
+
+        await callPostgresTool(
+          'delete_document_embeddings_by_document',
+          { documentId },
+          () =>
+            pool.query(
+              `DELETE FROM embeddings_index
+               WHERE document_chunk_id IN (
+                 SELECT id FROM document_chunks WHERE document_id = $1
+               )`,
+              [documentId]
+            )
+        );
+        await callPostgresTool(
+          'delete_document_chunks_by_document',
+          { documentId },
+          () => pool.query('DELETE FROM document_chunks WHERE document_id = $1', [documentId])
+        );
 
         const chunks = chunkDocumentText(normalizedContent);
         for (const chunk of chunks) {
-          const insertedChunk = await pool.query(
-            `INSERT INTO document_chunks (document_id, chunk_index, content, token_estimate)
-             VALUES ($1, $2, $3, $4)
-             RETURNING id`,
-            [documentId, chunk.chunkIndex, chunk.content, chunk.tokenEstimate]
+          const insertedChunk = await callPostgresTool(
+            'insert_document_chunk',
+            {
+              documentId,
+              chunkIndex: chunk.chunkIndex,
+              content: chunk.content,
+              tokenEstimate: chunk.tokenEstimate,
+            },
+            () =>
+              pool.query(
+                `INSERT INTO document_chunks (document_id, chunk_index, content, token_estimate)
+                 VALUES ($1, $2, $3, $4)
+                 RETURNING id`,
+                [documentId, chunk.chunkIndex, chunk.content, chunk.tokenEstimate]
+              )
           );
           summary.chunksUpserted += 1;
 
@@ -185,12 +230,21 @@ export function createRagIngestor(options = {}) {
               input: chunk.content,
             });
 
-            await pool.query(
-              `INSERT INTO embeddings_index (document_chunk_id, model_tag, embedding)
-               VALUES ($1, $2, $3::jsonb)
-               ON CONFLICT (document_chunk_id, model_tag)
-               DO UPDATE SET embedding = EXCLUDED.embedding, created_at = NOW()`,
-              [insertedChunk.rows[0].id, embedModel, JSON.stringify(embedded.embedding)]
+            await callPostgresTool(
+              'upsert_chunk_embedding',
+              {
+                documentChunkId: insertedChunk.rows[0].id,
+                modelTag: embedModel,
+                embedding: embedded.embedding,
+              },
+              () =>
+                pool.query(
+                  `INSERT INTO embeddings_index (document_chunk_id, model_tag, embedding)
+                   VALUES ($1, $2, $3::jsonb)
+                   ON CONFLICT (document_chunk_id, model_tag)
+                   DO UPDATE SET embedding = EXCLUDED.embedding, created_at = NOW()`,
+                  [insertedChunk.rows[0].id, embedModel, JSON.stringify(embedded.embedding)]
+                )
             );
 
             summary.embeddingsUpserted += 1;
@@ -210,4 +264,3 @@ export function createRagIngestor(options = {}) {
     },
   };
 }
-

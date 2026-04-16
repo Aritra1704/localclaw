@@ -552,21 +552,26 @@ export class Orchestrator {
   }
 
   async recoverInterruptedTasks() {
-    const result = await this.pool.query(
-      `UPDATE tasks
-       SET
-         status = 'pending',
-         blocked_reason = CASE
-           WHEN blocked_reason IS NULL
-             THEN 'Recovered after LocalClaw restart before task completion.'
-           ELSE blocked_reason
-         END,
-         locked_by = NULL,
-         lease_expires_at = NULL,
-         last_heartbeat_at = NOW(),
-         updated_at = NOW()
-       WHERE status IN ('in_progress', 'verifying')
-       RETURNING id, title`
+    const result = await this.callPostgresTool(
+      'recover_interrupted_tasks',
+      {},
+      () =>
+        this.pool.query(
+          `UPDATE tasks
+           SET
+             status = 'pending',
+             blocked_reason = CASE
+               WHEN blocked_reason IS NULL
+                 THEN 'Recovered after LocalClaw restart before task completion.'
+               ELSE blocked_reason
+             END,
+             locked_by = NULL,
+             lease_expires_at = NULL,
+             last_heartbeat_at = NOW(),
+             updated_at = NOW()
+           WHERE status IN ('in_progress', 'verifying')
+           RETURNING id, title`
+        )
     );
 
     if (result.rowCount === 0) {
@@ -591,66 +596,79 @@ export class Orchestrator {
   }
 
   async getPendingTaskCount() {
-    const result = await this.pool.query(
-      `SELECT COUNT(*)::int AS count
-       FROM tasks
-       WHERE status = 'pending'`
+    const result = await this.callPostgresTool(
+      'count_pending_tasks',
+      {},
+      () =>
+        this.pool.query(
+          `SELECT COUNT(*)::int AS count
+           FROM tasks
+           WHERE status = 'pending'`
+        )
     );
 
     return result.rows[0]?.count ?? 0;
   }
 
   async leaseNextTask() {
-    const client = await this.pool.connect();
+    const result = await this.callPostgresTool(
+      'lease_next_task',
+      { instanceId: this.instanceId },
+      async () => {
+        const client = await this.pool.connect();
 
-    try {
-      await client.query('BEGIN');
+        try {
+          await client.query('BEGIN');
 
-      const result = await client.query(
-        `SELECT id, title, description, priority, project_name, project_path
-         FROM tasks
-         WHERE status = 'pending'
-         ORDER BY
-           CASE priority
-             WHEN 'critical' THEN 1
-             WHEN 'high' THEN 2
-             WHEN 'medium' THEN 3
-             WHEN 'low' THEN 4
-             ELSE 5
-           END,
-           created_at ASC
-         LIMIT 1
-         FOR UPDATE SKIP LOCKED`
-      );
+          const selected = await client.query(
+            `SELECT id, title, description, priority, project_name, project_path
+             FROM tasks
+             WHERE status = 'pending'
+             ORDER BY
+               CASE priority
+                 WHEN 'critical' THEN 1
+                 WHEN 'high' THEN 2
+                 WHEN 'medium' THEN 3
+                 WHEN 'low' THEN 4
+                 ELSE 5
+               END,
+               created_at ASC
+             LIMIT 1
+             FOR UPDATE SKIP LOCKED`
+          );
 
-      const task = result.rows[0];
-      if (!task) {
-        await client.query('COMMIT');
-        return null;
+          const task = selected.rows[0];
+          if (!task) {
+            await client.query('COMMIT');
+            return { rows: [] };
+          }
+
+          const updated = await client.query(
+            `UPDATE tasks
+             SET
+               status = 'in_progress',
+               locked_by = $2,
+               lease_expires_at = NOW() + INTERVAL '5 minutes',
+               last_heartbeat_at = NOW(),
+               started_at = COALESCE(started_at, NOW()),
+               updated_at = NOW()
+             WHERE id = $1
+             RETURNING *`,
+            [task.id, this.instanceId]
+          );
+
+          await client.query('COMMIT');
+          return { rows: updated.rows };
+        } catch (error) {
+          await client.query('ROLLBACK');
+          throw error;
+        } finally {
+          client.release();
+        }
       }
+    );
 
-      const updated = await client.query(
-        `UPDATE tasks
-         SET
-           status = 'in_progress',
-           locked_by = $2,
-           lease_expires_at = NOW() + INTERVAL '5 minutes',
-           last_heartbeat_at = NOW(),
-           started_at = COALESCE(started_at, NOW()),
-           updated_at = NOW()
-         WHERE id = $1
-         RETURNING *`,
-        [task.id, this.instanceId]
-      );
-
-      await client.query('COMMIT');
-      return updated.rows[0];
-    } catch (error) {
-      await client.query('ROLLBACK');
-      throw error;
-    } finally {
-      client.release();
-    }
+    return result.rows[0] ?? null;
   }
 
   async executeTask(task) {
@@ -2543,23 +2561,32 @@ export class Orchestrator {
       Number.isInteger(options.logLimit) && options.logLimit > 0
         ? Math.min(options.logLimit, 300)
         : 120;
-    const logsResult = await this.pool.query(
-      `SELECT
-         step_number,
-         step_type,
-         model_used,
-         tool_called,
-         status,
-         input_summary,
-         output_summary,
-         duration_ms,
-         error_message,
-         created_at
-       FROM agent_logs
-       WHERE task_id = $1
-       ORDER BY created_at ASC
-       LIMIT $2`,
-      [taskId, logLimit]
+    const logsResult = await this.callPostgresTool(
+      'list_task_logs',
+      {
+        taskId,
+        limit: logLimit,
+        order: 'asc',
+      },
+      () =>
+        this.pool.query(
+          `SELECT
+             step_number,
+             step_type,
+             model_used,
+             tool_called,
+             status,
+             input_summary,
+             output_summary,
+             duration_ms,
+             error_message,
+             created_at
+           FROM agent_logs
+           WHERE task_id = $1
+           ORDER BY created_at ASC
+           LIMIT $2`,
+          [taskId, logLimit]
+        )
     );
 
     return {

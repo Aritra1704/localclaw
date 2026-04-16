@@ -28,6 +28,10 @@ const POSTGRES_TOOLS = [
     description: 'Retrieve recent task logs for operator or model context.',
   },
   {
+    name: 'list_task_logs',
+    description: 'List task logs ordered for operator or model inspection.',
+  },
+  {
     name: 'create_task',
     description: 'Insert a task row and return the created task.',
   },
@@ -64,6 +68,22 @@ const POSTGRES_TOOLS = [
     description: 'Refresh lease and heartbeat timestamps for an in-flight task.',
   },
   {
+    name: 'recover_interrupted_tasks',
+    description: 'Re-queue tasks interrupted by restart and return recovered rows.',
+  },
+  {
+    name: 'count_pending_tasks',
+    description: 'Count tasks currently pending in the queue.',
+  },
+  {
+    name: 'lease_next_task',
+    description: 'Lease the next pending task for an orchestrator instance.',
+  },
+  {
+    name: 'list_recent_failed_tasks_without_reflection',
+    description: 'List recent failed tasks missing system-reflection learnings.',
+  },
+  {
     name: 'list_skills_catalog',
     description: 'List skills with optional filters and metrics.',
   },
@@ -86,6 +106,34 @@ const POSTGRES_TOOLS = [
   {
     name: 'insert_skill_run',
     description: 'Insert a skill run audit row.',
+  },
+  {
+    name: 'get_document_by_source_path',
+    description: 'Fetch an indexed document by source path.',
+  },
+  {
+    name: 'upsert_document_record',
+    description: 'Insert or update a document record and return it.',
+  },
+  {
+    name: 'delete_document_embeddings_by_document',
+    description: 'Delete all embeddings attached to a document.',
+  },
+  {
+    name: 'delete_document_chunks_by_document',
+    description: 'Delete all chunks attached to a document.',
+  },
+  {
+    name: 'insert_document_chunk',
+    description: 'Insert a document chunk and return it.',
+  },
+  {
+    name: 'upsert_chunk_embedding',
+    description: 'Insert or update an embedding row for a document chunk.',
+  },
+  {
+    name: 'list_embedding_candidates',
+    description: 'List embedding-backed document candidates for semantic retrieval.',
   },
   {
     name: 'list_project_targets',
@@ -412,19 +460,40 @@ export function createPostgresMcpServer({ pool }) {
             taskId: args.taskId,
             view: 'summary',
           });
-          const logResult = await pool.query(
-            `SELECT step_number, step_type, tool_called, model_used, status, output_summary, error_message, created_at
-             FROM agent_logs
-             WHERE task_id = $1
-             ORDER BY created_at DESC
-             LIMIT $2`,
-            [args.taskId, args.limit ?? 20]
-          );
+          const logResult = await this.callTool('list_task_logs', {
+            taskId: args.taskId,
+            limit: args.limit ?? 20,
+            order: 'desc',
+          });
 
           return {
             task: taskResult.rows[0] ?? null,
-            logs: logResult.rows,
+            logs: logResult.rows ?? [],
           };
+        }
+
+        case 'list_task_logs': {
+          const limit = Math.max(1, Math.min(Number(args.limit ?? 120) || 120, 300));
+          const descending = args.order === 'desc';
+          const result = await pool.query(
+            `SELECT
+               step_number,
+               step_type,
+               model_used,
+               tool_called,
+               status,
+               input_summary,
+               output_summary,
+               duration_ms,
+               error_message,
+               created_at
+             FROM agent_logs
+             WHERE task_id = $1
+             ORDER BY step_number ${descending ? 'DESC' : 'ASC'}, created_at ${descending ? 'DESC' : 'ASC'}
+             LIMIT $2`,
+            [args.taskId, limit]
+          );
+          return { rows: result.rows };
         }
 
         case 'create_task': {
@@ -632,6 +701,107 @@ export function createPostgresMcpServer({ pool }) {
           return { rows: result.rows };
         }
 
+        case 'recover_interrupted_tasks': {
+          const result = await pool.query(
+            `UPDATE tasks
+             SET
+               status = 'pending',
+               blocked_reason = CASE
+                 WHEN blocked_reason IS NULL
+                   THEN 'Recovered after LocalClaw restart before task completion.'
+                 ELSE blocked_reason
+               END,
+               locked_by = NULL,
+               lease_expires_at = NULL,
+               last_heartbeat_at = NOW(),
+               updated_at = NOW()
+             WHERE status IN ('in_progress', 'verifying')
+             RETURNING id, title`
+          );
+          return { rows: result.rows, rowCount: result.rowCount ?? result.rows.length };
+        }
+
+        case 'count_pending_tasks': {
+          const result = await pool.query(
+            `SELECT COUNT(*)::int AS count
+             FROM tasks
+             WHERE status = 'pending'`
+          );
+          return { rows: result.rows };
+        }
+
+        case 'lease_next_task': {
+          if (typeof pool.connect !== 'function') {
+            throw new Error('lease_next_task requires a PostgreSQL pool with connect().');
+          }
+
+          const client = await pool.connect();
+          try {
+            await client.query('BEGIN');
+
+            const selected = await client.query(
+              `SELECT id, title, description, priority, project_name, project_path
+               FROM tasks
+               WHERE status = 'pending'
+               ORDER BY
+                 CASE priority
+                   WHEN 'critical' THEN 1
+                   WHEN 'high' THEN 2
+                   WHEN 'medium' THEN 3
+                   WHEN 'low' THEN 4
+                   ELSE 5
+                 END,
+                 created_at ASC
+               LIMIT 1
+               FOR UPDATE SKIP LOCKED`
+            );
+
+            const task = selected.rows[0] ?? null;
+            if (!task) {
+              await client.query('COMMIT');
+              return { rows: [] };
+            }
+
+            const updated = await client.query(
+              `UPDATE tasks
+               SET
+                 status = 'in_progress',
+                 locked_by = $2,
+                 lease_expires_at = NOW() + INTERVAL '5 minutes',
+                 last_heartbeat_at = NOW(),
+                 started_at = COALESCE(started_at, NOW()),
+                 updated_at = NOW()
+               WHERE id = $1
+               RETURNING *`,
+              [task.id, args.instanceId]
+            );
+
+            await client.query('COMMIT');
+            return { rows: updated.rows };
+          } catch (error) {
+            await client.query('ROLLBACK');
+            throw error;
+          } finally {
+            client.release();
+          }
+        }
+
+        case 'list_recent_failed_tasks_without_reflection': {
+          const limit = Math.max(1, Math.min(Number(args.limit ?? 5) || 5, 50));
+          const hours = Math.max(1, Math.min(Number(args.hours ?? 24) || 24, 24 * 30));
+          const result = await pool.query(
+            `SELECT t.id, t.title, t.description, t.blocked_reason, t.result
+             FROM tasks t
+             LEFT JOIN learnings l ON l.task_id = t.id AND l.category = 'system-reflection'
+             WHERE t.status = 'failed'
+               AND t.updated_at >= NOW() - ($1::int * INTERVAL '1 hour')
+               AND l.id IS NULL
+             LIMIT $2`,
+            [hours, limit]
+          );
+          return { rows: result.rows };
+        }
+
         case 'list_skills_catalog': {
           const includeDisabled = args.includeDisabled ?? true;
           const sourceType = args.sourceType ?? null;
@@ -817,6 +987,97 @@ export function createPostgresMcpServer({ pool }) {
               JSON.stringify(args.inputPayload ?? {}),
               args.outputSummary ?? null,
             ]
+          );
+          return { rows: result.rows };
+        }
+
+        case 'get_document_by_source_path': {
+          const result = await pool.query(
+            `SELECT id, checksum
+             FROM documents
+             WHERE source_path = $1
+             LIMIT 1`,
+            [args.sourcePath]
+          );
+          return { rows: result.rows };
+        }
+
+        case 'upsert_document_record': {
+          const result = args.id
+            ? await pool.query(
+                `UPDATE documents
+                 SET title = $2, checksum = $3
+                 WHERE id = $1
+                 RETURNING id, source_path, title, checksum`,
+                [args.id, args.title, args.checksum]
+              )
+            : await pool.query(
+                `INSERT INTO documents (source_type, source_path, title, checksum)
+                 VALUES ($1, $2, $3, $4)
+                 RETURNING id, source_path, title, checksum`,
+                [args.sourceType ?? 'project_doc', args.sourcePath, args.title, args.checksum]
+              );
+          return { rows: result.rows };
+        }
+
+        case 'delete_document_embeddings_by_document': {
+          const result = await pool.query(
+            `DELETE FROM embeddings_index
+             WHERE document_chunk_id IN (
+               SELECT id FROM document_chunks WHERE document_id = $1
+             )`,
+            [args.documentId]
+          );
+          return { rowCount: result.rowCount ?? 0, rows: [] };
+        }
+
+        case 'delete_document_chunks_by_document': {
+          const result = await pool.query(
+            `DELETE FROM document_chunks WHERE document_id = $1`,
+            [args.documentId]
+          );
+          return { rowCount: result.rowCount ?? 0, rows: [] };
+        }
+
+        case 'insert_document_chunk': {
+          const result = await pool.query(
+            `INSERT INTO document_chunks (document_id, chunk_index, content, token_estimate)
+             VALUES ($1, $2, $3, $4)
+             RETURNING id`,
+            [args.documentId, args.chunkIndex, args.content, args.tokenEstimate]
+          );
+          return { rows: result.rows };
+        }
+
+        case 'upsert_chunk_embedding': {
+          const result = await pool.query(
+            `INSERT INTO embeddings_index (document_chunk_id, model_tag, embedding)
+             VALUES ($1, $2, $3::jsonb)
+             ON CONFLICT (document_chunk_id, model_tag)
+             DO UPDATE SET embedding = EXCLUDED.embedding, created_at = NOW()
+             RETURNING document_chunk_id, model_tag`,
+            [args.documentChunkId, args.modelTag, JSON.stringify(args.embedding ?? [])]
+          );
+          return { rows: result.rows };
+        }
+
+        case 'list_embedding_candidates': {
+          const limit = Math.max(1, Math.min(Number(args.limit ?? 250) || 250, 1000));
+          const result = await pool.query(
+            `SELECT
+               LEFT(document_chunks.content, 320) AS content,
+               documents.title,
+               documents.source_path,
+               embeddings_index.embedding
+             FROM embeddings_index
+             JOIN document_chunks
+               ON document_chunks.id = embeddings_index.document_chunk_id
+             JOIN documents
+               ON documents.id = document_chunks.document_id
+             WHERE embeddings_index.model_tag = $1
+             ORDER BY document_chunks.created_at DESC
+             LIMIT $2`,
+            [args.modelTag, limit]
           );
           return { rows: result.rows };
         }

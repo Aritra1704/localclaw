@@ -16,29 +16,50 @@ export class ReflectionEngine {
     this.ollama = options.ollamaClient ?? createOllamaClient();
     this.modelName = options.modelName ?? config.modelReview;
     this.logger = options.logger ?? logger;
+    this.mcpRegistry = options.mcpRegistry ?? null;
+    this.rulesPath = options.rulesPath ?? path.resolve(process.cwd(), 'PROJECT_RULES.md');
+  }
+
+  getPostgresMcpServer() {
+    return this.mcpRegistry?.getServer?.('postgres') ?? null;
+  }
+
+  async callPostgresTool(toolName, args, fallback) {
+    const postgresServer = this.getPostgresMcpServer();
+    if (postgresServer) {
+      return postgresServer.callTool(toolName, args);
+    }
+
+    return fallback();
   }
 
   async runReflectionCycle() {
     this.logger.info('Starting self-reflection cycle on failed tasks');
-    
-    const client = await this.pool.connect();
-    let failedTasks = [];
 
-    try {
-      // Find failed tasks in the last 24 hours that haven't produced learnings yet
-      const result = await client.query(`
-        SELECT t.id, t.title, t.description, t.blocked_reason, t.result
-        FROM tasks t
-        LEFT JOIN learnings l ON l.task_id = t.id AND l.category = 'system-reflection'
-        WHERE t.status = 'failed' 
-          AND t.updated_at >= NOW() - INTERVAL '24 hours'
-          AND l.id IS NULL
-        LIMIT 5;
-      `);
-      failedTasks = result.rows;
-    } finally {
-      client.release();
-    }
+    const result = await this.callPostgresTool(
+      'list_recent_failed_tasks_without_reflection',
+      {
+        limit: 5,
+        hours: 24,
+      },
+      async () => {
+        const client = await this.pool.connect();
+        try {
+          return client.query(`
+            SELECT t.id, t.title, t.description, t.blocked_reason, t.result
+            FROM tasks t
+            LEFT JOIN learnings l ON l.task_id = t.id AND l.category = 'system-reflection'
+            WHERE t.status = 'failed'
+              AND t.updated_at >= NOW() - INTERVAL '24 hours'
+              AND l.id IS NULL
+            LIMIT 5;
+          `);
+        } finally {
+          client.release();
+        }
+      }
+    );
+    const failedTasks = result.rows;
 
     if (failedTasks.length === 0) {
       this.logger.debug('No new failed tasks require reflection.');
@@ -56,12 +77,21 @@ export class ReflectionEngine {
 
   async reflectOnTask(task) {
     // 1. Fetch step logs
-    const result = await this.pool.query(
-      `SELECT step_number, step_type, tool_called, status, error_message, output_summary 
-       FROM agent_logs 
-       WHERE task_id = $1 
-       ORDER BY step_number ASC`,
-      [task.id]
+    const result = await this.callPostgresTool(
+      'list_task_logs',
+      {
+        taskId: task.id,
+        limit: 200,
+        order: 'asc',
+      },
+      () =>
+        this.pool.query(
+          `SELECT step_number, step_type, tool_called, status, error_message, output_summary
+           FROM agent_logs
+           WHERE task_id = $1
+           ORDER BY step_number ASC`,
+          [task.id]
+        )
     );
     const logs = result.rows;
 
@@ -107,24 +137,34 @@ Respond ONLY with a JSON object in this format:
     }
 
     // 4. Persist in Database
-    await this.pool.query(
-      `INSERT INTO learnings (task_id, category, observation, keywords, confidence_score)
-       VALUES ($1, $2, $3, $4::text[], $5)`,
-      [task.id, 'system-reflection', parsed.observation, parsed.keywords || [], 8]
+    await this.callPostgresTool(
+      'insert_learning',
+      {
+        taskId: task.id,
+        category: 'system-reflection',
+        observation: parsed.observation,
+        keywords: parsed.keywords || [],
+        confidenceScore: 8,
+      },
+      () =>
+        this.pool.query(
+          `INSERT INTO learnings (task_id, category, observation, keywords, confidence_score)
+           VALUES ($1, $2, $3, $4::text[], $5)`,
+          [task.id, 'system-reflection', parsed.observation, parsed.keywords || [], 8]
+        )
     );
 
     // 5. Append to PROJECT_RULES.md
-    const rulesPath = path.resolve(process.cwd(), 'PROJECT_RULES.md');
     try {
-      let currentRules = await fs.readFile(rulesPath, 'utf8');
+      let currentRules = await fs.readFile(this.rulesPath, 'utf8');
       if (!currentRules.includes(parsed.new_rule)) {
-        await fs.appendFile(rulesPath, `\n- ${parsed.new_rule}\n`);
+        await fs.appendFile(this.rulesPath, `\n- ${parsed.new_rule}\n`);
         this.logger.info({ rule: parsed.new_rule }, 'Appended new self-improvement rule to PROJECT_RULES.md');
       }
     } catch (fsError) {
       this.logger.warn({ err: fsError }, 'Could not append to PROJECT_RULES.md. It may not exist.');
       // If it doesn't exist, create it
-      await fs.writeFile(rulesPath, `# LocalClaw Dynamic Rules\n\n- ${parsed.new_rule}\n`);
+      await fs.writeFile(this.rulesPath, `# LocalClaw Dynamic Rules\n\n- ${parsed.new_rule}\n`);
     }
   }
 }

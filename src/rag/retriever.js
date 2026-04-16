@@ -47,6 +47,15 @@ export function createRagRetriever(options = {}) {
   const embeddingClient = options.embeddingClient;
   const logger = options.logger;
   const embedModel = options.embedModel ?? config.modelEmbed;
+  const mcpRegistry = options.mcpRegistry ?? null;
+  const postgresServer = mcpRegistry?.getServer?.('postgres') ?? null;
+
+  async function callPostgresTool(toolName, args, fallback) {
+    if (postgresServer) {
+      return postgresServer.callTool(toolName, args);
+    }
+    return fallback();
+  }
 
   return {
     async retrieveRelevantDocumentChunks(queryText, input = {}) {
@@ -65,17 +74,25 @@ export function createRagRetriever(options = {}) {
         }
 
         const patterns = terms.map((term) => `%${term}%`);
-        const rows = await pool.query(
-          `SELECT
-             LEFT(document_chunks.content, 320) AS content,
-             documents.title,
-             documents.source_path
-           FROM document_chunks
-           JOIN documents ON documents.id = document_chunks.document_id
-           WHERE document_chunks.content ILIKE ANY($1::text[])
-           ORDER BY document_chunks.created_at DESC
-           LIMIT $2`,
-          [patterns, topK]
+        const rows = await callPostgresTool(
+          'search_document_chunks',
+          {
+            keywords: terms,
+            limit: topK,
+          },
+          () =>
+            pool.query(
+              `SELECT
+                 LEFT(document_chunks.content, 320) AS content,
+                 documents.title,
+                 documents.source_path
+               FROM document_chunks
+               JOIN documents ON documents.id = document_chunks.document_id
+               WHERE document_chunks.content ILIKE ANY($1::text[])
+               ORDER BY document_chunks.created_at DESC
+               LIMIT $2`,
+              [patterns, topK]
+            )
         );
 
         return rows.rows;
@@ -91,21 +108,29 @@ export function createRagRetriever(options = {}) {
           input: text,
         });
 
-        const candidates = await pool.query(
-          `SELECT
-             LEFT(document_chunks.content, 320) AS content,
-             documents.title,
-             documents.source_path,
-             embeddings_index.embedding
-           FROM embeddings_index
-           JOIN document_chunks
-             ON document_chunks.id = embeddings_index.document_chunk_id
-           JOIN documents
-             ON documents.id = document_chunks.document_id
-           WHERE embeddings_index.model_tag = $1
-           ORDER BY document_chunks.created_at DESC
-           LIMIT $2`,
-          [embedModel, candidateLimit]
+        const candidates = await callPostgresTool(
+          'list_embedding_candidates',
+          {
+            modelTag: embedModel,
+            limit: candidateLimit,
+          },
+          () =>
+            pool.query(
+              `SELECT
+                 LEFT(document_chunks.content, 320) AS content,
+                 documents.title,
+                 documents.source_path,
+                 embeddings_index.embedding
+               FROM embeddings_index
+               JOIN document_chunks
+                 ON document_chunks.id = embeddings_index.document_chunk_id
+               JOIN documents
+                 ON documents.id = document_chunks.document_id
+               WHERE embeddings_index.model_tag = $1
+               ORDER BY document_chunks.created_at DESC
+               LIMIT $2`,
+              [embedModel, candidateLimit]
+            )
         );
 
         const scored = candidates.rows
