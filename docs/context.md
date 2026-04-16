@@ -23,7 +23,7 @@ As of 2026-04-11, the project status is:
 | Phase 8: Safe-Commit Proving Run | complete | LocalClaw has successfully executed its first major proving mission (Safe-Commit) and stabilized the multi-agent routing engine. |
 | Phase 9: Hardening & Sandbox | complete | Mandatory Docker sandbox escalation, workspace cleanup protections, and operator-safe recovery guardrails are in place. |
 | Phase 10: Specialized Agents | complete | Documentation, Security, and Dependency agents now run before publish, refresh workspace docs, flag risky findings, and create dependency follow-up tasks. |
-| Phase 11: MCP Integration | in progress | Filesystem, retrieval-oriented PostgreSQL access, and GitHub repository operations are being standardized behind internal MCP-style servers. |
+| Phase 11: MCP Integration | complete | Filesystem, GitHub, task/runtime PostgreSQL access, RAG indexing/retrieval, reflection, chat, projects, and skills now run through internal MCP-style servers with verified runtime coverage. |
 | Phase 12: Cognitive Memory | planned | Implementing a Knowledge Graph for codebase semantic mapping beyond simple flat RAG. |
 
 ## 1. Mission
@@ -344,13 +344,14 @@ Inputs:
 
 Actions:
 
-- implement **Filesystem MCP Server**: for high-performance, standardized file operations
-- implement **PostgreSQL MCP Server**: allowing models to query task history and learnings fluidly
-- implement **GitHub MCP Server**: for advanced PR management and CI/CD status monitoring
+- implement **Filesystem MCP Server** for standardized workspace file operations
+- implement **PostgreSQL MCP Server** for task/runtime state, approvals, deployments, chat, projects, skills, RAG indexing/retrieval, and reflection workflows
+- implement **GitHub MCP Server** for repository creation and lookup during publish flows
+- migrate the active runtime paths onto those internal MCP boundaries while retaining direct-SQL fallback compatibility
 
 Outputs:
 
-- decoupled, standardized tool ecosystem compatible with the broader AI engineering landscape
+- decoupled, standardized internal tool ecosystem that isolates runtime capabilities behind MCP-style interfaces and sets up Phase 12 memory work on a stable boundary
 
 ### Phase 12: Knowledge Graph & Cognitive Memory
 

@@ -6,7 +6,7 @@
 - Phase 8: complete. Safe-Commit proving run is finished.
 - Phase 9: complete. Hardening, Docker Sandboxing, and Space Guard are implemented.
 - Phase 10: complete. Specialized Agent Expansion (Security, Docs, Deps) now gates finalization and creates dependency follow-up work.
-- Phase 11: in progress. MCP Server Integration & Tool Standardization.
+- Phase 11: complete. Internal MCP servers now standardize filesystem, PostgreSQL-backed runtime state, RAG indexing/retrieval, reflection, chat, projects, skills, and GitHub operations.
 
 ## Start LocalClaw
 
