@@ -255,6 +255,11 @@ export function createControlApiServer({
         return;
       }
 
+      if (pathname === '/v1/mcp' && req.method === 'GET') {
+        sendJson(res, 200, { data: orchestrator.getMcpStatus() });
+        return;
+      }
+
       if (pathname === '/v1/tasks' && req.method === 'GET') {
         const limit = parseLimit(requestUrl.searchParams.get('limit'), 20);
         const tasks = await orchestrator.listTasks(limit);
@@ -308,6 +313,29 @@ export function createControlApiServer({
         const parsed = addProjectSchema.parse(await readJsonBody(req));
         const project = await projectService.addProject(parsed);
         sendJson(res, 201, { data: project });
+        return;
+      }
+
+      const projectMatch = pathname.match(/^\/v1\/projects\/([0-9a-f-]{36})$/i);
+      if (projectMatch && req.method === 'DELETE') {
+        if (!projectService) {
+          sendJson(res, 503, {
+            error: 'unavailable',
+            message: 'Project service is not configured',
+          });
+          return;
+        }
+
+        const project = await projectService.deleteProject(projectMatch[1]);
+        if (!project) {
+          sendJson(res, 404, {
+            error: 'not_found',
+            message: 'Project not found',
+          });
+          return;
+        }
+
+        sendJson(res, 200, { data: project });
         return;
       }
 

@@ -2,8 +2,12 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 
 import { z } from 'zod';
+import { config } from '../config.js';
+import {
+  collectWorkspaceSnapshot as collectFilesystemSnapshot,
+  createFilesystemMcpServer,
+} from '../mcp/filesystemServer.js';
 import { runTerminalCommand } from '../sandbox/manager.js';
-import { shouldIgnoreWorkspaceEntry } from '../project/contract.js';
 
 export const TOOL_DEFINITIONS = [
   {
@@ -89,171 +93,54 @@ export const TOOL_DEFINITIONS = [
       filename: z.string().min(1),
     }),
   },
-];
-
+  {
+    name: 'system_prune',
+    description: 'Clean up temporary files, old logs, and build artifacts to free up disk space.',
+    plannerArgs: '{"target":"logs","days":7}',
+    argsSchema: z.object({
+    target: z.enum(['logs', 'build_artifacts', 'temp_workspaces', 'backups']),
+    days: z.number().int().positive().default(7),
+    }),
+    },
+    {
+    name: 'security_audit',
+    description: 'Perform a deep security scan on a file or the whole workspace to detect secrets, vulnerabilities, or risky patterns.',
+    plannerArgs: '{"path":"src/auth.js","depth":"deep"}',
+    argsSchema: z.object({
+    path: z.string().default('.'),
+    depth: z.enum(['quick', 'deep']).default('deep'),
+    }),
+    },
+    ];
 export const TOOL_NAMES = TOOL_DEFINITIONS.map((tool) => tool.name);
 
-function assertRelativePath(value) {
-  if (path.isAbsolute(value)) {
-    throw new Error(`Absolute paths are not allowed: ${value}`);
-  }
-}
-
-function resolveWorkspacePath(workspaceRoot, relativePath = '.') {
-  assertRelativePath(relativePath);
-
-  const resolvedPath = path.resolve(workspaceRoot, relativePath);
-  const relative = path.relative(workspaceRoot, resolvedPath);
-
-  if (relative.startsWith('..') || path.isAbsolute(relative)) {
-    throw new Error(`Path escapes workspace root: ${relativePath}`);
-  }
-
-  return resolvedPath;
-}
-
-async function walkWorkspace(currentPath, workspaceRoot, recursive, limit, results) {
-  if (results.length >= limit) {
-    return;
-  }
-
-  const entries = await fs.readdir(currentPath, { withFileTypes: true });
-  const sortedEntries = entries.sort((left, right) => left.name.localeCompare(right.name));
-
-  for (const entry of sortedEntries) {
-    if (results.length >= limit) {
-      break;
-    }
-
-    const absolutePath = path.join(currentPath, entry.name);
-    const relativePath = path.relative(workspaceRoot, absolutePath) || '.';
-
-    if (shouldIgnoreWorkspaceEntry(relativePath)) {
-      continue;
-    }
-
-    results.push({
-      path: relativePath,
-      type: entry.isDirectory() ? 'directory' : 'file',
-    });
-
-    if (recursive && entry.isDirectory()) {
-      await walkWorkspace(absolutePath, workspaceRoot, recursive, limit, results);
-    }
-  }
-}
-
 export async function collectWorkspaceSnapshot(workspaceRoot, options = {}) {
-  const startPath = resolveWorkspacePath(workspaceRoot, options.path ?? '.');
-  const recursive = options.recursive ?? true;
-  const limit = options.limit ?? 100;
-  const results = [];
-
-  await walkWorkspace(startPath, workspaceRoot, recursive, limit, results);
-  return results;
+  return collectFilesystemSnapshot(workspaceRoot, options);
 }
 
 export function createToolRegistry(options = {}) {
   const skillManager = options.skillManager ?? null;
+  const filesystemServer =
+    options.filesystemServer ??
+    options.mcpRegistry?.getServer?.('filesystem') ??
+    createFilesystemMcpServer();
   const toolMap = new Map(TOOL_DEFINITIONS.map((tool) => [tool.name, tool]));
+  const filesystemToolNames = new Set([
+    'make_dir',
+    'write_file',
+    'append_file',
+    'read_file',
+    'list_files',
+  ]);
 
   async function runBuiltInTool(name, args, context) {
     const workspaceRoot = context.workspaceRoot;
 
+    if (filesystemToolNames.has(name)) {
+      return filesystemServer.callTool(name, args, { workspaceRoot });
+    }
+
     switch (name) {
-      case 'make_dir': {
-        const absolutePath = resolveWorkspacePath(workspaceRoot, args.path);
-        await fs.mkdir(absolutePath, { recursive: true });
-        return {
-          summary: `Created directory ${args.path}`,
-          artifacts: [
-            {
-              artifactType: 'directory',
-              artifactPath: absolutePath,
-              metadata: { relativePath: args.path },
-            },
-          ],
-        };
-      }
-
-      case 'write_file': {
-        const absolutePath = resolveWorkspacePath(workspaceRoot, args.path);
-
-        if (!args.overwrite) {
-          try {
-            await fs.access(absolutePath);
-            throw new Error(`File already exists and overwrite=false: ${args.path}`);
-          } catch (error) {
-            if (error.code !== 'ENOENT') {
-              throw error;
-            }
-          }
-        }
-
-        await fs.mkdir(path.dirname(absolutePath), { recursive: true });
-        await fs.writeFile(absolutePath, args.content, 'utf8');
-
-        return {
-          summary: `Wrote file ${args.path}`,
-          artifacts: [
-            {
-              artifactType: 'file',
-              artifactPath: absolutePath,
-              metadata: {
-                relativePath: args.path,
-                bytesWritten: Buffer.byteLength(args.content, 'utf8'),
-              },
-            },
-          ],
-        };
-      }
-
-      case 'append_file': {
-        const absolutePath = resolveWorkspacePath(workspaceRoot, args.path);
-        await fs.mkdir(path.dirname(absolutePath), { recursive: true });
-        await fs.appendFile(absolutePath, args.content, 'utf8');
-
-        return {
-          summary: `Appended content to ${args.path}`,
-          artifacts: [
-            {
-              artifactType: 'file',
-              artifactPath: absolutePath,
-              metadata: {
-                relativePath: args.path,
-                bytesAppended: Buffer.byteLength(args.content, 'utf8'),
-              },
-            },
-          ],
-        };
-      }
-
-      case 'read_file': {
-        const absolutePath = resolveWorkspacePath(workspaceRoot, args.path);
-        const content = await fs.readFile(absolutePath, 'utf8');
-        const truncatedContent = content.slice(0, args.maxChars);
-
-        return {
-          summary: `Read ${args.path}`,
-          output: truncatedContent,
-          artifacts: [],
-        };
-      }
-
-      case 'list_files': {
-        const entries = await collectWorkspaceSnapshot(workspaceRoot, {
-          path: args.path,
-          recursive: args.recursive,
-          limit: args.limit,
-        });
-
-        return {
-          summary: `Listed ${entries.length} workspace entries`,
-          output: entries,
-          artifacts: [],
-        };
-      }
-
       case 'surf_web': {
         try {
           const response = await fetch(args.url);
@@ -303,6 +190,53 @@ export function createToolRegistry(options = {}) {
         return {
           summary: `Downloaded external model to ${absolutePath}`,
           output: result.output,
+          artifacts: [],
+        };
+      }
+
+      case 'system_prune': {
+        let count = 0;
+        const now = Date.now();
+        const maxAgeMs = args.days * 24 * 60 * 60 * 1000;
+
+        const cleanupDir = async (dirPath, filter = () => true) => {
+          try {
+            const entries = await fs.readdir(dirPath, { withFileTypes: true });
+            for (const entry of entries) {
+              const fullPath = path.join(dirPath, entry.name);
+              const stats = await fs.stat(fullPath);
+              if (now - stats.mtimeMs > maxAgeMs && filter(entry, fullPath)) {
+                await fs.rm(fullPath, { recursive: true, force: true });
+                count++;
+              }
+            }
+          } catch (err) {
+            // Ignore missing directories
+          }
+        };
+
+        if (args.target === 'logs') {
+          await cleanupDir(path.join(process.cwd(), 'logs'), (e) => e.name.endsWith('.log'));
+        } else if (args.target === 'backups') {
+          await cleanupDir(path.join(process.cwd(), 'db/backups'), (e) => e.name.endsWith('.sql'));
+        } else if (args.target === 'build_artifacts') {
+          const ssdProjects = config.ssdBasePath || '/Volumes/Ari_SSD_01/PROJECTS/localclaw';
+          try {
+            const projects = await fs.readdir(ssdProjects, { withFileTypes: true });
+            for (const project of projects) {
+              if (project.isDirectory()) {
+                const projectPath = path.join(ssdProjects, project.name);
+                await cleanupDir(path.join(projectPath, 'dist'));
+                await cleanupDir(path.join(projectPath, 'build'));
+                await cleanupDir(path.join(projectPath, '.cache'));
+              }
+            }
+          } catch (err) {}
+        }
+
+        return {
+          summary: `System prune completed for ${args.target}. Removed ${count} items.`,
+          output: `Pruned ${count} items from ${args.target} target.`,
           artifacts: [],
         };
       }

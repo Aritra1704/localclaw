@@ -273,6 +273,20 @@ function getRepoContractFiles(task) {
       ]),
     },
     {
+      relativePath: '.opskit/agents/documentation.md',
+      content: buildAgentDoc('Documentation', [
+        'Keep README and architecture notes aligned with the current code layout.',
+        'Prefer additive updates that preserve operator-authored context.',
+      ]),
+    },
+    {
+      relativePath: '.opskit/agents/dependency.md',
+      content: buildAgentDoc('Dependency', [
+        'Spot vulnerable or stale dependency baselines and create actionable patch tasks.',
+        'Call out missing lockfiles or risky package sourcing before release.',
+      ]),
+    },
+    {
       relativePath: '.opskit/agents/release.md',
       content: buildAgentDoc('Release', [
         'Confirm deploy prerequisites are satisfied.',

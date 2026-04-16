@@ -28,6 +28,30 @@ ${task.description}
   `;
 }
 
+function buildChecklist(steps, options = {}) {
+  const completedCount = Math.max(options.completedCount ?? 0, 0);
+  const currentStepNumber = options.currentStepNumber ?? null;
+  const failedStepNumber = options.failedStepNumber ?? null;
+
+  return (steps ?? []).map((step, index) => {
+    let status = 'pending';
+    if (failedStepNumber === step.stepNumber) {
+      status = 'failed';
+    } else if (step.stepNumber === currentStepNumber) {
+      status = 'current';
+    } else if (index < completedCount) {
+      status = 'completed';
+    }
+
+    return {
+      stepNumber: step.stepNumber,
+      objective: step.objective,
+      tool: step.tool,
+      status,
+    };
+  });
+}
+
 export function shouldAttemptAutoPublish(task, plan) {
   const taskText = `${task.title ?? ''}\n${task.description ?? ''}`.toLowerCase();
 
@@ -56,7 +80,13 @@ export function shouldAttemptAutoPublish(task, plan) {
   return true;
 }
 
-export function createTaskExecutor({ planner, verifier, toolRegistry, router }) {
+export function createTaskExecutor({
+  planner,
+  verifier,
+  toolRegistry,
+  router,
+  specializedReviewer = null,
+}) {
   async function previewTaskPlan(task, options = {}) {
     const workspaceRoot = options.workspaceRoot ?? '.';
     const workspaceSnapshot =
@@ -69,10 +99,10 @@ export function createTaskExecutor({ planner, verifier, toolRegistry, router }) 
     return planner.planTask(task, {
       workspaceRoot,
       workspaceSnapshot,
-      workspaceSnapshot,
       toolCatalog: toolRegistry.plannerCatalog(),
       retrievalContext: options.retrievalContext ?? null,
       overrideRole: options.overrideRole ?? null,
+      onStart: options.onStart,
     });
   }
 
@@ -100,6 +130,27 @@ export function createTaskExecutor({ planner, verifier, toolRegistry, router }) 
         commit: null,
         error: null,
       };
+      let specializedReview = {
+        status: 'passed',
+        summary: 'Specialized review was not configured.',
+        agents: [],
+        artifacts: [],
+        followUpTasks: [],
+      };
+      hooks.runtimeUpdate?.({
+        phase: 'preparing',
+        phaseLabel: 'Preparing workspace',
+        detail: 'Creating the task workspace and seeding local context.',
+        currentModel: null,
+        modelRole: null,
+        usage: null,
+        checklist: [],
+        counts: {
+          completed: 0,
+          total: 0,
+        },
+        currentStep: null,
+      });
 
       const repoContractResult = await seedRepoContract({
         workspaceRoot,
@@ -137,6 +188,11 @@ export function createTaskExecutor({ planner, verifier, toolRegistry, router }) 
         outputSummary: seedWorkspaceResult.summary,
       });
       logStepNumber += 1;
+      hooks.runtimeUpdate?.({
+        phase: 'preparing',
+        phaseLabel: 'Preparing workspace',
+        detail: 'Task brief is written. Cleaning the workspace before planning.',
+      });
 
       const removedJunk = await removeWorkspaceJunk(workspaceRoot);
       if (removedJunk.length > 0) {
@@ -151,11 +207,32 @@ export function createTaskExecutor({ planner, verifier, toolRegistry, router }) 
       }
 
       const actorRole = router ? await router.classifyTask(task) : 'planner';
+      hooks.runtimeUpdate?.({
+        phase: 'planning',
+        phaseLabel: 'Planning task',
+        detail: 'Building a bounded execution plan from the approved task.',
+        currentModel: null,
+        modelRole: 'planner',
+        usage: null,
+      });
 
       const planning = await previewTaskPlan(task, {
         workspaceRoot,
         retrievalContext: hooks.retrievalContext ?? null,
         overrideRole: actorRole,
+        onStart: ({ stage, model }) => {
+          hooks.runtimeUpdate?.({
+            phase: 'planning',
+            phaseLabel: stage === 'repair' ? 'Repairing planner output' : 'Planning task',
+            detail:
+              stage === 'repair'
+                ? 'Primary planner output was invalid. Repairing it with a fallback model.'
+                : 'Planner model is generating the execution checklist.',
+            currentModel: model,
+            modelRole: 'planner',
+            usage: null,
+          });
+        },
       });
 
       await hooks.logStep?.({
@@ -168,9 +245,54 @@ export function createTaskExecutor({ planner, verifier, toolRegistry, router }) 
         durationMs: planning.durationMs,
       });
       logStepNumber += 1;
+      hooks.runtimeUpdate?.({
+        phase: 'acting',
+        phaseLabel: 'Executing plan',
+        detail: planning.plan.summary,
+        currentModel: planning.modelUsed,
+        modelRole: 'planner',
+        usage: planning.usage ?? null,
+        checklist: buildChecklist(planning.plan.steps, {
+          completedCount: 0,
+          currentStepNumber: planning.plan.steps[0]?.stepNumber ?? null,
+        }),
+        counts: {
+          completed: 0,
+          total: planning.plan.steps.length,
+        },
+        currentStep: planning.plan.steps[0]
+          ? {
+              stepNumber: planning.plan.steps[0].stepNumber,
+              objective: planning.plan.steps[0].objective,
+              tool: planning.plan.steps[0].tool,
+            }
+          : null,
+        summary: planning.plan.summary,
+      });
 
       for (const planStep of planning.plan.steps) {
         const toolStartedAt = Date.now();
+        hooks.runtimeUpdate?.({
+          phase: 'acting',
+          phaseLabel: 'Executing plan',
+          detail: `Running step ${planStep.stepNumber} of ${planning.plan.steps.length}.`,
+          currentModel: null,
+          modelRole: null,
+          usage: null,
+          checklist: buildChecklist(planning.plan.steps, {
+            completedCount: Math.max(planStep.stepNumber - 1, 0),
+            currentStepNumber: planStep.stepNumber,
+          }),
+          counts: {
+            completed: Math.max(planStep.stepNumber - 1, 0),
+            total: planning.plan.steps.length,
+          },
+          currentStep: {
+            stepNumber: planStep.stepNumber,
+            objective: planStep.objective,
+            tool: planStep.tool,
+          },
+        });
 
         try {
           const toolResult = await toolRegistry.runTool(planStep.tool, planStep.args, {
@@ -217,17 +339,127 @@ export function createTaskExecutor({ planner, verifier, toolRegistry, router }) 
             errorMessage: error.message,
             durationMs: Date.now() - toolStartedAt,
           });
+          hooks.runtimeUpdate?.({
+            phase: 'failed',
+            phaseLabel: 'Execution failed',
+            detail: error.message,
+            currentModel: null,
+            modelRole: null,
+            usage: null,
+            checklist: buildChecklist(planning.plan.steps, {
+              completedCount: Math.max(planStep.stepNumber - 1, 0),
+              failedStepNumber: planStep.stepNumber,
+            }),
+            counts: {
+              completed: Math.max(planStep.stepNumber - 1, 0),
+              total: planning.plan.steps.length,
+            },
+            currentStep: {
+              stepNumber: planStep.stepNumber,
+              objective: planStep.objective,
+              tool: planStep.tool,
+            },
+          });
 
           throw error;
         }
 
         logStepNumber += 1;
+        hooks.runtimeUpdate?.({
+          phase: 'acting',
+          phaseLabel: 'Executing plan',
+          detail: `Completed step ${planStep.stepNumber} of ${planning.plan.steps.length}.`,
+          currentModel: null,
+          modelRole: null,
+          usage: null,
+          checklist: buildChecklist(planning.plan.steps, {
+            completedCount: planStep.stepNumber,
+            currentStepNumber:
+              planning.plan.steps[planStep.stepNumber]?.stepNumber ?? null,
+          }),
+          counts: {
+            completed: planStep.stepNumber,
+            total: planning.plan.steps.length,
+          },
+          currentStep: planning.plan.steps[planStep.stepNumber]
+            ? {
+                stepNumber: planning.plan.steps[planStep.stepNumber].stepNumber,
+                objective: planning.plan.steps[planStep.stepNumber].objective,
+                tool: planning.plan.steps[planStep.stepNumber].tool,
+              }
+            : null,
+        });
       }
 
+      if (specializedReviewer) {
+        hooks.runtimeUpdate?.({
+          phase: 'reviewing',
+          phaseLabel: 'Running specialized agents',
+          detail: 'Documentation, security, and dependency agents are reviewing the workspace.',
+          currentModel: null,
+          modelRole: null,
+          usage: null,
+          checklist: buildChecklist(planning.plan.steps, {
+            completedCount: planning.plan.steps.length,
+          }),
+          counts: {
+            completed: planning.plan.steps.length,
+            total: planning.plan.steps.length,
+          },
+          currentStep: null,
+        });
+
+        specializedReview = await specializedReviewer.reviewTask(task, {
+          workspaceRoot,
+          workspaceName,
+          plan: planning.plan,
+          toolRuns,
+        });
+        artifacts.push(...(specializedReview.artifacts ?? []));
+
+        for (const agentReview of specializedReview.agents ?? []) {
+          await hooks.logStep?.({
+            stepNumber: logStepNumber,
+            stepType: 'review',
+            toolCalled: `${agentReview.name}_agent`,
+            status: agentReview.status === 'failed' ? 'error' : 'success',
+            inputSummary: agentReview.name,
+            outputSummary: agentReview.summary,
+          });
+          logStepNumber += 1;
+        }
+      }
+
+      hooks.runtimeUpdate?.({
+        phase: 'verifying',
+        phaseLabel: 'Verifying result',
+        detail: 'Reviewing the workspace against the requested success criteria.',
+        currentModel: null,
+        modelRole: 'verifier',
+        usage: null,
+        checklist: buildChecklist(planning.plan.steps, {
+          completedCount: planning.plan.steps.length,
+        }),
+        counts: {
+          completed: planning.plan.steps.length,
+          total: planning.plan.steps.length,
+        },
+        currentStep: null,
+      });
       const verification = await verifier.verifyTask(task, {
         workspaceRoot,
         plan: planning.plan,
         toolRuns,
+        onStart: ({ model }) => {
+          hooks.runtimeUpdate?.({
+            phase: 'verifying',
+            phaseLabel: 'Verifying result',
+            detail: 'Verifier model is reviewing the completed workspace output.',
+            currentModel: model,
+            modelRole: 'verifier',
+            usage: null,
+          });
+        },
       });
 
       await hooks.logStep?.({
@@ -239,15 +471,51 @@ export function createTaskExecutor({ planner, verifier, toolRegistry, router }) 
         outputSummary: verification.review.summary,
       });
       logStepNumber += 1;
+      hooks.runtimeUpdate?.({
+        phase:
+          verification.review.status === 'passed' &&
+          specializedReview.status === 'passed'
+            ? 'publishing'
+            : 'blocked',
+        phaseLabel:
+          verification.review.status === 'passed' &&
+          specializedReview.status === 'passed'
+            ? 'Preparing finalization'
+            : 'Needs review',
+        detail:
+          specializedReview.status === 'passed'
+            ? verification.review.summary
+            : specializedReview.summary,
+        currentModel: verification.modelUsed,
+        modelRole: verification.modelUsed ? 'verifier' : null,
+        usage: verification.usage ?? null,
+        checklist: buildChecklist(planning.plan.steps, {
+          completedCount: planning.plan.steps.length,
+        }),
+        counts: {
+          completed: planning.plan.steps.length,
+          total: planning.plan.steps.length,
+        },
+        currentStep: null,
+      });
 
       const publishRequested = shouldAttemptAutoPublish(task, planning.plan);
 
       if (
         verification.review.status === 'passed' &&
+        specializedReview.status === 'passed' &&
         hooks.publisher?.isEnabled?.() &&
         publishRequested
       ) {
         const publishStartedAt = Date.now();
+        hooks.runtimeUpdate?.({
+          phase: 'publishing',
+          phaseLabel: 'Publishing workspace',
+          detail: 'Pushing the verified workspace to the configured repository.',
+          currentModel: null,
+          modelRole: null,
+          usage: null,
+        });
         try {
           publication = await hooks.publisher.publishWorkspace(task, {
             workspaceRoot,
@@ -294,6 +562,14 @@ export function createTaskExecutor({ planner, verifier, toolRegistry, router }) 
             errorMessage: error.message,
             durationMs: Date.now() - publishStartedAt,
           });
+          hooks.runtimeUpdate?.({
+            phase: 'blocked',
+            phaseLabel: 'Publishing failed',
+            detail: error.message,
+            currentModel: null,
+            modelRole: null,
+            usage: null,
+          });
         }
 
         logStepNumber += 1;
@@ -323,7 +599,13 @@ export function createTaskExecutor({ planner, verifier, toolRegistry, router }) 
           repaired: planning.repaired,
         },
         toolRuns,
-        verification,
+        specializedReview,
+        verification: {
+          review: verification.review,
+          workspaceFiles: verification.workspaceFiles,
+          modelUsed: verification.modelUsed,
+          usedFallback: verification.usedFallback,
+        },
         publication,
         artifacts,
       };

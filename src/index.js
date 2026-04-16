@@ -6,6 +6,7 @@ import pino from 'pino';
 import { config, requireConfig } from './config.js';
 import { createTaskExecutor } from './agent/executor.js';
 import { createPlanner } from './agent/planner.js';
+import { createSpecializedReviewService } from './agent/specializedReview.js';
 import { createVerifier } from './agent/verifier.js';
 import { checkDatabaseConnection, closePool, getPool } from './db/client.js';
 import { createGitClient } from './git/cli.js';
@@ -13,6 +14,10 @@ import { createGitHubClient } from './github/client.js';
 import { createGitHubPublisher } from './github/publisher.js';
 import { createLearningExtractor } from './learnings/extractor.js';
 import { createModelSelector } from './llm/modelSelector.js';
+import { createFilesystemMcpServer } from './mcp/filesystemServer.js';
+import { createGitHubMcpServer } from './mcp/githubServer.js';
+import { createPostgresMcpServer } from './mcp/postgresServer.js';
+import { createMcpRegistry } from './mcp/registry.js';
 import { createOllamaClient } from './llm/ollama.js';
 import { createRagIngestor } from './rag/ingestor.js';
 import { createRagRetriever } from './rag/retriever.js';
@@ -135,9 +140,18 @@ async function bootstrap() {
     client: ollamaClient,
     modelSelector,
   });
+  const specializedReviewer = createSpecializedReviewService({
+    logger,
+  });
   const learningExtractor = createLearningExtractor({
     client: ollamaClient,
     modelSelector,
+  });
+  const mcpRegistry = createMcpRegistry({
+    servers: [
+      createFilesystemMcpServer(),
+      createPostgresMcpServer({ pool: getPool() }),
+    ],
   });
   const ragIngestor = createRagIngestor({
     embeddingClient: ollamaClient,
@@ -152,6 +166,7 @@ async function bootstrap() {
   logger.info({ skillSummary }, 'Skill registry synchronized');
   const toolRegistry = createToolRegistry({
     skillManager,
+    mcpRegistry,
   });
   let publisher = null;
   let deployer = null;
@@ -160,9 +175,14 @@ async function bootstrap() {
     requireConfig('githubPat');
     const gitClient = createGitClient();
     const githubClient = createGitHubClient();
+    const githubServer = createGitHubMcpServer({
+      client: githubClient,
+    });
+    mcpRegistry.registerServer(githubServer);
     publisher = createGitHubPublisher({
       gitClient,
       githubClient,
+      githubServer,
       logger,
     });
 
@@ -215,6 +235,7 @@ async function bootstrap() {
 
   const taskExecutor = createTaskExecutor({
     planner,
+    specializedReviewer,
     verifier,
     toolRegistry,
     router: createDynamicRouter({ client: ollamaClient, modelSelector }),
@@ -236,6 +257,7 @@ async function bootstrap() {
     ragRetriever,
     skillManager,
     reflectionEngine,
+    mcpRegistry,
   });
 
   projectService = createProjectService({

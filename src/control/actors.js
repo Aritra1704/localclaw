@@ -31,6 +31,24 @@ export const ACTORS = {
     system:
       'You are LocalClaw acting as a writer. Focus on clear docs, specs, release notes, and concise communication.',
   },
+  security_reviewer: {
+    label: 'Security Reviewer',
+    modelRole: 'security',
+    system:
+      'You are LocalClaw acting as a security reviewer. Focus on secrets, unsafe permissions, risky shell behavior, and release-blocking vulnerabilities.',
+  },
+  documentation_agent: {
+    label: 'Documentation Agent',
+    modelRole: 'fast',
+    system:
+      'You are LocalClaw acting as a documentation agent. Focus on README accuracy, architecture notes, and concise operator-facing documentation updates.',
+  },
+  dependency_maintainer: {
+    label: 'Dependency Maintainer',
+    modelRole: 'review',
+    system:
+      'You are LocalClaw acting as a dependency maintainer. Focus on vulnerable package baselines, lockfile hygiene, and safe upgrade follow-up tasks.',
+  },
 };
 
 export const actorSchema = z.enum(Object.keys(ACTORS));

@@ -18,7 +18,7 @@ function deriveRepositoryName(task, context) {
   );
 }
 
-export function createGitHubPublisher({ gitClient, githubClient, logger }) {
+export function createGitHubPublisher({ gitClient, githubClient, githubServer = null, logger }) {
   return {
     isEnabled() {
       return (
@@ -40,12 +40,19 @@ export function createGitHubPublisher({ gitClient, githubClient, logger }) {
         throw new Error('Unable to derive a valid GitHub repository name for this task');
       }
 
-      const repository = await githubClient.ensureRepository({
-        owner,
-        name: repositoryName,
-        description: buildRepositoryDescription(task),
-        private: config.githubRepoVisibility !== 'public',
-      });
+      const repository = githubServer
+        ? await githubServer.callTool('ensure_repository', {
+            owner,
+            name: repositoryName,
+            description: buildRepositoryDescription(task),
+            private: config.githubRepoVisibility !== 'public',
+          })
+        : await githubClient.ensureRepository({
+            owner,
+            name: repositoryName,
+            description: buildRepositoryDescription(task),
+            private: config.githubRepoVisibility !== 'public',
+          });
       const publishBranch = repository.default_branch || config.gitDefaultBranch;
 
       await gitClient.initRepository(context.workspaceRoot, {

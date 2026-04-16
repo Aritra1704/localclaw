@@ -99,6 +99,182 @@ function slugifyTaskTitle(value) {
     .slice(0, 40);
 }
 
+function buildChecklistFromPlan(planSteps = [], options = {}) {
+  const completedCount = Math.max(options.completedCount ?? 0, 0);
+  const currentStepNumber = options.currentStepNumber ?? null;
+  const failedStepNumber = options.failedStepNumber ?? null;
+
+  return planSteps.map((step, index) => {
+    let status = 'pending';
+    if (failedStepNumber === step.stepNumber) {
+      status = 'failed';
+    } else if (step.stepNumber === currentStepNumber) {
+      status = 'current';
+    } else if (index < completedCount) {
+      status = 'completed';
+    }
+
+    return {
+      stepNumber: step.stepNumber,
+      objective: step.objective,
+      tool: step.tool,
+      status,
+    };
+  });
+}
+
+function derivePersistedRuntime(task, logs = []) {
+  const plan = task?.result?.preExecutionPlan?.plan ?? task?.result?.plan ?? null;
+  const planSteps = Array.isArray(plan?.steps) ? plan.steps : [];
+  const completedCount = logs.filter(
+    (entry) => entry.step_type === 'act' && entry.status === 'success'
+  ).length;
+  const hasFailedActStep = logs.some(
+    (entry) => entry.step_type === 'act' && entry.status === 'error'
+  );
+  const hasPlanPreview = Boolean(task?.result?.preExecutionPlan);
+
+  let phase = 'idle';
+  let phaseLabel = 'Idle';
+  let detail = 'No transient runtime is available for this task.';
+  let currentStepNumber = null;
+  let failedStepNumber = null;
+
+  if (task?.status === 'waiting_approval') {
+    phase = 'waiting_approval';
+    phaseLabel = 'Waiting for approval';
+    detail = 'Plan preview is ready. Execution has not started yet.';
+  } else if (task?.status === 'pending') {
+    phase = 'queued';
+    phaseLabel = 'Queued';
+    detail = 'Task is queued and waiting for an executor slot.';
+  } else if (task?.status === 'in_progress') {
+    if (completedCount === 0) {
+      phase = 'preparing';
+      phaseLabel = 'Preparing workspace';
+      detail = 'Workspace setup is in progress.';
+    } else if (completedCount < planSteps.length) {
+      phase = 'acting';
+      phaseLabel = 'Executing plan';
+      detail = `Running step ${completedCount + 1} of ${planSteps.length}.`;
+      currentStepNumber = planSteps[completedCount]?.stepNumber ?? null;
+    } else {
+      phase = 'verifying';
+      phaseLabel = 'Verifying result';
+      detail = 'Workspace execution is complete. Verification is in progress.';
+    }
+  } else if (task?.status === 'verifying') {
+    phase = 'verifying';
+    phaseLabel = 'Verifying result';
+    detail = 'Verifier checks are running.';
+  } else if (task?.status === 'blocked') {
+    phase = 'blocked';
+    phaseLabel = 'Blocked';
+    detail = task?.blocked_reason || 'Task requires operator attention.';
+    failedStepNumber = hasFailedActStep
+      ? planSteps[Math.min(completedCount, planSteps.length - 1)]?.stepNumber ?? null
+      : null;
+  } else if (task?.status === 'done') {
+    phase = 'complete';
+    phaseLabel = 'Done';
+    detail = 'Task finished successfully.';
+  } else if (task?.status === 'failed') {
+    phase = 'failed';
+    phaseLabel = 'Failed';
+    detail = task?.blocked_reason || 'Task execution failed.';
+    failedStepNumber = hasFailedActStep
+      ? planSteps[Math.min(completedCount, planSteps.length - 1)]?.stepNumber ?? null
+      : null;
+  }
+
+  const checklist = buildChecklistFromPlan(planSteps, {
+    completedCount:
+      task?.status === 'done' ? planSteps.length : Math.min(completedCount, planSteps.length),
+    currentStepNumber,
+    failedStepNumber,
+  });
+
+  return {
+    live: false,
+    phase,
+    phaseLabel,
+    detail,
+    summary: plan?.summary ?? null,
+    currentModel:
+      task?.result?.verification?.modelUsed ??
+      task?.result?.preExecutionPlan?.model_used ??
+      null,
+    modelRole: hasPlanPreview ? 'planner' : null,
+    usage: null,
+    checklist,
+    counts: {
+      completed: checklist.filter((item) => item.status === 'completed').length,
+      total: checklist.length,
+    },
+    currentStep:
+      checklist.find((item) => item.status === 'current') ??
+      checklist.find((item) => item.status === 'failed') ??
+      null,
+    startedAt: task?.started_at ?? task?.created_at ?? null,
+    updatedAt: task?.updated_at ?? null,
+  };
+}
+
+function mergeRuntimeSnapshots(persisted, live) {
+  if (!live) {
+    return persisted;
+  }
+
+  return {
+    ...persisted,
+    ...live,
+    live: true,
+    checklist: Array.isArray(live.checklist) ? live.checklist : persisted.checklist,
+    counts: live.counts ?? persisted.counts,
+    currentStep:
+      typeof live.currentStep === 'undefined' ? persisted.currentStep : live.currentStep,
+    usage: typeof live.usage === 'undefined' ? persisted.usage : live.usage,
+    currentModel:
+      typeof live.currentModel === 'undefined'
+        ? persisted.currentModel
+        : live.currentModel,
+    modelRole:
+      typeof live.modelRole === 'undefined' ? persisted.modelRole : live.modelRole,
+    summary: typeof live.summary === 'undefined' ? persisted.summary : live.summary,
+    detail: typeof live.detail === 'undefined' ? persisted.detail : live.detail,
+    startedAt: live.startedAt ?? persisted.startedAt,
+    updatedAt: live.updatedAt ?? persisted.updatedAt,
+  };
+}
+
+function deriveFinalReviewStatus(result) {
+  const verificationStatus = result?.verification?.review?.status ?? 'failed';
+  const specializedStatus = result?.specializedReview?.status ?? 'passed';
+
+  if (verificationStatus === 'failed') {
+    return 'failed';
+  }
+
+  if (verificationStatus === 'needs_human_review') {
+    return 'blocked';
+  }
+
+  if (specializedStatus === 'failed' || specializedStatus === 'needs_human_review') {
+    return 'blocked';
+  }
+
+  return 'done';
+}
+
+function deriveBlockedReason(result) {
+  return (
+    result?.publication?.error?.message ??
+    result?.specializedReview?.summary ??
+    result?.verification?.review?.summary ??
+    null
+  );
+}
+
 export class Orchestrator {
   constructor(options = {}) {
     this.instanceId =
@@ -114,6 +290,7 @@ export class Orchestrator {
     this.ragRetriever = options.ragRetriever ?? null;
     this.skillManager = options.skillManager ?? null;
     this.notifier = options.notifier ?? null;
+    this.mcpRegistry = options.mcpRegistry ?? null;
     this.reflectionEngine = options.reflectionEngine ?? null;
     this.reflectionInFlight = false;
     this.lastReflectionAt = 0;
@@ -123,9 +300,25 @@ export class Orchestrator {
     this.ragSyncInFlight = false;
     this.lastRagSyncAt = 0;
     this.ragSyncIntervalMs = options.ragSyncIntervalMs ?? RAG_SYNC_INTERVAL_MS;
+    this.lastAutoPruneAt = 0;
+    this.lastSpaceWarningAt = 0;
     
     this.activeTasks = new Set();
     this.maxConcurrency = options.maxConcurrency ?? parseInt(process.env.MAX_CONCURRENT_TASKS || '3', 10);
+    this.liveTaskRuntime = new Map();
+  }
+
+  getPostgresMcpServer() {
+    return this.mcpRegistry?.getServer?.('postgres') ?? null;
+  }
+
+  async callPostgresTool(toolName, args, fallback) {
+    const postgresServer = this.getPostgresMcpServer();
+    if (postgresServer) {
+      return postgresServer.callTool(toolName, args);
+    }
+
+    return fallback();
   }
 
   async start() {
@@ -283,17 +476,56 @@ export class Orchestrator {
   }
 
   async checkSystemHealth() {
-    try {
-      const stats = await statfs(config.ssdBasePath);
-      const freeGiB = (stats.bavail * stats.bsize) / (1024 ** 3);
+    const checkPath = async (fsPath, label) => {
+      const stats = await statfs(fsPath);
+      const freeGiB = (stats.bavail * stats.bsize) / 1024 ** 3;
+
       if (freeGiB < 10) {
-        this.logger.error({ freeGiB }, 'SYSTEM_LOCKDOWN: Free disk space critical (<10GB)');
-        if (this.notifier) {
-          await this.notifier.sendNotification(`🚨 *SYSTEM LOCKDOWN*\nAvailable SSD space dropped to \`${freeGiB.toFixed(2)} GB\`.\nLocalClaw has paused the execution loop to prevent corruption.`);
-        }
-        await this.stop({ status: 'paused', reason: `Disk space critical (<10GB on ${config.ssdBasePath})` });
+        const msg = `🚨 *SYSTEM LOCKDOWN*\nAvailable ${label} space dropped to \`${freeGiB.toFixed(2)} GB\`.\nLocalClaw has paused to prevent system failure.`;
+        this.logger.error({ freeGiB, fsPath }, `SYSTEM_LOCKDOWN: ${label} space critical`);
+        if (this.notifier) await this.notifier.sendNotification(msg);
+        await this.stop({
+          status: 'paused',
+          reason: `Disk space critical (<10GB on ${label}: ${fsPath})`,
+        });
         throw new Error('SYSTEM_LOCKDOWN');
       }
+
+      if (freeGiB < 25 && this.skillManager && Date.now() - this.lastAutoPruneAt > 6 * 60 * 60 * 1000) {
+        this.logger.info({ freeGiB, label }, 'Triggering auto_prune due to low disk space');
+        this.lastAutoPruneAt = Date.now();
+        // Fire and forget the prune to not block the heartbeat
+        this.skillManager.executeSkill({
+          name: 'auto_prune',
+          input: {},
+          workspaceRoot: process.cwd(),
+          toolRunner: async (name, args) => {
+            // Orchestrator needs to be able to run tools directly for system maintenance
+            // For now, we use a minimal runner for builtin maintenance skills
+            if (name === 'system_prune') {
+              const { createToolRegistry } = await import('./tools/registry.js');
+              const registry = createToolRegistry({ skillManager: this.skillManager });
+              return registry.runTool(name, args, { workspaceRoot: process.cwd() });
+            }
+            throw new Error(`Orchestrator skill runner does not support tool: ${name}`);
+          }
+        }).catch(err => {
+          this.logger.warn({ err }, 'Auto-prune skill execution failed');
+        });
+      }
+
+      if (freeGiB < 20) {
+        this.logger.warn({ freeGiB, fsPath }, `SPACE_WARNING: ${label} space low`);
+        if (this.notifier && !this.lastSpaceWarningAt || Date.now() - this.lastSpaceWarningAt > 3600000) {
+          await this.notifier.sendNotification(`⚠️ *SPACE WARNING*\nAvailable ${label} space is low: \`${freeGiB.toFixed(2)} GB\`.`);
+          this.lastSpaceWarningAt = Date.now();
+        }
+      }
+    };
+
+    try {
+      await checkPath(config.ssdBasePath, 'External SSD');
+      await checkPath('/', 'Internal Mac Drive');
     } catch (err) {
       if (err.message === 'SYSTEM_LOCKDOWN') throw err;
       this.logger.warn({ err }, 'Failed to check system health statfs');
@@ -427,6 +659,21 @@ export class Orchestrator {
     }
 
     this.logger.info({ taskId: task.id, title: task.title }, 'Executing task');
+    this.updateTaskRuntime(task.id, {
+      phase: 'preparing',
+      phaseLabel: 'Preparing workspace',
+      detail: 'Loading retrieval context and bootstrapping the local workspace.',
+      currentModel: null,
+      modelRole: null,
+      usage: null,
+      checklist: [],
+      counts: {
+        completed: 0,
+        total: 0,
+      },
+      currentStep: null,
+      summary: null,
+    });
 
     try {
       const retrievalContext = await this.buildRetrievalContext(task);
@@ -439,10 +686,14 @@ export class Orchestrator {
           await this.logTaskStep(task.id, step);
           await this.touchTaskLease(task.id);
         },
+        runtimeUpdate: (snapshot) => {
+          this.updateTaskRuntime(task.id, snapshot);
+        },
       });
 
       await this.persistArtifacts(task.id, result.artifacts ?? []);
       await this.persistLearnings(task, result);
+      await this.enqueueSpecializedFollowUpTasks(task, result.specializedReview?.followUpTasks ?? []);
 
       if (result.publication?.published && this.deployer?.isEnabled?.()) {
         const deploymentTargetCheck = this.deployer.validateRepositoryName?.(
@@ -491,10 +742,26 @@ export class Orchestrator {
             },
             'Published repository does not match the configured Railway service'
           );
+          this.updateTaskRuntime(task.id, {
+            phase: 'blocked',
+            phaseLabel: 'Deployment target mismatch',
+            detail: deploymentTargetCheck.error,
+            currentModel: null,
+            modelRole: null,
+            currentStep: null,
+          });
 
           return;
         }
 
+        this.updateTaskRuntime(task.id, {
+          phase: 'waiting_approval',
+          phaseLabel: 'Awaiting deploy approval',
+          detail: 'Execution passed verification and is waiting for deployment approval.',
+          currentModel: null,
+          modelRole: null,
+          currentStep: null,
+        });
         await this.queueDeploymentApproval(task, result);
         return;
       }
@@ -505,11 +772,7 @@ export class Orchestrator {
 
       const taskStatus = publishBlocked
         ? 'blocked'
-        : result.verification.review.status === 'passed'
-          ? 'done'
-          : result.verification.review.status === 'needs_human_review'
-            ? 'blocked'
-            : 'failed';
+        : deriveFinalReviewStatus(result);
 
       await this.pool.query(
         `UPDATE tasks
@@ -532,9 +795,7 @@ export class Orchestrator {
           result.publication?.repo?.name ?? result.workspaceName ?? null,
           result.workspaceRoot,
           result.publication?.repo?.htmlUrl ?? null,
-          taskStatus === 'blocked'
-            ? result.publication?.error?.message ?? result.verification.review.summary
-            : null,
+          taskStatus === 'blocked' ? deriveBlockedReason(result) : null,
           JSON.stringify(result),
         ]
       );
@@ -548,6 +809,37 @@ export class Orchestrator {
         },
         'Task execution finished'
       );
+      this.updateTaskRuntime(task.id, {
+        phase:
+          taskStatus === 'done'
+            ? 'complete'
+            : taskStatus === 'blocked'
+              ? 'blocked'
+              : 'failed',
+        phaseLabel:
+          taskStatus === 'done'
+            ? 'Done'
+            : taskStatus === 'blocked'
+              ? 'Blocked'
+              : 'Failed',
+        detail:
+          taskStatus === 'done'
+            ? result.verification.review.summary
+            : taskStatus === 'blocked'
+              ? deriveBlockedReason(result)
+              : result.verification.review.summary,
+        currentModel: result.verification.modelUsed ?? null,
+        modelRole: result.verification.modelUsed ? 'verifier' : null,
+        checklist: buildChecklistFromPlan(result.plan?.steps ?? [], {
+          completedCount: (result.plan?.steps ?? []).length,
+        }),
+        counts: {
+          completed: (result.plan?.steps ?? []).length,
+          total: (result.plan?.steps ?? []).length,
+        },
+        currentStep: null,
+        summary: result.plan?.summary ?? null,
+      });
 
       if (taskStatus === 'done') {
         await this.incrementStats('tasks_completed');
@@ -584,11 +876,59 @@ export class Orchestrator {
         },
         'Task execution failed'
       );
+      this.updateTaskRuntime(task.id, {
+        phase: 'failed',
+        phaseLabel: 'Failed',
+        detail: error.message,
+        currentModel: null,
+        modelRole: null,
+        currentStep: null,
+      });
 
       await this.incrementStats('tasks_failed');
       throw error;
     } finally {
       await this.setAgentStateValue('current_task_id', null);
+    }
+  }
+
+  async enqueueSpecializedFollowUpTasks(task, followUpTasks = []) {
+    const postgresServer = this.getPostgresMcpServer();
+
+    for (const followUpTask of followUpTasks) {
+      const existing = postgresServer
+        ? await postgresServer.callTool('find_active_task_by_title', {
+            title: followUpTask.title,
+            source: followUpTask.source ?? 'phase10_dependency_agent',
+          })
+        : await this.pool.query(
+            `SELECT id
+             FROM tasks
+             WHERE title = $1
+               AND source = $2
+               AND status IN ('pending', 'leased', 'in_progress', 'blocked', 'waiting_approval')
+             LIMIT 1`,
+            [followUpTask.title, followUpTask.source ?? 'phase10_dependency_agent']
+          );
+
+      if (existing.rows.length > 0) {
+        continue;
+      }
+
+      const createdTask = await this.createTask(followUpTask.description, {
+        title: followUpTask.title,
+        priority: followUpTask.priority ?? 'medium',
+        source: followUpTask.source ?? 'phase10_dependency_agent',
+        projectName: followUpTask.projectName ?? task.project_name ?? null,
+        projectPath: followUpTask.projectPath ?? task.project_path ?? null,
+      });
+
+      await this.logTaskStep(task.id, {
+        stepNumber: 950,
+        stepType: 'review',
+        status: 'success',
+        outputSummary: `Dependency follow-up task created: ${createdTask.id}`,
+      });
     }
   }
 
@@ -599,34 +939,45 @@ export class Orchestrator {
   async buildRetrievalContext(task) {
     const queryText = `${task.title} ${task.description}`.trim();
     const keywords = extractKeywords(queryText);
+    const postgresServer = this.getPostgresMcpServer();
 
     try {
       const learningResult =
         keywords.length > 0
-          ? await this.pool.query(
-              `SELECT id, category, observation, confidence_score
-               FROM learnings
-               WHERE keywords && $1::text[]
-               ORDER BY times_applied DESC, confidence_score DESC, created_at DESC
-               LIMIT 5`,
-              [keywords]
-            )
+          ? postgresServer
+            ? await postgresServer.callTool('search_learnings', {
+                keywords,
+                limit: 5,
+              })
+            : await this.pool.query(
+                `SELECT id, category, observation, confidence_score
+                 FROM learnings
+                 WHERE keywords && $1::text[]
+                 ORDER BY times_applied DESC, confidence_score DESC, created_at DESC
+                 LIMIT 5`,
+                [keywords]
+              )
           : { rows: [] };
 
       const keywordChunkResult =
         keywords.length > 0
-          ? await this.pool.query(
-              `SELECT
-                 LEFT(document_chunks.content, 280) AS content,
-                 documents.title,
-                 documents.source_path
-               FROM document_chunks
-               JOIN documents ON documents.id = document_chunks.document_id
-               WHERE document_chunks.content ILIKE ANY($1::text[])
-               ORDER BY document_chunks.created_at DESC
-               LIMIT 4`,
-              [keywords.slice(0, 6).map((keyword) => `%${keyword}%`)]
-            )
+          ? postgresServer
+            ? await postgresServer.callTool('search_document_chunks', {
+                keywords: keywords.slice(0, 6),
+                limit: 4,
+              })
+            : await this.pool.query(
+                `SELECT
+                   LEFT(document_chunks.content, 280) AS content,
+                   documents.title,
+                   documents.source_path
+                 FROM document_chunks
+                 JOIN documents ON documents.id = document_chunks.document_id
+                 WHERE document_chunks.content ILIKE ANY($1::text[])
+                 ORDER BY document_chunks.created_at DESC
+                 LIMIT 4`,
+                [keywords.slice(0, 6).map((keyword) => `%${keyword}%`)]
+              )
           : { rows: [] };
 
       const semanticChunks = this.ragRetriever?.retrieveRelevantDocumentChunks
@@ -683,12 +1034,32 @@ export class Orchestrator {
       return;
     }
 
+    const postgresServer = this.getPostgresMcpServer();
+    if (postgresServer) {
+      await postgresServer.callTool('bump_learning_usage', {
+        learningIds: deduplicated,
+      });
+      return;
+    }
+
     await this.pool.query(
       `UPDATE learnings
        SET times_applied = times_applied + 1
        WHERE id = ANY($1::uuid[])`,
       [deduplicated]
     );
+  }
+
+  getMcpStatus() {
+    if (!this.mcpRegistry) {
+      return {
+        servers: [],
+      };
+    }
+
+    return {
+      servers: this.mcpRegistry.listAllTools(),
+    };
   }
 
   async persistLearnings(task, result) {
@@ -703,24 +1074,37 @@ export class Orchestrator {
       }
 
       for (const learning of learnings.slice(0, 4)) {
-        await this.pool.query(
-          `INSERT INTO learnings (
-             task_id,
-             category,
-             observation,
-             keywords,
-             confidence_score
-           )
-           VALUES ($1, $2, $3, $4::text[], $5)`,
-          [
-            task.id,
-            learning.category ?? 'execution',
-            learning.observation,
-            Array.isArray(learning.keywords) ? learning.keywords : [],
-            Number.isFinite(learning.confidenceScore)
+        await this.callPostgresTool(
+          'insert_learning',
+          {
+            taskId: task.id,
+            category: learning.category ?? 'execution',
+            observation: learning.observation,
+            keywords: Array.isArray(learning.keywords) ? learning.keywords : [],
+            confidenceScore: Number.isFinite(learning.confidenceScore)
               ? Math.max(1, Math.min(10, Math.round(learning.confidenceScore)))
               : 6,
-          ]
+          },
+          () =>
+            this.pool.query(
+              `INSERT INTO learnings (
+                 task_id,
+                 category,
+                 observation,
+                 keywords,
+                 confidence_score
+               )
+               VALUES ($1, $2, $3, $4::text[], $5)`,
+              [
+                task.id,
+                learning.category ?? 'execution',
+                learning.observation,
+                Array.isArray(learning.keywords) ? learning.keywords : [],
+                Number.isFinite(learning.confidenceScore)
+                  ? Math.max(1, Math.min(10, Math.round(learning.confidenceScore)))
+                  : 6,
+              ]
+            )
         );
       }
 
@@ -1312,33 +1696,48 @@ export class Orchestrator {
 
   async persistArtifacts(taskId, artifacts) {
     for (const artifact of artifacts) {
-      await this.pool.query(
-        `INSERT INTO task_artifacts (
-           task_id,
-           artifact_type,
-           artifact_path,
-           metadata
-         )
-         VALUES ($1, $2, $3, $4::jsonb)`,
-        [
+      await this.callPostgresTool(
+        'insert_task_artifact',
+        {
           taskId,
-          artifact.artifactType,
-          artifact.artifactPath,
-          JSON.stringify(artifact.metadata ?? {}),
-        ]
+          artifactType: artifact.artifactType,
+          artifactPath: artifact.artifactPath,
+          metadata: artifact.metadata ?? {},
+        },
+        () =>
+          this.pool.query(
+            `INSERT INTO task_artifacts (
+               task_id,
+               artifact_type,
+               artifact_path,
+               metadata
+             )
+             VALUES ($1, $2, $3, $4::jsonb)`,
+            [
+              taskId,
+              artifact.artifactType,
+              artifact.artifactPath,
+              JSON.stringify(artifact.metadata ?? {}),
+            ]
+          )
       );
     }
   }
 
   async touchTaskLease(taskId) {
-    await this.pool.query(
-      `UPDATE tasks
-       SET
-         lease_expires_at = NOW() + INTERVAL '5 minutes',
-         last_heartbeat_at = NOW(),
-         updated_at = NOW()
-       WHERE id = $1`,
-      [taskId]
+    await this.callPostgresTool(
+      'touch_task_lease',
+      { taskId },
+      () =>
+        this.pool.query(
+          `UPDATE tasks
+           SET
+             lease_expires_at = NOW() + INTERVAL '5 minutes',
+             last_heartbeat_at = NOW(),
+             updated_at = NOW()
+           WHERE id = $1`,
+          [taskId]
+        )
     );
   }
 
@@ -1354,39 +1753,57 @@ export class Orchestrator {
   }
 
   async logTaskStep(taskId, step) {
-    await this.pool.query(
-      `INSERT INTO agent_logs (
-         task_id,
-         step_number,
-         step_type,
-         model_used,
-         tool_called,
-         status,
-         input_summary,
-         output_summary,
-         duration_ms,
-         error_message
-       )
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)`,
-      [
+    await this.callPostgresTool(
+      'insert_agent_log',
+      {
         taskId,
-        step.stepNumber,
-        step.stepType,
-        step.modelUsed ?? null,
-        step.toolCalled ?? null,
-        step.status,
-        step.inputSummary ?? null,
-        step.outputSummary ?? null,
-        step.durationMs ?? null,
-        step.errorMessage ?? null,
-      ]
+        stepNumber: step.stepNumber,
+        stepType: step.stepType,
+        modelUsed: step.modelUsed ?? null,
+        toolCalled: step.toolCalled ?? null,
+        status: step.status,
+        inputSummary: step.inputSummary ?? null,
+        outputSummary: step.outputSummary ?? null,
+        durationMs: step.durationMs ?? null,
+        errorMessage: step.errorMessage ?? null,
+      },
+      () =>
+        this.pool.query(
+          `INSERT INTO agent_logs (
+             task_id,
+             step_number,
+             step_type,
+             model_used,
+             tool_called,
+             status,
+             input_summary,
+             output_summary,
+             duration_ms,
+             error_message
+           )
+           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)`,
+          [
+            taskId,
+            step.stepNumber,
+            step.stepType,
+            step.modelUsed ?? null,
+            step.toolCalled ?? null,
+            step.status,
+            step.inputSummary ?? null,
+            step.outputSummary ?? null,
+            step.durationMs ?? null,
+            step.errorMessage ?? null,
+          ]
+        )
     );
   }
 
   async getAgentStateValue(key, fallback = null) {
-    const result = await this.pool.query(
-      'SELECT value FROM agent_state WHERE state_key = $1',
-      [key]
+    const result = await this.callPostgresTool(
+      'get_agent_state',
+      { key },
+      () =>
+        this.pool.query('SELECT value FROM agent_state WHERE state_key = $1', [key])
     );
 
     if (result.rows.length === 0) {
@@ -1397,12 +1814,17 @@ export class Orchestrator {
   }
 
   async setAgentStateValue(key, value) {
-    await this.pool.query(
-      `INSERT INTO agent_state (state_key, value, updated_at)
-       VALUES ($1, $2::jsonb, NOW())
-       ON CONFLICT (state_key)
-       DO UPDATE SET value = EXCLUDED.value, updated_at = NOW()`,
-      [key, JSON.stringify(value)]
+    await this.callPostgresTool(
+      'upsert_agent_state',
+      { key, value },
+      () =>
+        this.pool.query(
+          `INSERT INTO agent_state (state_key, value, updated_at)
+           VALUES ($1, $2::jsonb, NOW())
+           ON CONFLICT (state_key)
+           DO UPDATE SET value = EXCLUDED.value, updated_at = NOW()`,
+          [key, JSON.stringify(value)]
+        )
     );
   }
 
@@ -1430,28 +1852,42 @@ export class Orchestrator {
     const title = buildTaskTitleFromContract(contract);
     const description = buildTaskDescriptionFromContract(contract);
 
-    const inserted = await this.pool.query(
-      `INSERT INTO tasks (
-         title,
-         description,
-         priority,
-         source,
-         project_name,
-         project_path,
-         chat_session_id,
-         status
-       )
-       VALUES ($1, $2, $3, $4, $5, $6, $7, 'pending')
-       RETURNING id, title, description, status, priority, source, created_at`,
-      [
+    const inserted = await this.callPostgresTool(
+      'create_task',
+      {
         title,
         description,
-        contract.priority,
+        priority: contract.priority,
         source,
-        contract.projectName,
-        options.projectPath ?? null,
-        options.chatSessionId ?? null,
-      ]
+        projectName: contract.projectName,
+        projectPath: options.projectPath ?? null,
+        chatSessionId: options.chatSessionId ?? null,
+        status: 'pending',
+      },
+      () =>
+        this.pool.query(
+          `INSERT INTO tasks (
+             title,
+             description,
+             priority,
+             source,
+             project_name,
+             project_path,
+             chat_session_id,
+             status
+           )
+           VALUES ($1, $2, $3, $4, $5, $6, $7, 'pending')
+           RETURNING id, title, description, status, priority, source, created_at`,
+          [
+            title,
+            description,
+            contract.priority,
+            source,
+            contract.projectName,
+            options.projectPath ?? null,
+            options.chatSessionId ?? null,
+          ]
+        )
     );
 
     const task = inserted.rows[0];
@@ -1482,50 +1918,60 @@ export class Orchestrator {
         },
       };
 
-      await this.pool.query(
-        `UPDATE tasks
-         SET
-           status = 'waiting_approval',
-           project_name = COALESCE(project_name, $2),
-           project_path = COALESCE($3, project_path),
-           blocked_reason = NULL,
-           result = $4::jsonb,
-           updated_at = NOW(),
-           locked_by = NULL,
-           lease_expires_at = NULL,
-           last_heartbeat_at = NOW()
-         WHERE id = $1`,
-        [
-          task.id,
-          contract.projectName,
-          options.projectPath ?? workspaceRoot,
-          JSON.stringify(resultPayload),
-        ]
+      await this.callPostgresTool(
+        'update_task_record',
+        {
+          taskId: task.id,
+          patch: {
+            status: 'waiting_approval',
+            project_name: contract.projectName,
+            project_path: options.projectPath ?? workspaceRoot,
+            result: resultPayload,
+            clear_blocked_reason: true,
+            clear_lock: true,
+            touch_heartbeat: true,
+          },
+        },
+        () =>
+          this.pool.query(
+            `UPDATE tasks
+             SET
+               status = 'waiting_approval',
+               project_name = COALESCE(project_name, $2),
+               project_path = COALESCE($3, project_path),
+               blocked_reason = NULL,
+               result = $4::jsonb,
+               updated_at = NOW(),
+               locked_by = NULL,
+               lease_expires_at = NULL,
+               last_heartbeat_at = NOW()
+             WHERE id = $1`,
+            [
+              task.id,
+              contract.projectName,
+              options.projectPath ?? workspaceRoot,
+              JSON.stringify(resultPayload),
+            ]
+          )
       );
 
-      await this.pool.query(
-        `INSERT INTO task_artifacts (
-           task_id,
-           artifact_type,
-           artifact_path,
-           metadata
-         )
-         VALUES
-           ($1, 'task_contract_v1', $2, $3::jsonb),
-           ($1, 'plan_preview', $4, $5::jsonb)`,
-        [
-          task.id,
-          `task://${task.id}/task_contract_v1`,
-          JSON.stringify({ contract }),
-          `task://${task.id}/plan_preview`,
-          JSON.stringify({
+      await this.persistArtifacts(task.id, [
+        {
+          artifactType: 'task_contract_v1',
+          artifactPath: `task://${task.id}/task_contract_v1`,
+          metadata: { contract },
+        },
+        {
+          artifactType: 'plan_preview',
+          artifactPath: `task://${task.id}/plan_preview`,
+          metadata: {
             summary: planning.plan.summary,
             modelUsed: planning.modelUsed,
             repaired: planning.repaired === true,
             fallback: planning.fallback === true,
-          }),
-        ]
-      );
+          },
+        },
+      ]);
 
       await this.logTaskStep(task.id, {
         stepNumber: 1,
@@ -1562,17 +2008,30 @@ export class Orchestrator {
         },
       };
     } catch (error) {
-      await this.pool.query(
-        `UPDATE tasks
-         SET
-           status = 'failed',
-           blocked_reason = $2,
-           updated_at = NOW(),
-           locked_by = NULL,
-           lease_expires_at = NULL,
-           last_heartbeat_at = NOW()
-         WHERE id = $1`,
-        [task.id, error.message]
+      await this.callPostgresTool(
+        'update_task_record',
+        {
+          taskId: task.id,
+          patch: {
+            status: 'failed',
+            blocked_reason: error.message,
+            clear_lock: true,
+            touch_heartbeat: true,
+          },
+        },
+        () =>
+          this.pool.query(
+            `UPDATE tasks
+             SET
+               status = 'failed',
+               blocked_reason = $2,
+               updated_at = NOW(),
+               locked_by = NULL,
+               lease_expires_at = NULL,
+               last_heartbeat_at = NOW()
+             WHERE id = $1`,
+            [task.id, error.message]
+          )
       );
 
       await this.logTaskStep(task.id, {
@@ -1588,11 +2047,16 @@ export class Orchestrator {
   }
 
   async approveTaskExecution(taskId, options = {}) {
-    const result = await this.pool.query(
-      `SELECT id, status, result
-       FROM tasks
-       WHERE id = $1`,
-      [taskId]
+    const result = await this.callPostgresTool(
+      'get_task_by_id',
+      { taskId, view: 'detail' },
+      () =>
+        this.pool.query(
+          `SELECT id, status, result
+           FROM tasks
+           WHERE id = $1`,
+          [taskId]
+        )
     );
 
     const task = result.rows[0];
@@ -1618,18 +2082,32 @@ export class Orchestrator {
       },
     };
 
-    await this.pool.query(
-      `UPDATE tasks
-       SET
-         status = 'pending',
-         blocked_reason = NULL,
-         result = $2::jsonb,
-         updated_at = NOW(),
-         locked_by = NULL,
-         lease_expires_at = NULL,
-         last_heartbeat_at = NOW()
-       WHERE id = $1`,
-      [taskId, JSON.stringify(nextResult)]
+    await this.callPostgresTool(
+      'update_task_record',
+      {
+        taskId,
+        patch: {
+          status: 'pending',
+          result: nextResult,
+          clear_blocked_reason: true,
+          clear_lock: true,
+          touch_heartbeat: true,
+        },
+      },
+      () =>
+        this.pool.query(
+          `UPDATE tasks
+           SET
+             status = 'pending',
+             blocked_reason = NULL,
+             result = $2::jsonb,
+             updated_at = NOW(),
+             locked_by = NULL,
+             lease_expires_at = NULL,
+             last_heartbeat_at = NOW()
+           WHERE id = $1`,
+          [taskId, JSON.stringify(nextResult)]
+        )
     );
 
     await this.logTaskStep(taskId, {
@@ -1647,11 +2125,16 @@ export class Orchestrator {
   }
 
   async rejectTaskExecution(taskId, options = {}) {
-    const result = await this.pool.query(
-      `SELECT id, status, result
-       FROM tasks
-       WHERE id = $1`,
-      [taskId]
+    const result = await this.callPostgresTool(
+      'get_task_by_id',
+      { taskId, view: 'detail' },
+      () =>
+        this.pool.query(
+          `SELECT id, status, result
+           FROM tasks
+           WHERE id = $1`,
+          [taskId]
+        )
     );
 
     const task = result.rows[0];
@@ -1678,18 +2161,32 @@ export class Orchestrator {
       },
     };
 
-    await this.pool.query(
-      `UPDATE tasks
-       SET
-         status = 'blocked',
-         blocked_reason = $2,
-         result = $3::jsonb,
-         updated_at = NOW(),
-         locked_by = NULL,
-         lease_expires_at = NULL,
-         last_heartbeat_at = NOW()
-       WHERE id = $1`,
-      [taskId, reason, JSON.stringify(nextResult)]
+    await this.callPostgresTool(
+      'update_task_record',
+      {
+        taskId,
+        patch: {
+          status: 'blocked',
+          blocked_reason: reason,
+          result: nextResult,
+          clear_lock: true,
+          touch_heartbeat: true,
+        },
+      },
+      () =>
+        this.pool.query(
+          `UPDATE tasks
+           SET
+             status = 'blocked',
+             blocked_reason = $2,
+             result = $3::jsonb,
+             updated_at = NOW(),
+             locked_by = NULL,
+             lease_expires_at = NULL,
+             last_heartbeat_at = NOW()
+           WHERE id = $1`,
+          [taskId, reason, JSON.stringify(nextResult)]
+        )
     );
 
     await this.logTaskStep(taskId, {
@@ -1722,72 +2219,94 @@ export class Orchestrator {
       throw new Error('Task description cannot be empty.');
     }
 
-    const result = await this.pool.query(
-      `INSERT INTO tasks (
-         title,
-         description,
-         priority,
-         source,
-         project_name,
-         project_path
-       )
-       VALUES ($1, $2, $3, $4, $5, $6)
-       RETURNING id, title, status, priority, created_at`,
-      [
+    const result = await this.callPostgresTool(
+      'create_task',
+      {
         title,
-        trimmedDescription,
-        options.priority ?? 'medium',
-        options.source ?? 'telegram',
-        options.projectName ?? null,
-        options.projectPath ?? null,
-      ]
+        description: trimmedDescription,
+        priority: options.priority ?? 'medium',
+        source: options.source ?? 'telegram',
+        projectName: options.projectName ?? null,
+        projectPath: options.projectPath ?? null,
+      },
+      () =>
+        this.pool.query(
+          `INSERT INTO tasks (
+             title,
+             description,
+             priority,
+             source,
+             project_name,
+             project_path
+           )
+           VALUES ($1, $2, $3, $4, $5, $6)
+           RETURNING id, title, status, priority, created_at`,
+          [
+            title,
+            trimmedDescription,
+            options.priority ?? 'medium',
+            options.source ?? 'telegram',
+            options.projectName ?? null,
+            options.projectPath ?? null,
+          ]
+        )
     );
 
     return result.rows[0];
   }
 
   async listTasks(limit = 10) {
-    const result = await this.pool.query(
-      `SELECT id, title, status, priority, created_at, started_at, updated_at
-       FROM tasks
-       WHERE status IN ('pending', 'in_progress', 'verifying', 'blocked', 'waiting_approval')
-       ORDER BY
-         CASE priority
-           WHEN 'critical' THEN 1
-           WHEN 'high' THEN 2
-           WHEN 'medium' THEN 3
-           WHEN 'low' THEN 4
-           ELSE 5
-         END,
-         created_at ASC
-       LIMIT $1`,
-      [limit]
+    const result = await this.callPostgresTool(
+      'list_active_tasks',
+      { limit },
+      () =>
+        this.pool.query(
+          `SELECT id, title, status, priority, created_at, started_at, updated_at
+           FROM tasks
+           WHERE status IN ('pending', 'in_progress', 'verifying', 'blocked', 'waiting_approval')
+           ORDER BY
+             CASE priority
+               WHEN 'critical' THEN 1
+               WHEN 'high' THEN 2
+               WHEN 'medium' THEN 3
+               WHEN 'low' THEN 4
+               ELSE 5
+             END,
+             created_at ASC
+           LIMIT $1`,
+          [limit]
+        )
     );
 
     return result.rows;
   }
 
   async getTaskDetails(taskId, options = {}) {
-    const taskResult = await this.pool.query(
-      `SELECT
-         id,
-         title,
-         description,
-         priority,
-         status,
-         source,
-         project_name,
-         project_path,
-         repo_url,
-         blocked_reason,
-         result,
-         created_at,
-         started_at,
-         completed_at,
-         updated_at
-       FROM tasks
-       WHERE id = $1`,
-      [taskId]
+    const taskResult = await this.callPostgresTool(
+      'get_task_by_id',
+      { taskId, view: 'detail' },
+      () =>
+        this.pool.query(
+          `SELECT
+             id,
+             title,
+             description,
+             priority,
+             status,
+             source,
+             project_name,
+             project_path,
+             repo_url,
+             blocked_reason,
+             result,
+             created_at,
+             started_at,
+             completed_at,
+             updated_at
+           FROM tasks
+           WHERE id = $1`,
+          [taskId]
+        )
     );
 
     const task = taskResult.rows[0];
@@ -1821,7 +2340,39 @@ export class Orchestrator {
     return {
       task,
       logs: logsResult.rows,
+      runtime: mergeRuntimeSnapshots(
+        derivePersistedRuntime(task, logsResult.rows),
+        this.liveTaskRuntime.get(taskId) ?? null
+      ),
     };
+  }
+
+  updateTaskRuntime(taskId, patch = {}) {
+    const previous = this.liveTaskRuntime.get(taskId) ?? {};
+    const timestamp = new Date().toISOString();
+    const next = {
+      ...previous,
+      ...patch,
+      startedAt: previous.startedAt ?? patch.startedAt ?? timestamp,
+      updatedAt: timestamp,
+    };
+
+    if (!next.counts && Array.isArray(next.checklist)) {
+      next.counts = {
+        completed: next.checklist.filter((item) => item.status === 'completed').length,
+        total: next.checklist.length,
+      };
+    }
+
+    this.liveTaskRuntime.set(taskId, next);
+    if (this.liveTaskRuntime.size > 200) {
+      const oldestKey = this.liveTaskRuntime.keys().next().value;
+      if (oldestKey) {
+        this.liveTaskRuntime.delete(oldestKey);
+      }
+    }
+
+    return next;
   }
 
   async getStatusSnapshot() {
@@ -1833,9 +2384,7 @@ export class Orchestrator {
       bootPhase,
       bootError,
       pollingActive,
-      queueResult,
-      deploymentResult,
-      approvalResult,
+      statusCounts,
     ] =
       await Promise.all([
         this.getAgentStateValue('status', 'running'),
@@ -1849,33 +2398,52 @@ export class Orchestrator {
         this.getAgentStateValue('boot_phase', 'unknown'),
         this.getAgentStateValue('boot_error', null),
         this.getAgentStateValue('polling_active', false),
-        this.pool.query(
-          `SELECT
-             COUNT(*) FILTER (WHERE status = 'pending')::int AS pending_count,
-             COUNT(*) FILTER (WHERE status = 'in_progress')::int AS in_progress_count,
-             COUNT(*) FILTER (WHERE status = 'blocked')::int AS blocked_count,
-             COUNT(*) FILTER (WHERE status = 'waiting_approval')::int AS waiting_approval_count
-           FROM tasks`
-        ),
-        this.pool.query(
-          `SELECT COUNT(*)::int AS deploying_count
-           FROM deployments
-           WHERE status = 'deploying'`
-        ),
-        this.pool.query(
-          `SELECT COUNT(*)::int AS pending_count
-           FROM approvals
-           WHERE status = 'pending'
-             AND approval_type = 'railway_deploy'`
+        this.callPostgresTool(
+          'get_status_counts',
+          {},
+          async () => {
+            const [queueResult, deploymentResult, approvalResult] = await Promise.all([
+              this.pool.query(
+                `SELECT
+                   COUNT(*) FILTER (WHERE status = 'pending')::int AS pending_count,
+                   COUNT(*) FILTER (WHERE status = 'in_progress')::int AS in_progress_count,
+                   COUNT(*) FILTER (WHERE status = 'blocked')::int AS blocked_count,
+                   COUNT(*) FILTER (WHERE status = 'waiting_approval')::int AS waiting_approval_count
+                 FROM tasks`
+              ),
+              this.pool.query(
+                `SELECT COUNT(*)::int AS deploying_count
+                 FROM deployments
+                 WHERE status = 'deploying'`
+              ),
+              this.pool.query(
+                `SELECT COUNT(*)::int AS pending_count
+                 FROM approvals
+                 WHERE status = 'pending'
+                   AND approval_type = 'railway_deploy'`
+              ),
+            ]);
+
+            return {
+              queue: queueResult.rows[0] ?? null,
+              deployments: deploymentResult.rows[0] ?? null,
+              approvals: approvalResult.rows[0] ?? null,
+            };
+          }
         ),
       ]);
 
     const taskResult = currentTaskId
-      ? await this.pool.query(
-          `SELECT id, title, status, priority, started_at
-           FROM tasks
-           WHERE id = $1`,
-          [currentTaskId]
+      ? await this.callPostgresTool(
+          'get_task_by_id',
+          { taskId: currentTaskId, view: 'summary' },
+          () =>
+            this.pool.query(
+              `SELECT id, title, status, priority, started_at
+               FROM tasks
+               WHERE id = $1`,
+              [currentTaskId]
+            )
         )
       : { rows: [] };
 
@@ -1887,17 +2455,17 @@ export class Orchestrator {
       currentTaskId,
       pauseReason,
       stats,
-      queue: queueResult.rows[0] ?? {
+      queue: statusCounts.queue ?? {
         pending_count: 0,
         in_progress_count: 0,
         blocked_count: 0,
         waiting_approval_count: 0,
       },
       deployments: {
-        deploying_count: deploymentResult.rows[0]?.deploying_count ?? 0,
+        deploying_count: statusCounts.deployments?.deploying_count ?? 0,
       },
       approvals: {
-        pending_count: approvalResult.rows[0]?.pending_count ?? 0,
+        pending_count: statusCounts.approvals?.pending_count ?? 0,
       },
       currentTask: taskResult.rows[0] ?? null,
       instanceId: this.instanceId,
