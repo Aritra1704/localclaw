@@ -278,6 +278,145 @@ test('postgres MCP server standardizes queue, reflection, and document indexing 
   assert.equal(txCalls.some((entry) => entry.sql === 'COMMIT'), true);
 });
 
+test('postgres MCP server standardizes knowledge graph storage and retrieval', async () => {
+  const calls = [];
+  const pool = {
+    async query(sql, params) {
+      calls.push({ sql, params });
+
+      if (sql.includes('INSERT INTO knowledge_graph_nodes')) {
+        return {
+          rows: [
+            {
+              id: 'node-1',
+              node_key: 'file:src/index.js',
+              node_type: 'file',
+              display_name: 'index.js',
+              source_path: 'src/index.js',
+              metadata: {},
+            },
+          ],
+        };
+      }
+
+      if (sql.includes('DELETE FROM knowledge_graph_nodes')) {
+        return { rowCount: 1, rows: [] };
+      }
+
+      if (sql.includes('DELETE FROM knowledge_graph_edges')) {
+        return { rowCount: 1, rows: [] };
+      }
+
+      if (sql.includes('INSERT INTO knowledge_graph_edges')) {
+        return {
+          rows: [
+            {
+              id: 'edge-1',
+              from_node_id: 'node-1',
+              to_node_id: 'node-2',
+              edge_type: 'imports',
+              metadata: {},
+            },
+          ],
+        };
+      }
+
+      if (sql.includes('FROM knowledge_graph_nodes')) {
+        return {
+          rows: [
+            {
+              id: 'node-1',
+              node_type: 'file',
+              display_name: 'index.js',
+              source_path: 'src/index.js',
+              metadata: {},
+            },
+          ],
+        };
+      }
+
+      if (sql.includes('FROM knowledge_graph_edges AS edges')) {
+        return {
+          rows: [
+            {
+              edge_type: 'imports',
+              from_name: 'index.js',
+              from_type: 'file',
+              from_path: 'src/index.js',
+              to_name: 'helper.js',
+              to_type: 'file',
+              to_path: 'src/helper.js',
+            },
+          ],
+        };
+      }
+
+      if (sql.includes('JOIN learnings ON learnings.task_id = tasks.id')) {
+        return {
+          rows: [
+            {
+              category: 'execution',
+              observation: 'Touch helper imports carefully during refactors.',
+              confidence_score: 8,
+              updated_at: '2026-04-16T00:00:00.000Z',
+            },
+          ],
+        };
+      }
+
+      if (sql.includes('FROM task_artifacts')) {
+        return {
+          rows: [
+            {
+              id: 'task-1',
+              title: 'Refactor index module',
+              status: 'done',
+              updated_at: '2026-04-16T00:00:00.000Z',
+              relative_path: 'src/index.js',
+            },
+          ],
+        };
+      }
+
+      throw new Error(`Unexpected query: ${sql.slice(0, 80)}`);
+    },
+  };
+
+  const server = createPostgresMcpServer({ pool });
+  const node = await server.callTool('upsert_graph_node', {
+    nodeKey: 'file:src/index.js',
+    nodeType: 'file',
+    displayName: 'index.js',
+    sourcePath: 'src/index.js',
+    metadata: {},
+  });
+  await server.callTool('delete_graph_nodes_by_source_path', {
+    sourcePath: 'src/index.js',
+    nodeTypes: ['symbol'],
+  });
+  await server.callTool('delete_graph_edges_from_node', { nodeId: 'node-1' });
+  const edge = await server.callTool('upsert_graph_edge', {
+    fromNodeId: 'node-1',
+    toNodeId: 'node-2',
+    edgeType: 'imports',
+    metadata: {},
+  });
+  const graph = await server.callTool('search_graph_context', {
+    keywords: ['index'],
+    limit: 6,
+    relationshipLimit: 10,
+    changeLimit: 5,
+  });
+
+  assert.equal(node.rows[0].id, 'node-1');
+  assert.equal(edge.rows[0].id, 'edge-1');
+  assert.equal(graph.matches[0].display_name, 'index.js');
+  assert.equal(graph.relationships[0].to_name, 'helper.js');
+  assert.equal(graph.recentChanges[0].title, 'Refactor index module');
+  assert.equal(graph.relatedLearnings[0].category, 'execution');
+  assert.equal(calls.length >= 5, true);
+});
+
 test('github MCP server standardizes repository operations', async () => {
   const calls = [];
   const client = {

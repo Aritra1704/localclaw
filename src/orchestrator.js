@@ -61,7 +61,13 @@ function extractKeywords(text, limit = 12) {
   return [...new Set(tokens)].slice(0, limit);
 }
 
-function formatRetrievedContext(learnings, documentChunks, suggestedSkills = []) {
+function formatRetrievedContext(
+  learnings,
+  documentChunks,
+  suggestedSkills = [],
+  graphContext = null,
+  impactAnalysis = null
+) {
   const lines = [];
 
   if (learnings.length > 0) {
@@ -86,6 +92,14 @@ function formatRetrievedContext(learnings, documentChunks, suggestedSkills = [])
     for (const skill of suggestedSkills) {
       lines.push(`- ${skill.name} (v${skill.version}) ${skill.description}`);
     }
+  }
+
+  if (graphContext?.lines?.length > 0) {
+    lines.push(...graphContext.lines);
+  }
+
+  if (impactAnalysis?.lines?.length > 0) {
+    lines.push(...impactAnalysis.lines);
   }
 
   return lines.join('\n').trim();
@@ -288,6 +302,7 @@ export class Orchestrator {
     this.learningExtractor = options.learningExtractor ?? null;
     this.ragIngestor = options.ragIngestor ?? null;
     this.ragRetriever = options.ragRetriever ?? null;
+    this.knowledgeGraph = options.knowledgeGraph ?? null;
     this.skillManager = options.skillManager ?? null;
     this.notifier = options.notifier ?? null;
     this.mcpRegistry = options.mcpRegistry ?? null;
@@ -446,7 +461,7 @@ export class Orchestrator {
   }
 
   async syncRagCorpusIfDue(force = false) {
-    if (!this.ragIngestor?.ingestProjectDocuments) {
+    if (!this.ragIngestor?.ingestProjectDocuments && !this.knowledgeGraph?.ingestProjectGraph) {
       return;
     }
 
@@ -462,13 +477,25 @@ export class Orchestrator {
     this.ragSyncInFlight = true;
 
     try {
-      const summary = await this.ragIngestor.ingestProjectDocuments({
-        projectRoot: process.cwd(),
-      });
+      const [ragSummary, graphSummary] = await Promise.all([
+        this.ragIngestor?.ingestProjectDocuments
+          ? this.ragIngestor.ingestProjectDocuments({
+              projectRoot: process.cwd(),
+            })
+          : null,
+        this.knowledgeGraph?.ingestProjectGraph
+          ? this.knowledgeGraph.ingestProjectGraph({
+              projectRoot: process.cwd(),
+            })
+          : null,
+      ]);
 
-      this.logger.info({ ragSummary: summary }, 'RAG corpus sync completed');
+      this.logger.info(
+        { ragSummary, graphSummary },
+        'Knowledge corpus sync completed'
+      );
     } catch (error) {
-      this.logger.warn({ err: error }, 'RAG corpus sync failed');
+      this.logger.warn({ err: error }, 'Knowledge corpus sync failed');
     } finally {
       this.lastRagSyncAt = Date.now();
       this.ragSyncInFlight = false;
@@ -1017,11 +1044,30 @@ export class Orchestrator {
       const suggestedSkills = this.skillManager?.suggestSkillsForTask
         ? await this.skillManager.suggestSkillsForTask(task, { limit: 4 })
         : [];
+      const graphContext = this.knowledgeGraph?.retrieveRelevantContext
+        ? await this.knowledgeGraph.retrieveRelevantContext(queryText, {
+            limit: 6,
+            relationshipLimit: 10,
+            changeLimit: 5,
+            learningLimit: 4,
+          })
+        : null;
+      const impactAnalysis = this.knowledgeGraph?.analyzeImpact
+        ? await this.knowledgeGraph.analyzeImpact(queryText, {
+            graphContext,
+            limit: 6,
+            relationshipLimit: 10,
+            changeLimit: 5,
+            learningLimit: 4,
+          })
+        : null;
 
       const context = formatRetrievedContext(
         learningResult.rows,
         documentChunks,
-        suggestedSkills
+        suggestedSkills,
+        graphContext,
+        impactAnalysis
       );
 
       try {
@@ -2139,6 +2185,14 @@ export class Orchestrator {
 
     try {
       const retrievalContext = await this.buildRetrievalContext(task);
+      const impactAnalysis = this.knowledgeGraph?.analyzeImpact
+        ? await this.knowledgeGraph.analyzeImpact(`${task.title} ${task.description}`.trim(), {
+            limit: 6,
+            relationshipLimit: 10,
+            changeLimit: 5,
+            learningLimit: 4,
+          })
+        : null;
       const planning = await this.taskExecutor.previewTaskPlan(task, {
         workspaceRoot,
         workspaceSnapshot: [],
@@ -2157,6 +2211,7 @@ export class Orchestrator {
           model_used: planning.modelUsed,
           repaired: planning.repaired === true,
           fallback: planning.fallback === true,
+          impact_analysis: impactAnalysis,
           plan: planning.plan,
         },
       };
@@ -2248,6 +2303,9 @@ export class Orchestrator {
           modelUsed: planning.modelUsed,
           repaired: planning.repaired === true,
           fallback: planning.fallback === true,
+        },
+        memory: {
+          impactAnalysis,
         },
       };
     } catch (error) {

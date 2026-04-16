@@ -20,14 +20,14 @@ LocalClaw is a local-first autonomous engineering platform that plans work, exec
 - Phase 9: complete (Hardening, Sandbox Escalation & Production Field Safety)
 - Phase 10: complete (Specialized Agent Expansion: Security, Docs, & Deps)
 - Phase 11: complete (MCP Server Integration: Filesystem, GitHub, task/runtime DB access, RAG, chat, projects, skills, and reflection are standardized behind internal MCP servers)
-- Phase 12: planned (Cognitive Memory: Knowledge Graph & Advanced RAG)
+- Phase 12: complete (Cognitive Memory: Knowledge graph storage, graph retrieval, semantic impact analysis, and historical learnings are integrated into planning)
 
 ## Current Focus
 
-- Begin Phase 12 planning for Knowledge Graph and advanced memory primitives on top of the now-standardized internal MCP boundary.
-- Keep publish, verification, deploy approval, and specialized review behavior stable while Phase 12 capabilities are added.
+- Stabilize the completed roadmap and harden the platform through operator-driven backlog work.
+- Keep publish, verification, deploy approval, specialized review, and cognitive memory behavior stable under real task load.
 - Keep external MCP daemons out of scope until a concrete need emerges for process isolation, multi-client sharing, or remote tool hosting.
-- Use the Control Center Web Dashboard `http://localhost:5173` to monitor runtime health, approvals, and memory-related follow-up work.
+- Use the Control Center Web Dashboard `http://localhost:5173` to monitor runtime health, approvals, and memory-backed planning quality.
 
 ## Deferred Backlog
 

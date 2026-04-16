@@ -14,6 +14,7 @@ import { createGitHubClient } from './github/client.js';
 import { createGitHubPublisher } from './github/publisher.js';
 import { createLearningExtractor } from './learnings/extractor.js';
 import { createModelSelector } from './llm/modelSelector.js';
+import { createKnowledgeGraphService } from './memory/knowledgeGraph.js';
 import { createFilesystemMcpServer } from './mcp/filesystemServer.js';
 import { createGitHubMcpServer } from './mcp/githubServer.js';
 import { createPostgresMcpServer } from './mcp/postgresServer.js';
@@ -163,6 +164,10 @@ async function bootstrap() {
     logger,
     mcpRegistry,
   });
+  const knowledgeGraph = createKnowledgeGraphService({
+    logger,
+    mcpRegistry,
+  });
   const skillManager = createSkillManager({
     logger,
     mcpRegistry,
@@ -261,6 +266,7 @@ async function bootstrap() {
     learningExtractor,
     ragIngestor,
     ragRetriever,
+    knowledgeGraph,
     skillManager,
     reflectionEngine,
     mcpRegistry,

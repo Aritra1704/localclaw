@@ -136,6 +136,26 @@ const POSTGRES_TOOLS = [
     description: 'List embedding-backed document candidates for semantic retrieval.',
   },
   {
+    name: 'upsert_graph_node',
+    description: 'Insert or update a knowledge graph node.',
+  },
+  {
+    name: 'delete_graph_nodes_by_source_path',
+    description: 'Delete knowledge graph nodes for a source path, optionally filtered by node type.',
+  },
+  {
+    name: 'delete_graph_edges_from_node',
+    description: 'Delete outgoing knowledge graph edges from a node.',
+  },
+  {
+    name: 'upsert_graph_edge',
+    description: 'Insert or update a knowledge graph edge.',
+  },
+  {
+    name: 'search_graph_context',
+    description: 'Retrieve matched graph nodes, nearby relationships, and recent related changes.',
+  },
+  {
     name: 'list_project_targets',
     description: 'List allowed project targets.',
   },
@@ -1080,6 +1100,195 @@ export function createPostgresMcpServer({ pool }) {
             [args.modelTag, limit]
           );
           return { rows: result.rows };
+        }
+
+        case 'upsert_graph_node': {
+          const result = await pool.query(
+            `INSERT INTO knowledge_graph_nodes (
+               node_key,
+               node_type,
+               display_name,
+               source_path,
+               checksum,
+               metadata,
+               updated_at
+             )
+             VALUES ($1, $2, $3, $4, $5, $6::jsonb, NOW())
+             ON CONFLICT (node_key)
+             DO UPDATE SET
+               node_type = EXCLUDED.node_type,
+               display_name = EXCLUDED.display_name,
+               source_path = COALESCE(EXCLUDED.source_path, knowledge_graph_nodes.source_path),
+               checksum = COALESCE(EXCLUDED.checksum, knowledge_graph_nodes.checksum),
+               metadata = EXCLUDED.metadata,
+               updated_at = NOW()
+             RETURNING id, node_key, node_type, display_name, source_path, metadata`,
+            [
+              args.nodeKey,
+              args.nodeType,
+              args.displayName,
+              args.sourcePath ?? null,
+              args.checksum ?? null,
+              JSON.stringify(args.metadata ?? {}),
+            ]
+          );
+          return { rows: result.rows };
+        }
+
+        case 'delete_graph_nodes_by_source_path': {
+          const nodeTypes =
+            Array.isArray(args.nodeTypes) && args.nodeTypes.length > 0
+              ? args.nodeTypes
+              : null;
+          const result = await pool.query(
+            nodeTypes
+              ? `DELETE FROM knowledge_graph_nodes
+                 WHERE source_path = $1
+                   AND node_type = ANY($2::text[])`
+              : `DELETE FROM knowledge_graph_nodes
+                 WHERE source_path = $1`,
+            nodeTypes ? [args.sourcePath, nodeTypes] : [args.sourcePath]
+          );
+          return { rowCount: result.rowCount ?? 0, rows: [] };
+        }
+
+        case 'delete_graph_edges_from_node': {
+          const result = await pool.query(
+            `DELETE FROM knowledge_graph_edges WHERE from_node_id = $1`,
+            [args.nodeId]
+          );
+          return { rowCount: result.rowCount ?? 0, rows: [] };
+        }
+
+        case 'upsert_graph_edge': {
+          const result = await pool.query(
+            `INSERT INTO knowledge_graph_edges (
+               from_node_id,
+               to_node_id,
+               edge_type,
+               metadata,
+               updated_at
+             )
+             VALUES ($1, $2, $3, $4::jsonb, NOW())
+             ON CONFLICT (from_node_id, to_node_id, edge_type)
+             DO UPDATE SET metadata = EXCLUDED.metadata, updated_at = NOW()
+             RETURNING id, from_node_id, to_node_id, edge_type, metadata`,
+            [
+              args.fromNodeId,
+              args.toNodeId,
+              args.edgeType,
+              JSON.stringify(args.metadata ?? {}),
+            ]
+          );
+          return { rows: result.rows };
+        }
+
+        case 'search_graph_context': {
+          const keywords = Array.isArray(args.keywords) ? args.keywords.filter(Boolean) : [];
+          if (keywords.length === 0) {
+            return {
+              matches: [],
+              relationships: [],
+              recentChanges: [],
+              relatedLearnings: [],
+            };
+          }
+
+          const patterns = keywords.map((keyword) => `%${keyword}%`);
+          const matchesResult = await pool.query(
+            `SELECT id, node_type, display_name, source_path, metadata
+             FROM knowledge_graph_nodes
+             WHERE display_name ILIKE ANY($1::text[])
+                OR source_path ILIKE ANY($1::text[])
+                OR node_key ILIKE ANY($1::text[])
+             ORDER BY
+               CASE node_type
+                 WHEN 'symbol' THEN 1
+                 WHEN 'file' THEN 2
+                 WHEN 'document' THEN 3
+                 WHEN 'dependency' THEN 4
+                 ELSE 5
+               END,
+               updated_at DESC
+             LIMIT $2`,
+            [patterns, args.limit ?? 6]
+          );
+
+          const matchedRows = matchesResult.rows;
+          if (matchedRows.length === 0) {
+            return {
+              matches: [],
+              relationships: [],
+              recentChanges: [],
+              relatedLearnings: [],
+            };
+          }
+
+          const matchedIds = matchedRows.map((row) => row.id);
+          const sourcePaths = [...new Set(matchedRows.map((row) => row.source_path).filter(Boolean))];
+          const relationshipsResult = await pool.query(
+            `SELECT
+               edges.edge_type,
+               from_node.display_name AS from_name,
+               from_node.node_type AS from_type,
+               from_node.source_path AS from_path,
+               to_node.display_name AS to_name,
+               to_node.node_type AS to_type,
+               to_node.source_path AS to_path
+             FROM knowledge_graph_edges AS edges
+             JOIN knowledge_graph_nodes AS from_node
+               ON from_node.id = edges.from_node_id
+             JOIN knowledge_graph_nodes AS to_node
+               ON to_node.id = edges.to_node_id
+             WHERE edges.from_node_id = ANY($1::uuid[])
+                OR edges.to_node_id = ANY($1::uuid[])
+             ORDER BY edges.updated_at DESC
+             LIMIT $2`,
+            [matchedIds, args.relationshipLimit ?? 10]
+          );
+
+          let recentChanges = [];
+          let relatedLearnings = [];
+          if (sourcePaths.length > 0) {
+            const changesResult = await pool.query(
+              `SELECT DISTINCT
+                 tasks.id,
+                 tasks.title,
+                 tasks.status,
+                 tasks.updated_at,
+                 task_artifacts.metadata->>'relativePath' AS relative_path
+               FROM task_artifacts
+               JOIN tasks ON tasks.id = task_artifacts.task_id
+               WHERE task_artifacts.metadata->>'relativePath' = ANY($1::text[])
+               ORDER BY tasks.updated_at DESC
+               LIMIT $2`,
+              [sourcePaths, args.changeLimit ?? 5]
+            );
+            recentChanges = changesResult.rows;
+
+            const learningResult = await pool.query(
+              `SELECT
+                 learnings.category,
+                 learnings.observation,
+                 learnings.confidence_score,
+                 tasks.updated_at
+               FROM task_artifacts
+               JOIN tasks ON tasks.id = task_artifacts.task_id
+               JOIN learnings ON learnings.task_id = tasks.id
+               WHERE task_artifacts.metadata->>'relativePath' = ANY($1::text[])
+               ORDER BY tasks.updated_at DESC, learnings.confidence_score DESC
+               LIMIT $2`,
+              [sourcePaths, args.learningLimit ?? 4]
+            );
+            relatedLearnings = learningResult.rows;
+          }
+
+          return {
+            matches: matchedRows,
+            relationships: relationshipsResult.rows,
+            recentChanges,
+            relatedLearnings,
+          };
         }
 
         case 'list_project_targets': {

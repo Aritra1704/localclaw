@@ -56,6 +56,96 @@ test('buildRetrievalContext increments learning usage when learnings are injecte
   assert.deepEqual(usageUpdates[0], [learningId]);
 });
 
+test('buildRetrievalContext includes graph-based impact context when available', async () => {
+  const pool = {
+    async query(sql) {
+      if (sql.includes('FROM learnings')) {
+        return { rows: [] };
+      }
+
+      if (sql.includes('FROM document_chunks')) {
+        return { rows: [] };
+      }
+
+      if (sql.includes('UPDATE learnings')) {
+        return { rowCount: 0, rows: [] };
+      }
+
+      throw new Error(`Unexpected query: ${sql.slice(0, 80)}`);
+    },
+  };
+
+  const orchestrator = new Orchestrator({
+    logger,
+    pool,
+    knowledgeGraph: {
+      async analyzeImpact() {
+        return {
+          summary: 'Impact analysis touches src/index.js and downstream helpers.',
+          riskLevel: 'medium',
+          primaryTargets: ['src/index.js'],
+          upstreamDependencies: ['src/helper.js'],
+          downstreamDependents: ['README.md'],
+          volatileAreas: ['src/index.js'],
+          historicalLearnings: ['Touch helper imports carefully during refactors.'],
+          lines: [
+            'Semantic impact analysis:',
+            '- likely edit targets: src/index.js',
+            '- upstream dependencies: src/helper.js',
+            '- downstream dependents: README.md',
+            '- recently changed areas: src/index.js',
+            '- historical cautions: Touch helper imports carefully during refactors.',
+            '- impact risk: medium',
+          ],
+        };
+      },
+      async retrieveRelevantContext() {
+        return {
+          matches: [
+            {
+              node_type: 'file',
+              display_name: 'index.js',
+              source_path: 'src/index.js',
+            },
+          ],
+          relationships: [
+            {
+              edge_type: 'imports',
+              from_name: 'index.js',
+              to_name: 'helper.js',
+            },
+          ],
+          recentChanges: [
+            {
+              title: 'Refactor index module',
+              status: 'done',
+              relative_path: 'src/index.js',
+            },
+          ],
+          lines: [
+            'Architecture graph:',
+            '- [file] index.js @ src/index.js',
+            'Impact relationships:',
+            '- index.js -[imports]-> helper.js',
+            'Historical changes:',
+            '- Refactor index module (done) @ src/index.js',
+          ],
+        };
+      },
+    },
+  });
+
+  const context = await orchestrator.buildRetrievalContext({
+    id: 'task-phase12-1',
+    title: 'Update index module',
+    description: 'Analyze helper imports before editing index.js',
+  });
+
+  assert.match(context, /Architecture graph:/);
+  assert.match(context, /Historical changes:/);
+  assert.match(context, /Semantic impact analysis:/);
+});
+
 test('getTaskDetails merges transient runtime with persisted task context', async () => {
   const pool = {
     async query(sql) {

@@ -43,6 +43,25 @@ test('createPlannedTask and execution approval transitions are enforced', async 
   const orchestrator = new Orchestrator({
     logger,
     pool,
+    knowledgeGraph: {
+      async analyzeImpact() {
+        return {
+          summary: 'Impact analysis touches README.md and its dependents.',
+          riskLevel: 'medium',
+          primaryTargets: ['README.md'],
+          upstreamDependencies: [],
+          downstreamDependents: ['docs/ARCHITECTURE.md'],
+          volatileAreas: [],
+          historicalLearnings: [],
+          lines: [
+            'Semantic impact analysis:',
+            '- likely edit targets: README.md',
+            '- downstream dependents: docs/ARCHITECTURE.md',
+            '- impact risk: medium',
+          ],
+        };
+      },
+    },
     taskExecutor: {
       async previewTaskPlan(task, context) {
         previewCalls.push({ task, context });
@@ -89,6 +108,7 @@ test('createPlannedTask and execution approval transitions are enforced', async 
 
   assert.equal(waitingTask.rows[0].status, 'waiting_approval');
   assert.equal(waitingTask.rows[0].result.preExecutionPlan.status, 'pending');
+  assert.equal(waitingTask.rows[0].result.preExecutionPlan.impact_analysis.riskLevel, 'medium');
 
   const workspaceArtifacts = await pool.query(
     `SELECT COUNT(*)::int AS count

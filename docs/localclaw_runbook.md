@@ -7,6 +7,7 @@
 - Phase 9: complete. Hardening, Docker Sandboxing, and Space Guard are implemented.
 - Phase 10: complete. Specialized Agent Expansion (Security, Docs, Deps) now gates finalization and creates dependency follow-up work.
 - Phase 11: complete. Internal MCP servers now standardize filesystem, PostgreSQL-backed runtime state, RAG indexing/retrieval, reflection, chat, projects, skills, and GitHub operations.
+- Phase 12: complete. Knowledge graph storage, graph-based retrieval, semantic impact analysis, and historical learnings are integrated into planning and approval previews.
 
 ## Start LocalClaw
 

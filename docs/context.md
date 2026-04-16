@@ -24,7 +24,7 @@ As of 2026-04-11, the project status is:
 | Phase 9: Hardening & Sandbox | complete | Mandatory Docker sandbox escalation, workspace cleanup protections, and operator-safe recovery guardrails are in place. |
 | Phase 10: Specialized Agents | complete | Documentation, Security, and Dependency agents now run before publish, refresh workspace docs, flag risky findings, and create dependency follow-up tasks. |
 | Phase 11: MCP Integration | complete | Filesystem, GitHub, task/runtime PostgreSQL access, RAG indexing/retrieval, reflection, chat, projects, and skills now run through internal MCP-style servers with verified runtime coverage. |
-| Phase 12: Cognitive Memory | planned | Implementing a Knowledge Graph for codebase semantic mapping beyond simple flat RAG. |
+| Phase 12: Cognitive Memory | complete | Knowledge graph storage now maps files, symbols, dependencies, document references, historical changes, and related learnings, and semantic impact analysis is injected into planning and approval previews alongside flat RAG. |
 
 ## 1. Mission
 
@@ -364,6 +364,14 @@ Actions:
 - implement **Knowledge Graph**: map symbols, dependencies, and historical changes
 - integrate graph-based retrieval into the `Planner`
 - add **Semantic Reasoning Layer**: for impact analysis before any code is written
+
+Current progress:
+
+- knowledge graph storage now exists in PostgreSQL for nodes and edges
+- project sync now indexes files, symbols, dependencies, and markdown references
+- retrieval context now includes graph matches, nearby relationships, historical changes, and related learnings before planning
+- semantic impact analysis now summarizes likely edit targets, upstream dependencies, downstream dependents, volatility, and historical cautions before code is written
+- approval-gated planning now stores impact analysis in the pre-execution preview for operator visibility
 
 Outputs:
 
