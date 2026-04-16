@@ -97,12 +97,21 @@ async function pathExists(targetPath) {
 export function createSkillManager(options = {}) {
   const pool = options.pool ?? getPool();
   const logger = options.logger ?? null;
+  const mcpRegistry = options.mcpRegistry ?? null;
   const rawBuiltInDirectory = options.builtInDirectory ?? config.skillsBuiltinDir;
   const builtInDirectory = path.isAbsolute(rawBuiltInDirectory)
     ? rawBuiltInDirectory
     : path.resolve(process.cwd(), rawBuiltInDirectory);
+  const postgresServer = mcpRegistry?.getServer?.('postgres') ?? null;
 
   let cachedSkills = [];
+
+  async function callPostgresTool(toolName, args, fallback) {
+    if (postgresServer) {
+      return postgresServer.callTool(toolName, args);
+    }
+    return fallback();
+  }
 
   async function loadBuiltInDefinitions() {
     if (!(await pathExists(builtInDirectory))) {
@@ -127,18 +136,28 @@ export function createSkillManager(options = {}) {
   }
 
   async function refreshCache() {
-    const result = await pool.query(
-      `SELECT
-         id,
-         name,
-         version,
-         source_type,
-         description,
-         definition,
-         is_enabled,
-         updated_at
-       FROM skills
-       ORDER BY name ASC`
+    const result = await callPostgresTool(
+      'list_skills_catalog',
+      {
+        includeDisabled: true,
+        includeDefinition: true,
+        includeMetrics: false,
+        limit: 1000,
+      },
+      () =>
+        pool.query(
+          `SELECT
+             id,
+             name,
+             version,
+             source_type,
+             description,
+             definition,
+             is_enabled,
+             updated_at
+           FROM skills
+           ORDER BY name ASC`
+        )
     );
 
     cachedSkills = result.rows;
@@ -151,33 +170,63 @@ export function createSkillManager(options = {}) {
       let upserted = 0;
 
       for (const skill of builtInSkills) {
-        await pool.query(
-          `INSERT INTO skills (
-             name,
-             version,
-             source_type,
-             description,
-             definition,
-             is_enabled,
-             updated_at
-           )
-           VALUES ($1, $2, $3, $4, $5::jsonb, $6, NOW())
-           ON CONFLICT (name)
-           DO UPDATE
-           SET
-             version = GREATEST(skills.version, EXCLUDED.version),
-             source_type = EXCLUDED.source_type,
-             description = EXCLUDED.description,
-             definition = EXCLUDED.definition,
-             updated_at = NOW()`,
-          [
-            skill.name,
-            skill.version,
-            'builtin',
-            skill.description,
-            JSON.stringify(skill),
-            skill.isEnabled,
-          ]
+        const existingResult = await callPostgresTool(
+          'get_skill_by_name',
+          { name: skill.name },
+          () =>
+            pool.query(
+              `SELECT id, version
+               FROM skills
+               WHERE name = $1
+               LIMIT 1`,
+              [skill.name]
+            )
+        );
+        const existing = existingResult.rows[0] ?? null;
+
+        await callPostgresTool(
+          'upsert_skill_definition',
+          {
+            id: existing?.id ?? null,
+            name: skill.name,
+            version: Math.max(existing?.version ?? 0, skill.version),
+            sourceType: 'builtin',
+            description: skill.description,
+            definition: {
+              ...skill,
+              version: Math.max(existing?.version ?? 0, skill.version),
+            },
+            isEnabled: skill.isEnabled,
+          },
+          () =>
+            pool.query(
+              `INSERT INTO skills (
+                 name,
+                 version,
+                 source_type,
+                 description,
+                 definition,
+                 is_enabled,
+                 updated_at
+               )
+               VALUES ($1, $2, $3, $4, $5::jsonb, $6, NOW())
+               ON CONFLICT (name)
+               DO UPDATE
+               SET
+                 version = GREATEST(skills.version, EXCLUDED.version),
+                 source_type = EXCLUDED.source_type,
+                 description = EXCLUDED.description,
+                 definition = EXCLUDED.definition,
+                 updated_at = NOW()`,
+              [
+                skill.name,
+                skill.version,
+                'builtin',
+                skill.description,
+                JSON.stringify(skill),
+                skill.isEnabled,
+              ]
+            )
         );
 
         upserted += 1;
@@ -198,36 +247,47 @@ export function createSkillManager(options = {}) {
       const sourceType = options.sourceType ?? null;
       const limit = options.limit ?? 20;
 
-      const result = await pool.query(
-        `SELECT
-           skills.id,
-           skills.name,
-           skills.version,
-           skills.source_type,
-           skills.description,
-           skills.is_enabled,
-           skills.updated_at,
-           COALESCE(metrics.total_runs, 0)::int AS total_runs,
-           COALESCE(metrics.success_runs, 0)::int AS success_runs,
-           COALESCE(metrics.failed_runs, 0)::int AS failed_runs,
-           metrics.last_run_at
-         FROM skills
-         LEFT JOIN (
-           SELECT
-             skill_id,
-             COUNT(*) AS total_runs,
-             COUNT(*) FILTER (WHERE status = 'success') AS success_runs,
-             COUNT(*) FILTER (WHERE status = 'error') AS failed_runs,
-             MAX(created_at) AS last_run_at
-           FROM skill_runs
-           GROUP BY skill_id
-         ) AS metrics
-         ON metrics.skill_id = skills.id
-         WHERE ($1::boolean OR skills.is_enabled = TRUE)
-           AND ($2::text IS NULL OR skills.source_type = $2)
-         ORDER BY skills.name ASC
-         LIMIT $3`,
-        [includeDisabled, sourceType, limit]
+      const result = await callPostgresTool(
+        'list_skills_catalog',
+        {
+          includeDisabled,
+          sourceType,
+          limit,
+          includeMetrics: true,
+          includeDefinition: false,
+        },
+        () =>
+          pool.query(
+            `SELECT
+               skills.id,
+               skills.name,
+               skills.version,
+               skills.source_type,
+               skills.description,
+               skills.is_enabled,
+               skills.updated_at,
+               COALESCE(metrics.total_runs, 0)::int AS total_runs,
+               COALESCE(metrics.success_runs, 0)::int AS success_runs,
+               COALESCE(metrics.failed_runs, 0)::int AS failed_runs,
+               metrics.last_run_at
+             FROM skills
+             LEFT JOIN (
+               SELECT
+                 skill_id,
+                 COUNT(*) AS total_runs,
+                 COUNT(*) FILTER (WHERE status = 'success') AS success_runs,
+                 COUNT(*) FILTER (WHERE status = 'error') AS failed_runs,
+                 MAX(created_at) AS last_run_at
+               FROM skill_runs
+               GROUP BY skill_id
+             ) AS metrics
+             ON metrics.skill_id = skills.id
+             WHERE ($1::boolean OR skills.is_enabled = TRUE)
+               AND ($2::text IS NULL OR skills.source_type = $2)
+             ORDER BY skills.name ASC
+             LIMIT $3`,
+            [includeDisabled, sourceType, limit]
+          )
       );
 
       return result.rows;
@@ -247,14 +307,19 @@ export function createSkillManager(options = {}) {
     },
 
     async setSkillEnabled(name, enabled) {
-      const result = await pool.query(
-        `UPDATE skills
-         SET
-           is_enabled = $2,
-           updated_at = NOW()
-         WHERE name = $1
-         RETURNING id, name, source_type, version, is_enabled`,
-        [name, enabled]
+      const result = await callPostgresTool(
+        'set_skill_enabled',
+        { name, enabled },
+        () =>
+          pool.query(
+            `UPDATE skills
+             SET
+               is_enabled = $2,
+               updated_at = NOW()
+             WHERE name = $1
+             RETURNING id, name, source_type, version, is_enabled`,
+            [name, enabled]
+          )
       );
 
       const row = result.rows[0] ?? null;
@@ -287,55 +352,73 @@ export function createSkillManager(options = {}) {
         isEnabled: Boolean(input.enableRequested),
       });
 
-      const existing = await pool.query(
-        `SELECT id, version
-         FROM skills
-         WHERE name = $1`,
-        [definition.name]
+      const existing = await callPostgresTool(
+        'get_skill_by_name',
+        { name: definition.name },
+        () =>
+          pool.query(
+            `SELECT id, version
+             FROM skills
+             WHERE name = $1`,
+            [definition.name]
+          )
       );
 
       const previous = existing.rows[0] ?? null;
       const nextVersion = previous ? previous.version + 1 : 1;
 
-      const result = await pool.query(
-        `INSERT INTO skills (
-           id,
-           name,
-           version,
-           source_type,
-           description,
-           definition,
-           is_enabled,
-           updated_at
-         )
-         VALUES (
-           COALESCE($1::uuid, gen_random_uuid()),
-           $2,
-           $3,
-           'generated',
-           $4,
-           $5::jsonb,
-           $6,
-           NOW()
-         )
-         ON CONFLICT (name)
-         DO UPDATE
-         SET
-           version = EXCLUDED.version,
-           source_type = EXCLUDED.source_type,
-           description = EXCLUDED.description,
-           definition = EXCLUDED.definition,
-           is_enabled = EXCLUDED.is_enabled,
-           updated_at = NOW()
-         RETURNING id, name, version, source_type, is_enabled`,
-        [
-          previous?.id ?? null,
-          definition.name,
-          nextVersion,
-          definition.description,
-          JSON.stringify({ ...definition, version: nextVersion }),
-          Boolean(input.enableRequested),
-        ]
+      const result = await callPostgresTool(
+        'upsert_skill_definition',
+        {
+          id: previous?.id ?? null,
+          name: definition.name,
+          version: nextVersion,
+          sourceType: 'generated',
+          description: definition.description,
+          definition: { ...definition, version: nextVersion },
+          isEnabled: Boolean(input.enableRequested),
+        },
+        () =>
+          pool.query(
+            `INSERT INTO skills (
+               id,
+               name,
+               version,
+               source_type,
+               description,
+               definition,
+               is_enabled,
+               updated_at
+             )
+             VALUES (
+               COALESCE($1::uuid, gen_random_uuid()),
+               $2,
+               $3,
+               'generated',
+               $4,
+               $5::jsonb,
+               $6,
+               NOW()
+             )
+             ON CONFLICT (name)
+             DO UPDATE
+             SET
+               version = EXCLUDED.version,
+               source_type = EXCLUDED.source_type,
+               description = EXCLUDED.description,
+               definition = EXCLUDED.definition,
+               is_enabled = EXCLUDED.is_enabled,
+               updated_at = NOW()
+             RETURNING id, name, version, source_type, is_enabled`,
+            [
+              previous?.id ?? null,
+              definition.name,
+              nextVersion,
+              definition.description,
+              JSON.stringify({ ...definition, version: nextVersion }),
+              Boolean(input.enableRequested),
+            ]
+          )
       );
 
       await refreshCache();
@@ -351,29 +434,34 @@ export function createSkillManager(options = {}) {
 
       const patterns = keywords.map((keyword) => `%${keyword}%`);
       const limit = options.limit ?? 4;
-      const result = await pool.query(
-        `SELECT
-           name,
-           version,
-           description,
-           source_type
-         FROM skills
-         WHERE is_enabled = TRUE
-           AND (
-             name ILIKE ANY($1::text[])
-             OR description ILIKE ANY($1::text[])
-             OR definition::text ILIKE ANY($1::text[])
-           )
-         ORDER BY
-           CASE source_type
-             WHEN 'builtin' THEN 1
-             WHEN 'manual' THEN 2
-             WHEN 'generated' THEN 3
-             ELSE 4
-           END,
-           updated_at DESC
-         LIMIT $2`,
-        [patterns, limit]
+      const result = await callPostgresTool(
+        'search_enabled_skills',
+        { patterns, limit },
+        () =>
+          pool.query(
+            `SELECT
+               name,
+               version,
+               description,
+               source_type
+             FROM skills
+             WHERE is_enabled = TRUE
+               AND (
+                 name ILIKE ANY($1::text[])
+                 OR description ILIKE ANY($1::text[])
+                 OR definition::text ILIKE ANY($1::text[])
+               )
+             ORDER BY
+               CASE source_type
+                 WHEN 'builtin' THEN 1
+                 WHEN 'manual' THEN 2
+                 WHEN 'generated' THEN 3
+                 ELSE 4
+               END,
+               updated_at DESC
+             LIMIT $2`,
+            [patterns, limit]
+          )
       );
 
       return result.rows;
@@ -385,18 +473,23 @@ export function createSkillManager(options = {}) {
         throw new Error('run_skill requires a non-empty skill name.');
       }
 
-      const result = await pool.query(
-        `SELECT
-           id,
-           name,
-           version,
-           source_type,
-           definition,
-           is_enabled
-         FROM skills
-         WHERE name = $1
-         LIMIT 1`,
-        [skillName]
+      const result = await callPostgresTool(
+        'get_skill_by_name',
+        { name: skillName },
+        () =>
+          pool.query(
+            `SELECT
+               id,
+               name,
+               version,
+               source_type,
+               definition,
+               is_enabled
+             FROM skills
+             WHERE name = $1
+             LIMIT 1`,
+            [skillName]
+          )
       );
 
       const skill = result.rows[0];
@@ -468,29 +561,43 @@ export function createSkillManager(options = {}) {
             ? null
             : `Executed skill ${definition.name}`;
 
-      await pool.query(
-        `INSERT INTO skill_runs (
-           skill_id,
-           task_id,
-           skill_version,
-           status,
-           duration_ms,
-           error_message,
-           input_payload,
-           output_summary,
-           updated_at
-         )
-         VALUES ($1, $2, $3, $4, $5, $6, $7::jsonb, $8, NOW())`,
-        [
-          skill.id,
-          input.taskId ?? null,
-          skill.version,
+      await callPostgresTool(
+        'insert_skill_run',
+        {
+          skillId: skill.id,
+          taskId: input.taskId ?? null,
+          skillVersion: skill.version,
           status,
           durationMs,
-          failure?.message ?? null,
-          JSON.stringify(input.input ?? {}),
+          errorMessage: failure?.message ?? null,
+          inputPayload: input.input ?? {},
           outputSummary,
-        ]
+        },
+        () =>
+          pool.query(
+            `INSERT INTO skill_runs (
+               skill_id,
+               task_id,
+               skill_version,
+               status,
+               duration_ms,
+               error_message,
+               input_payload,
+               output_summary,
+               updated_at
+             )
+             VALUES ($1, $2, $3, $4, $5, $6, $7::jsonb, $8, NOW())`,
+            [
+              skill.id,
+              input.taskId ?? null,
+              skill.version,
+              status,
+              durationMs,
+              failure?.message ?? null,
+              JSON.stringify(input.input ?? {}),
+              outputSummary,
+            ]
+          )
       );
 
       if (failure) {

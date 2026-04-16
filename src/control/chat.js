@@ -154,57 +154,83 @@ export function createChatService({
   llmClient = null,
   modelSelector = null,
   logger = null,
+  mcpRegistry = null,
 }) {
   if (!pool) {
     throw new Error('Chat service requires a database pool');
   }
 
+  const postgresServer = mcpRegistry?.getServer?.('postgres') ?? null;
+
+  async function callPostgresTool(toolName, args, fallback) {
+    if (postgresServer) {
+      return postgresServer.callTool(toolName, args);
+    }
+    return fallback();
+  }
+
   async function listMessages(sessionId, limit = 40) {
-    const result = await pool.query(
-      `SELECT id, session_id, role, actor, content, metadata, created_at
-       FROM chat_messages
-       WHERE session_id = $1
-       ORDER BY created_at DESC
-       LIMIT $2`,
-      [sessionId, limit]
+    const result = await callPostgresTool(
+      'list_chat_messages',
+      { sessionId, limit },
+      () =>
+        pool.query(
+          `SELECT id, session_id, role, actor, content, metadata, created_at
+           FROM chat_messages
+           WHERE session_id = $1
+           ORDER BY created_at DESC
+           LIMIT $2`,
+          [sessionId, limit]
+        )
     );
 
     return result.rows.reverse();
   }
 
   async function getSessionRow(sessionId) {
-    const result = await pool.query(
-      `SELECT
-         chat_sessions.id,
-         chat_sessions.title,
-         chat_sessions.actor,
-         chat_sessions.project_target_id,
-         chat_sessions.project_path,
-         chat_sessions.summary,
-         chat_sessions.status,
-         chat_sessions.created_at,
-         chat_sessions.updated_at,
-         project_targets.name AS project_name
-       FROM chat_sessions
-       LEFT JOIN project_targets ON project_targets.id = chat_sessions.project_target_id
-       WHERE chat_sessions.id = $1`,
-      [sessionId]
+    const result = await callPostgresTool(
+      'get_chat_session',
+      { sessionId },
+      () =>
+        pool.query(
+          `SELECT
+             chat_sessions.id,
+             chat_sessions.title,
+             chat_sessions.actor,
+             chat_sessions.project_target_id,
+             chat_sessions.project_path,
+             chat_sessions.summary,
+             chat_sessions.status,
+             chat_sessions.created_at,
+             chat_sessions.updated_at,
+             project_targets.name AS project_name
+           FROM chat_sessions
+           LEFT JOIN project_targets ON project_targets.id = chat_sessions.project_target_id
+           WHERE chat_sessions.id = $1`,
+          [sessionId]
+        )
     );
 
     return result.rows[0] ?? null;
   }
 
   async function insertMessage({ sessionId, role, actor = null, content, metadata = {} }) {
-    const result = await pool.query(
-      `INSERT INTO chat_messages (session_id, role, actor, content, metadata)
-       VALUES ($1, $2, $3, $4, $5::jsonb)
-       RETURNING id, session_id, role, actor, content, metadata, created_at`,
-      [sessionId, role, actor, content, JSON.stringify(metadata)]
+    const result = await callPostgresTool(
+      'insert_chat_message',
+      { sessionId, role, actor, content, metadata },
+      () =>
+        pool.query(
+          `INSERT INTO chat_messages (session_id, role, actor, content, metadata)
+           VALUES ($1, $2, $3, $4, $5::jsonb)
+           RETURNING id, session_id, role, actor, content, metadata, created_at`,
+          [sessionId, role, actor, content, JSON.stringify(metadata)]
+        )
     );
 
-    await pool.query(
-      `UPDATE chat_sessions SET updated_at = NOW() WHERE id = $1`,
-      [sessionId]
+    await callPostgresTool(
+      'touch_chat_session',
+      { sessionId },
+      () => pool.query(`UPDATE chat_sessions SET updated_at = NOW() WHERE id = $1`, [sessionId])
     );
 
     return result.rows[0];
@@ -220,17 +246,34 @@ export function createChatService({
       1200
     );
 
-    await pool.query(
-      `UPDATE chat_sessions
-       SET summary = $2, updated_at = NOW()
-       WHERE id = $1`,
-      [session.id, summary]
+    await callPostgresTool(
+      'update_chat_summary',
+      {
+        sessionId: session.id,
+        summary,
+      },
+      () =>
+        pool.query(
+          `UPDATE chat_sessions
+           SET summary = $2, updated_at = NOW()
+           WHERE id = $1`,
+          [session.id, summary]
+        )
     );
 
-    await pool.query(
-      `INSERT INTO chat_summaries (session_id, summary, message_count)
-       VALUES ($1, $2, $3)`,
-      [session.id, summary, messages.length]
+    await callPostgresTool(
+      'insert_chat_summary',
+      {
+        sessionId: session.id,
+        summary,
+        messageCount: messages.length,
+      },
+      () =>
+        pool.query(
+          `INSERT INTO chat_summaries (session_id, summary, message_count)
+           VALUES ($1, $2, $3)`,
+          [session.id, summary, messages.length]
+        )
     );
 
     return summary;
@@ -299,33 +342,50 @@ export function createChatService({
         : null;
       const title = sessionTitleSchema.parse(parsed.title ?? 'LocalClaw chat');
 
-      const result = await pool.query(
-        `INSERT INTO chat_sessions (title, actor, project_target_id, project_path)
-         VALUES ($1, $2, $3, $4)
-         RETURNING id, title, actor, project_target_id, project_path, summary, status, created_at, updated_at`,
-        [title, actor, project?.id ?? null, project?.root_path ?? null]
+      const result = await callPostgresTool(
+        'insert_chat_session',
+        {
+          title,
+          actor,
+          projectTargetId: project?.id ?? null,
+          projectPath: project?.root_path ?? null,
+        },
+        () =>
+          pool.query(
+            `INSERT INTO chat_sessions (title, actor, project_target_id, project_path)
+             VALUES ($1, $2, $3, $4)
+             RETURNING id, title, actor, project_target_id, project_path, summary, status, created_at, updated_at`,
+            [title, actor, project?.id ?? null, project?.root_path ?? null]
+          )
       );
 
       return result.rows[0];
     },
 
     async listSessions(limit = 30) {
-      const result = await pool.query(
-        `SELECT
-           chat_sessions.id,
-           chat_sessions.title,
-           chat_sessions.actor,
-           chat_sessions.project_path,
-           chat_sessions.summary,
-           chat_sessions.status,
-           chat_sessions.created_at,
-           chat_sessions.updated_at,
-           project_targets.name AS project_name
-         FROM chat_sessions
-         LEFT JOIN project_targets ON project_targets.id = chat_sessions.project_target_id
-         ORDER BY chat_sessions.updated_at DESC
-         LIMIT $1`,
-        [Math.min(Math.max(Number(limit) || 30, 1), 100)]
+      const result = await callPostgresTool(
+        'list_chat_sessions',
+        {
+          limit: Math.min(Math.max(Number(limit) || 30, 1), 100),
+        },
+        () =>
+          pool.query(
+            `SELECT
+               chat_sessions.id,
+               chat_sessions.title,
+               chat_sessions.actor,
+               chat_sessions.project_path,
+               chat_sessions.summary,
+               chat_sessions.status,
+               chat_sessions.created_at,
+               chat_sessions.updated_at,
+               project_targets.name AS project_name
+             FROM chat_sessions
+             LEFT JOIN project_targets ON project_targets.id = chat_sessions.project_target_id
+             ORDER BY chat_sessions.updated_at DESC
+             LIMIT $1`,
+            [Math.min(Math.max(Number(limit) || 30, 1), 100)]
+          )
       );
 
       return result.rows;
@@ -339,13 +399,21 @@ export function createChatService({
 
       const [messages, tasks] = await Promise.all([
         listMessages(sessionId),
-        pool.query(
-          `SELECT id, title, status, priority, created_at, updated_at
-           FROM tasks
-           WHERE chat_session_id = $1
-           ORDER BY created_at DESC
-           LIMIT 20`,
-          [sessionId]
+        callPostgresTool(
+          'list_tasks_by_chat_session',
+          {
+            sessionId,
+            limit: 20,
+          },
+          () =>
+            pool.query(
+              `SELECT id, title, status, priority, created_at, updated_at
+               FROM tasks
+               WHERE chat_session_id = $1
+               ORDER BY created_at DESC
+               LIMIT 20`,
+              [sessionId]
+            )
         ),
       ]);
 

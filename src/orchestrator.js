@@ -1150,74 +1150,120 @@ export class Orchestrator {
 
   async queueDeploymentApproval(task, result) {
     const target = this.deployer.getTarget();
-    const approvalResult = await this.pool.query(
-      `INSERT INTO approvals (
-         task_id,
-         approval_type,
-         status,
-         requested_via,
-         response_payload
-       )
-       VALUES ($1, $2, 'pending', 'telegram', $3::jsonb)
-       RETURNING id, task_id, requested_at`,
-      [
-        task.id,
-        'railway_deploy',
-        JSON.stringify({
+    const approvalResult = await this.callPostgresTool(
+      'insert_approval',
+      {
+        taskId: task.id,
+        approvalType: 'railway_deploy',
+        status: 'pending',
+        requestedVia: 'telegram',
+        responsePayload: {
           repoUrl: result.publication.repo.htmlUrl,
           target,
-        }),
-      ]
+        },
+      },
+      () =>
+        this.pool.query(
+          `INSERT INTO approvals (
+             task_id,
+             approval_type,
+             status,
+             requested_via,
+             response_payload
+           )
+           VALUES ($1, $2, 'pending', 'telegram', $3::jsonb)
+           RETURNING id, task_id, requested_at`,
+          [
+            task.id,
+            'railway_deploy',
+            JSON.stringify({
+              repoUrl: result.publication.repo.htmlUrl,
+              target,
+            }),
+          ]
+        )
     );
 
     const approval = approvalResult.rows[0];
-    const deploymentResult = await this.pool.query(
-      `INSERT INTO deployments (
-         task_id,
-         provider,
-         target_env,
-         repo_url,
-         status,
-         approval_id,
-         project_id,
-         environment_id,
-         service_id,
-         updated_at
-       )
-       VALUES ($1, 'railway', $2, $3, 'approval_pending', $4, $5, $6, $7, NOW())
-       RETURNING id`,
-      [
-        task.id,
-        target.environmentName,
-        result.publication.repo.htmlUrl,
-        approval.id,
-        target.projectId,
-        target.environmentId,
-        target.serviceId,
-      ]
+    const deploymentResult = await this.callPostgresTool(
+      'insert_deployment',
+      {
+        taskId: task.id,
+        provider: 'railway',
+        targetEnv: target.environmentName,
+        repoUrl: result.publication.repo.htmlUrl,
+        status: 'approval_pending',
+        approvalId: approval.id,
+        projectId: target.projectId,
+        environmentId: target.environmentId,
+        serviceId: target.serviceId,
+      },
+      () =>
+        this.pool.query(
+          `INSERT INTO deployments (
+             task_id,
+             provider,
+             target_env,
+             repo_url,
+             status,
+             approval_id,
+             project_id,
+             environment_id,
+             service_id,
+             updated_at
+           )
+           VALUES ($1, 'railway', $2, $3, 'approval_pending', $4, $5, $6, $7, NOW())
+           RETURNING id`,
+          [
+            task.id,
+            target.environmentName,
+            result.publication.repo.htmlUrl,
+            approval.id,
+            target.projectId,
+            target.environmentId,
+            target.serviceId,
+          ]
+        )
     );
 
-    await this.pool.query(
-      `UPDATE tasks
-       SET
-         status = 'waiting_approval',
-         project_name = COALESCE(project_name, $2),
-         project_path = COALESCE(project_path, $3),
-         repo_url = COALESCE(repo_url, $4),
-         blocked_reason = NULL,
-         result = $5::jsonb,
-         updated_at = NOW(),
-         locked_by = NULL,
-         lease_expires_at = NULL,
-         last_heartbeat_at = NOW()
-       WHERE id = $1`,
-      [
-        task.id,
-        result.publication.repo.name,
-        result.workspaceRoot,
-        result.publication.repo.htmlUrl,
-        JSON.stringify(result),
-      ]
+    await this.callPostgresTool(
+      'update_task_record',
+      {
+        taskId: task.id,
+        patch: {
+          status: 'waiting_approval',
+          project_name: result.publication.repo.name,
+          project_path: result.workspaceRoot,
+          repo_url: result.publication.repo.htmlUrl,
+          result,
+          clear_blocked_reason: true,
+          clear_lock: true,
+          touch_heartbeat: true,
+        },
+      },
+      () =>
+        this.pool.query(
+          `UPDATE tasks
+           SET
+             status = 'waiting_approval',
+             project_name = COALESCE(project_name, $2),
+             project_path = COALESCE(project_path, $3),
+             repo_url = COALESCE(repo_url, $4),
+             blocked_reason = NULL,
+             result = $5::jsonb,
+             updated_at = NOW(),
+             locked_by = NULL,
+             lease_expires_at = NULL,
+             last_heartbeat_at = NOW()
+           WHERE id = $1`,
+          [
+            task.id,
+            result.publication.repo.name,
+            result.workspaceRoot,
+            result.publication.repo.htmlUrl,
+            JSON.stringify(result),
+          ]
+        )
     );
 
     await this.logTaskStep(task.id, {
@@ -1257,11 +1303,19 @@ export class Orchestrator {
     });
 
     if (sentMessage?.message_id) {
-      await this.pool.query(
-        `UPDATE approvals
-         SET request_message_id = $2
-         WHERE id = $1`,
-        [approval.id, sentMessage.message_id.toString()]
+      await this.callPostgresTool(
+        'update_approval_request_message',
+        {
+          approvalId: approval.id,
+          requestMessageId: sentMessage.message_id.toString(),
+        },
+        () =>
+          this.pool.query(
+            `UPDATE approvals
+             SET request_message_id = $2
+             WHERE id = $1`,
+            [approval.id, sentMessage.message_id.toString()]
+          )
       );
     }
 
@@ -1276,23 +1330,28 @@ export class Orchestrator {
   }
 
   async listPendingApprovals(limit = 10) {
-    const result = await this.pool.query(
-      `SELECT
-         approvals.id,
-         approvals.task_id,
-         approvals.requested_at,
-         tasks.title AS task_title,
-         deployments.repo_url,
-         deployments.target_env,
-         deployments.service_id
-       FROM approvals
-       JOIN tasks ON tasks.id = approvals.task_id
-       LEFT JOIN deployments ON deployments.approval_id = approvals.id
-       WHERE approvals.status = 'pending'
-         AND approvals.approval_type = 'railway_deploy'
-       ORDER BY approvals.requested_at ASC
-       LIMIT $1`,
-      [limit]
+    const result = await this.callPostgresTool(
+      'list_pending_approvals',
+      { limit },
+      () =>
+        this.pool.query(
+          `SELECT
+             approvals.id,
+             approvals.task_id,
+             approvals.requested_at,
+             tasks.title AS task_title,
+             deployments.repo_url,
+             deployments.target_env,
+             deployments.service_id
+           FROM approvals
+           JOIN tasks ON tasks.id = approvals.task_id
+           LEFT JOIN deployments ON deployments.approval_id = approvals.id
+           WHERE approvals.status = 'pending'
+             AND approvals.approval_type = 'railway_deploy'
+           ORDER BY approvals.requested_at ASC
+           LIMIT $1`,
+          [limit]
+        )
     );
 
     return result.rows;
@@ -1304,16 +1363,25 @@ export class Orchestrator {
       note: options.note ?? null,
     };
 
-    const approvalResult = await this.pool.query(
-      `UPDATE approvals
-       SET
-         status = 'approved',
-         responded_at = NOW(),
-         response_payload = COALESCE(response_payload, '{}'::jsonb) || $2::jsonb
-       WHERE id = $1
-         AND status = 'pending'
-       RETURNING id, task_id`,
-      [approvalId, JSON.stringify(payload)]
+    const approvalResult = await this.callPostgresTool(
+      'respond_to_approval',
+      {
+        approvalId,
+        status: 'approved',
+        mergeResponsePayload: payload,
+      },
+      () =>
+        this.pool.query(
+          `UPDATE approvals
+           SET
+             status = 'approved',
+             responded_at = NOW(),
+             response_payload = COALESCE(response_payload, '{}'::jsonb) || $2::jsonb
+           WHERE id = $1
+             AND status = 'pending'
+           RETURNING id, task_id`,
+          [approvalId, JSON.stringify(payload)]
+        )
     );
 
     const approval = approvalResult.rows[0];
@@ -1321,15 +1389,26 @@ export class Orchestrator {
       return null;
     }
 
-    await this.pool.query(
-      `UPDATE deployments
-       SET
-         status = 'approved',
-         updated_at = NOW(),
-         last_error = NULL
-       WHERE approval_id = $1
-         AND status = 'approval_pending'`,
-      [approvalId]
+    await this.callPostgresTool(
+      'update_deployments_by_approval',
+      {
+        approvalId,
+        patch: {
+          status: 'approved',
+          clear_last_error: true,
+        },
+      },
+      () =>
+        this.pool.query(
+          `UPDATE deployments
+           SET
+             status = 'approved',
+             updated_at = NOW(),
+             last_error = NULL
+           WHERE approval_id = $1
+             AND status = 'approval_pending'`,
+          [approvalId]
+        )
     );
 
     return approval;
@@ -1342,16 +1421,25 @@ export class Orchestrator {
       reason,
     };
 
-    const approvalResult = await this.pool.query(
-      `UPDATE approvals
-       SET
-         status = 'rejected',
-         responded_at = NOW(),
-         response_payload = COALESCE(response_payload, '{}'::jsonb) || $2::jsonb
-       WHERE id = $1
-         AND status = 'pending'
-       RETURNING id, task_id`,
-      [approvalId, JSON.stringify(payload)]
+    const approvalResult = await this.callPostgresTool(
+      'respond_to_approval',
+      {
+        approvalId,
+        status: 'rejected',
+        mergeResponsePayload: payload,
+      },
+      () =>
+        this.pool.query(
+          `UPDATE approvals
+           SET
+             status = 'rejected',
+             responded_at = NOW(),
+             response_payload = COALESCE(response_payload, '{}'::jsonb) || $2::jsonb
+           WHERE id = $1
+             AND status = 'pending'
+           RETURNING id, task_id`,
+          [approvalId, JSON.stringify(payload)]
+        )
     );
 
     const approval = approvalResult.rows[0];
@@ -1359,28 +1447,53 @@ export class Orchestrator {
       return null;
     }
 
-    await this.pool.query(
-      `UPDATE deployments
-       SET
-         status = 'rejected',
-         last_error = $2,
-         updated_at = NOW(),
-         completed_at = NOW()
-       WHERE approval_id = $1`,
-      [approvalId, reason]
+    await this.callPostgresTool(
+      'update_deployments_by_approval',
+      {
+        approvalId,
+        patch: {
+          status: 'rejected',
+          last_error: reason,
+          touch_completed_at: true,
+        },
+      },
+      () =>
+        this.pool.query(
+          `UPDATE deployments
+           SET
+             status = 'rejected',
+             last_error = $2,
+             updated_at = NOW(),
+             completed_at = NOW()
+           WHERE approval_id = $1`,
+          [approvalId, reason]
+        )
     );
 
-    await this.pool.query(
-      `UPDATE tasks
-       SET
-         status = 'blocked',
-         blocked_reason = $2,
-         updated_at = NOW(),
-         locked_by = NULL,
-         lease_expires_at = NULL,
-         last_heartbeat_at = NOW()
-       WHERE id = $1`,
-      [approval.task_id, reason]
+    await this.callPostgresTool(
+      'update_task_record',
+      {
+        taskId: approval.task_id,
+        patch: {
+          status: 'blocked',
+          blocked_reason: reason,
+          clear_lock: true,
+          touch_heartbeat: true,
+        },
+      },
+      () =>
+        this.pool.query(
+          `UPDATE tasks
+           SET
+             status = 'blocked',
+             blocked_reason = $2,
+             updated_at = NOW(),
+             locked_by = NULL,
+             lease_expires_at = NULL,
+             last_heartbeat_at = NOW()
+           WHERE id = $1`,
+          [approval.task_id, reason]
+        )
     );
 
     await this.logTaskStep(approval.task_id, {
@@ -1399,22 +1512,27 @@ export class Orchestrator {
       return;
     }
 
-    const result = await this.pool.query(
-      `SELECT
-         deployments.id AS deployment_id,
-         deployments.task_id,
-         deployments.project_id,
-         deployments.environment_id,
-         deployments.service_id,
-         deployments.repo_url,
-         tasks.title,
-         tasks.result
-       FROM deployments
-       JOIN approvals ON approvals.id = deployments.approval_id
-       JOIN tasks ON tasks.id = deployments.task_id
-       WHERE approvals.status = 'approved'
-         AND deployments.status IN ('approval_pending', 'approved')
-       ORDER BY deployments.created_at ASC`
+    const result = await this.callPostgresTool(
+      'list_ready_deployments',
+      {},
+      () =>
+        this.pool.query(
+          `SELECT
+             deployments.id AS deployment_id,
+             deployments.task_id,
+             deployments.project_id,
+             deployments.environment_id,
+             deployments.service_id,
+             deployments.repo_url,
+             tasks.title,
+             tasks.result
+           FROM deployments
+           JOIN approvals ON approvals.id = deployments.approval_id
+           JOIN tasks ON tasks.id = deployments.task_id
+           WHERE approvals.status = 'approved'
+             AND deployments.status IN ('approval_pending', 'approved')
+           ORDER BY deployments.created_at ASC`
+        )
     );
 
     for (const row of result.rows) {
@@ -1432,28 +1550,54 @@ export class Orchestrator {
         commitSha: null,
       });
 
-      await this.pool.query(
-        `UPDATE deployments
-         SET
-           status = 'deploying',
-           remote_deployment_id = $2,
-           updated_at = NOW(),
-           last_error = NULL
-         WHERE id = $1`,
-        [row.deployment_id, remoteDeploymentId]
+      await this.callPostgresTool(
+        'update_deployment_record',
+        {
+          deploymentId: row.deployment_id,
+          patch: {
+            status: 'deploying',
+            remote_deployment_id: remoteDeploymentId,
+            clear_last_error: true,
+          },
+        },
+        () =>
+          this.pool.query(
+            `UPDATE deployments
+             SET
+               status = 'deploying',
+               remote_deployment_id = $2,
+               updated_at = NOW(),
+               last_error = NULL
+             WHERE id = $1`,
+            [row.deployment_id, remoteDeploymentId]
+          )
       );
 
-      await this.pool.query(
-        `UPDATE tasks
-         SET
-           status = 'in_progress',
-           blocked_reason = NULL,
-           locked_by = $2,
-           lease_expires_at = NOW() + INTERVAL '15 minutes',
-           last_heartbeat_at = NOW(),
-           updated_at = NOW()
-         WHERE id = $1`,
-        [row.task_id, this.instanceId]
+      await this.callPostgresTool(
+        'update_task_record',
+        {
+          taskId: row.task_id,
+          patch: {
+            status: 'in_progress',
+            locked_by: this.instanceId,
+            clear_blocked_reason: true,
+            lease_expires_at: new Date(Date.now() + 15 * 60 * 1000).toISOString(),
+            touch_heartbeat: true,
+          },
+        },
+        () =>
+          this.pool.query(
+            `UPDATE tasks
+             SET
+               status = 'in_progress',
+               blocked_reason = NULL,
+               locked_by = $2,
+               lease_expires_at = NOW() + INTERVAL '15 minutes',
+               last_heartbeat_at = NOW(),
+               updated_at = NOW()
+             WHERE id = $1`,
+            [row.task_id, this.instanceId]
+          )
       );
 
       await this.logTaskStep(row.task_id, {
@@ -1487,20 +1631,25 @@ export class Orchestrator {
       return;
     }
 
-    const result = await this.pool.query(
-      `SELECT
-         deployments.id AS deployment_id,
-         deployments.task_id,
-         deployments.remote_deployment_id,
-         deployments.service_id,
-         deployments.environment_id,
-         deployments.last_error,
-         tasks.title
-       FROM deployments
-       JOIN tasks ON tasks.id = deployments.task_id
-       WHERE deployments.status = 'deploying'
-         AND deployments.remote_deployment_id IS NOT NULL
-       ORDER BY deployments.updated_at ASC`
+    const result = await this.callPostgresTool(
+      'list_active_deployments',
+      {},
+      () =>
+        this.pool.query(
+          `SELECT
+             deployments.id AS deployment_id,
+             deployments.task_id,
+             deployments.remote_deployment_id,
+             deployments.service_id,
+             deployments.environment_id,
+             deployments.last_error,
+             tasks.title
+           FROM deployments
+           JOIN tasks ON tasks.id = deployments.task_id
+           WHERE deployments.status = 'deploying'
+             AND deployments.remote_deployment_id IS NOT NULL
+           ORDER BY deployments.updated_at ASC`
+        )
     );
 
     for (const row of result.rows) {
@@ -1515,13 +1664,23 @@ export class Orchestrator {
       await this.touchTaskLease(row.task_id);
 
       if (snapshot.state === 'pending') {
-        await this.pool.query(
-          `UPDATE deployments
-           SET
-             deploy_url = COALESCE($2, deploy_url),
-             updated_at = NOW()
-           WHERE id = $1`,
-          [row.deployment_id, snapshot.url]
+        await this.callPostgresTool(
+          'update_deployment_record',
+          {
+            deploymentId: row.deployment_id,
+            patch: {
+              deploy_url: snapshot.url ?? null,
+            },
+          },
+          () =>
+            this.pool.query(
+              `UPDATE deployments
+               SET
+                 deploy_url = COALESCE($2, deploy_url),
+                 updated_at = NOW()
+               WHERE id = $1`,
+              [row.deployment_id, snapshot.url]
+            )
         );
         return;
       }
@@ -1529,31 +1688,59 @@ export class Orchestrator {
       const logSnapshot = await this.captureDeploymentLogs(row.remote_deployment_id);
 
       if (snapshot.state === 'success') {
-        await this.pool.query(
-          `UPDATE deployments
-           SET
-             status = 'success',
-             deploy_url = COALESCE($2, deploy_url),
-             log_snapshot = $3,
-             last_error = NULL,
-             updated_at = NOW(),
-             completed_at = NOW()
-           WHERE id = $1`,
-          [row.deployment_id, snapshot.url, logSnapshot]
+        await this.callPostgresTool(
+          'update_deployment_record',
+          {
+            deploymentId: row.deployment_id,
+            patch: {
+              status: 'success',
+              deploy_url: snapshot.url ?? null,
+              log_snapshot: logSnapshot,
+              clear_last_error: true,
+              touch_completed_at: true,
+            },
+          },
+          () =>
+            this.pool.query(
+              `UPDATE deployments
+               SET
+                 status = 'success',
+                 deploy_url = COALESCE($2, deploy_url),
+                 log_snapshot = $3,
+                 last_error = NULL,
+                 updated_at = NOW(),
+                 completed_at = NOW()
+               WHERE id = $1`,
+              [row.deployment_id, snapshot.url, logSnapshot]
+            )
         );
 
-        await this.pool.query(
-          `UPDATE tasks
-           SET
-             status = 'done',
-             blocked_reason = NULL,
-             completed_at = NOW(),
-             updated_at = NOW(),
-             locked_by = NULL,
-             lease_expires_at = NULL,
-             last_heartbeat_at = NOW()
-           WHERE id = $1`,
-          [row.task_id]
+        await this.callPostgresTool(
+          'update_task_record',
+          {
+            taskId: row.task_id,
+            patch: {
+              status: 'done',
+              clear_blocked_reason: true,
+              touch_completed_at: true,
+              clear_lock: true,
+              touch_heartbeat: true,
+            },
+          },
+          () =>
+            this.pool.query(
+              `UPDATE tasks
+               SET
+                 status = 'done',
+                 blocked_reason = NULL,
+                 completed_at = NOW(),
+                 updated_at = NOW(),
+                 locked_by = NULL,
+                 lease_expires_at = NULL,
+                 last_heartbeat_at = NOW()
+               WHERE id = $1`,
+              [row.task_id]
+            )
         );
 
         await this.incrementStats('tasks_completed');
@@ -1610,15 +1797,27 @@ export class Orchestrator {
       commitSha: null,
     });
 
-    await this.pool.query(
-      `UPDATE deployments
-       SET
-         status = 'deploying',
-         remote_deployment_id = $2,
-         last_error = 'retrying_after_failed_no_logs',
-         updated_at = NOW()
-       WHERE id = $1`,
-      [row.deployment_id, remoteDeploymentId]
+    await this.callPostgresTool(
+      'update_deployment_record',
+      {
+        deploymentId: row.deployment_id,
+        patch: {
+          status: 'deploying',
+          remote_deployment_id: remoteDeploymentId,
+          last_error: 'retrying_after_failed_no_logs',
+        },
+      },
+      () =>
+        this.pool.query(
+          `UPDATE deployments
+           SET
+             status = 'deploying',
+             remote_deployment_id = $2,
+             last_error = 'retrying_after_failed_no_logs',
+             updated_at = NOW()
+           WHERE id = $1`,
+          [row.deployment_id, remoteDeploymentId]
+        )
     );
 
     await this.logTaskStep(row.task_id, {
@@ -1651,29 +1850,55 @@ export class Orchestrator {
   }
 
   async failDeployment({ deploymentId, taskId, title, errorMessage, logSnapshot = null }) {
-    await this.pool.query(
-      `UPDATE deployments
-       SET
-         status = 'failed',
-         last_error = $2,
-         log_snapshot = COALESCE($3, log_snapshot),
-         updated_at = NOW(),
-         completed_at = NOW()
-       WHERE id = $1`,
-      [deploymentId, errorMessage, logSnapshot]
+    await this.callPostgresTool(
+      'update_deployment_record',
+      {
+        deploymentId,
+        patch: {
+          status: 'failed',
+          last_error: errorMessage,
+          log_snapshot: logSnapshot,
+          touch_completed_at: true,
+        },
+      },
+      () =>
+        this.pool.query(
+          `UPDATE deployments
+           SET
+             status = 'failed',
+             last_error = $2,
+             log_snapshot = COALESCE($3, log_snapshot),
+             updated_at = NOW(),
+             completed_at = NOW()
+           WHERE id = $1`,
+          [deploymentId, errorMessage, logSnapshot]
+        )
     );
 
-    await this.pool.query(
-      `UPDATE tasks
-       SET
-         status = 'failed',
-         blocked_reason = $2,
-         updated_at = NOW(),
-         locked_by = NULL,
-         lease_expires_at = NULL,
-         last_heartbeat_at = NOW()
-       WHERE id = $1`,
-      [taskId, errorMessage]
+    await this.callPostgresTool(
+      'update_task_record',
+      {
+        taskId,
+        patch: {
+          status: 'failed',
+          blocked_reason: errorMessage,
+          clear_lock: true,
+          touch_heartbeat: true,
+        },
+      },
+      () =>
+        this.pool.query(
+          `UPDATE tasks
+           SET
+             status = 'failed',
+             blocked_reason = $2,
+             updated_at = NOW(),
+             locked_by = NULL,
+             lease_expires_at = NULL,
+             last_heartbeat_at = NOW()
+           WHERE id = $1`,
+          [taskId, errorMessage]
+        )
     );
 
     await this.incrementStats('tasks_failed');

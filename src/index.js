@@ -161,7 +161,10 @@ async function bootstrap() {
     embeddingClient: ollamaClient,
     logger,
   });
-  const skillManager = createSkillManager({ logger });
+  const skillManager = createSkillManager({
+    logger,
+    mcpRegistry,
+  });
   const skillSummary = await skillManager.syncRegistry();
   logger.info({ skillSummary }, 'Skill registry synchronized');
   const toolRegistry = createToolRegistry({
@@ -262,6 +265,7 @@ async function bootstrap() {
 
   projectService = createProjectService({
     pool: getPool(),
+    mcpRegistry,
     workspaceRoots: config.workspaceRoots,
   });
   chatService = createChatService({
@@ -271,6 +275,7 @@ async function bootstrap() {
     llmClient: ollamaClient,
     modelSelector,
     logger,
+    mcpRegistry,
   });
 
   telegramBot = await withTimeout(
