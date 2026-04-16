@@ -56,6 +56,8 @@ test('repo contract seeding creates required baseline files', async () => {
     '.opskit/skills/deploy-readiness/SKILL.md',
     '.opskit/agents/reviewer.md',
     '.opskit/agents/security.md',
+    '.opskit/agents/documentation.md',
+    '.opskit/agents/dependency.md',
     '.opskit/agents/release.md',
   ];
 

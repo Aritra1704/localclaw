@@ -37,6 +37,17 @@ test('control API enforces token on mutating routes and returns deterministic re
         },
       };
     },
+    getMcpStatus() {
+      return {
+        servers: [
+          {
+            name: 'filesystem',
+            description: 'files',
+            tools: [{ name: 'write_file', description: 'write' }],
+          },
+        ],
+      };
+    },
     async listTasks() {
       return [];
     },
@@ -126,6 +137,11 @@ test('control API enforces token on mutating routes and returns deterministic re
     const statusResponse = await fetch(`${baseUrl}/v1/status`);
     assert.equal(statusResponse.status, 200);
 
+    const mcpResponse = await fetch(`${baseUrl}/v1/mcp`);
+    assert.equal(mcpResponse.status, 200);
+    const mcpPayload = await mcpResponse.json();
+    assert.equal(mcpPayload.data.servers[0].name, 'filesystem');
+
     const unauthorizedResponse = await fetch(`${baseUrl}/v1/tasks/plan`, {
       method: 'POST',
       headers: {
@@ -191,6 +207,9 @@ test('control API exposes project and chat operator endpoints', async () => {
     async getStatusSnapshot() {
       return { status: 'running', queue: {} };
     },
+    getMcpStatus() {
+      return { servers: [] };
+    },
     async listTasks() {
       return [];
     },
@@ -216,6 +235,17 @@ test('control API exposes project and chat operator endpoints', async () => {
         name: input.name ?? 'demo',
         root_path: input.rootPath,
       };
+    },
+    async deleteProject(id) {
+      if (id === 'cccccccc-cccc-4ccc-8ccc-cccccccccccc') {
+        return {
+          id,
+          name: 'demo',
+          root_path: '/tmp/demo',
+        };
+      }
+
+      return null;
     },
   };
   const chatService = {
@@ -300,6 +330,28 @@ test('control API exposes project and chat operator endpoints', async () => {
       body: JSON.stringify({ rootPath: '/tmp/demo', name: 'demo' }),
     });
     assert.equal(project.status, 201);
+
+    const deletedProject = await fetch(
+      `${baseUrl}/v1/projects/cccccccc-cccc-4ccc-8ccc-cccccccccccc`,
+      {
+        method: 'DELETE',
+        headers: {
+          authorization: 'Bearer test-token',
+        },
+      }
+    );
+    assert.equal(deletedProject.status, 200);
+
+    const missingProject = await fetch(
+      `${baseUrl}/v1/projects/dddddddd-dddd-4ddd-8ddd-dddddddddddd`,
+      {
+        method: 'DELETE',
+        headers: {
+          authorization: 'Bearer test-token',
+        },
+      }
+    );
+    assert.equal(missingProject.status, 404);
 
     const session = await fetch(`${baseUrl}/v1/chat/sessions`, {
       method: 'POST',
