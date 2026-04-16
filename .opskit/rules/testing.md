@@ -1,5 +1,5 @@
 # Testing
 
-- Add a runnable regression test for production bugs when practical.
-- Keep unit tests deterministic and local.
-- Record the command used for verification when behavior changes.
+- Add a runnable verification path for important behavior.
+- Prefer fast local checks before external actions.
+- Capture failure output clearly when a test cannot pass.

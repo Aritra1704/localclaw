@@ -2,10 +2,10 @@
 
 ## Purpose
 
-Review the current LocalClaw change set for bugs, regressions, missing tests, and deploy-risk changes.
+Review the current change set before approval or deploy.
 
 ## Expected Output
 
-- the highest-risk findings first
-- the missing verification path, if any
-- a clear go or no-go statement
+- concise result summary
+- referenced files or commands
+- clear follow-up action if blocked

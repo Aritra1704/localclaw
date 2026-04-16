@@ -13,3 +13,4 @@ tmp/
 npm-debug.log*
 PROJECT_CONTEXT.local.md
 .opskit/settings.local.json
+web/dist/

@@ -1,10 +1,10 @@
 # Opskit
 
-This folder is the committed operating contract for the LocalClaw repo.
+This folder is the committed repo contract for LocalClaw-generated projects.
 
 - `settings.json`: committed execution defaults
-- `settings.local.json`: local-only overrides, ignored by git
-- `commands/`: reusable operator command specs
-- `rules/`: modular engineering rules
-- `skills/`: reusable workflows
-- `agents/`: role-specific review personas
+- `settings.local.json`: local-only overrides
+- `commands/`: reusable task command specs
+- `rules/`: modular project rules
+- `skills/`: reusable workflow instructions
+- `agents/`: role-specific operating notes

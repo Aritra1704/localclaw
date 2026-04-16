@@ -1,5 +1,5 @@
 # API
 
-- Validate external config before making provider calls.
-- Keep operator-facing error messages actionable.
-- Treat Telegram, GitHub, and Railway boundaries as explicit contracts.
+- Keep interfaces explicit and stable.
+- Validate required inputs before doing external work.
+- Return actionable error messages for operator-visible failures.

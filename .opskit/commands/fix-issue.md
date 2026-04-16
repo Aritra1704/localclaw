@@ -2,10 +2,10 @@
 
 ## Purpose
 
-Diagnose a reproducible LocalClaw failure, patch it, and add verification that blocks regression.
+Diagnose and fix a reproducible project issue with verification.
 
 ## Expected Output
 
-- root cause
-- code change summary
-- exact verification result
+- concise result summary
+- referenced files or commands
+- clear follow-up action if blocked

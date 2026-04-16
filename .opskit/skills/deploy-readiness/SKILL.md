@@ -2,6 +2,6 @@
 
 ## Workflow
 
-1. Confirm the repo name matches the configured Phase 4 Railway service.
-2. Confirm the service binds to `PORT` on `0.0.0.0`.
-3. Confirm approval state is ready before deploy.
+1. Confirm required runtime files exist.
+2. Confirm the service binds to the configured port.
+3. Summarize approval inputs before deployment.
