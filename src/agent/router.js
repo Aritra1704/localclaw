@@ -10,6 +10,7 @@ Available Roles:
 - planner (gemma/llama - good for heavy architecture, database design, complex planning)
 - coder (qwen2.5-coder - good for pure programming, syntax, refactoring, writing scripts)
 - fast (qwen2.5-instruct - good for simple chitchat, readme updates, quick text generation)
+- security (gemma/qwen - specialized in identifying vulnerabilities, secrets, and risky configurations)
 
 Task Title: ${task.title}
 Task Description: ${task.description}
@@ -28,7 +29,7 @@ Return ONLY a JSON object with this format:
         const jsonText = extractJsonObjectText(response.responseText);
         const parsed = JSON.parse(jsonText);
 
-        if (['planner', 'coder', 'fast'].includes(parsed.role)) {
+        if (['planner', 'coder', 'fast', 'security'].includes(parsed.role)) {
           return parsed.role;
         }
         return 'planner'; // Fallback

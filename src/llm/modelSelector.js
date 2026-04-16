@@ -6,6 +6,7 @@ export function createModelSelector(overrides = {}) {
     coder: config.modelCoder,
     fast: config.modelFast,
     review: config.modelReview,
+    security: config.modelReview,
     embed: config.modelEmbed,
     ...overrides,
   };
@@ -35,6 +36,8 @@ export function createModelSelector(overrides = {}) {
           return [models.coder, planner, fast].filter(Boolean);
         case 'review':
           return [models.review, planner, fast].filter(Boolean);
+        case 'security':
+          return [models.security, planner, fast].filter(Boolean);
         case 'fast':
           return [fast, planner].filter(Boolean);
         case 'embed':
