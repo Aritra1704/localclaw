@@ -65,6 +65,39 @@ const dashboardLoaders = [
     },
   },
 ];
+const liveTaskStatuses = new Set(['pending', 'in_progress', 'verifying', 'waiting_approval']);
+
+function formatDuration(duration) {
+  if (!duration || Number.isNaN(Number(duration))) {
+    return 'n/a';
+  }
+
+  const milliseconds = Number(duration);
+  if (milliseconds < 1000) {
+    return `${milliseconds} ms`;
+  }
+
+  return `${(milliseconds / 1000).toFixed(1)} s`;
+}
+
+function buildRuntimeStats(runtime) {
+  if (!runtime) {
+    return [];
+  }
+
+  return [
+    ['Stage', runtime.phaseLabel || runtime.phase || 'unknown'],
+    ['Model', runtime.currentModel || 'tool execution'],
+    ['Prompt tokens', runtime.usage?.promptEvalCount ?? 'n/a'],
+    ['Output tokens', runtime.usage?.evalCount ?? 'n/a'],
+    ['Load time', formatDuration(runtime.usage?.loadDuration)],
+    ['Total time', formatDuration(runtime.usage?.totalDuration)],
+  ];
+}
+
+function isTaskWaitingApproval(taskDetail) {
+  return taskDetail?.task?.status === 'waiting_approval';
+}
 
 function hasToken() {
   return Boolean(sessionStorage.getItem(tokenKey));
@@ -107,6 +140,11 @@ async function api(path, options = {}) {
   if (!response.ok) {
     if (response.status === 401) {
       throw new Error('Paste CONTROL_API_TOKEN into the token box before using chat, approvals, projects, or planning.');
+    }
+    if (payload.error === 'validation_error' && Array.isArray(payload.details) && payload.details.length > 0) {
+      const detail = payload.details[0];
+      const field = Array.isArray(detail.path) && detail.path.length > 0 ? detail.path.join('.') : 'request';
+      throw new Error(`${field}: ${detail.message}`);
     }
     throw new Error(payload.message || `${response.status} ${response.statusText}`);
   }
@@ -186,7 +224,7 @@ function Tasks({ tasks, selectedTask, onSelect }) {
   );
 }
 
-function TaskDetail({ task }) {
+function TaskDetail({ task, tokenReady, onApproveExecution }) {
   if (!task) {
     return (
       <section className="panel detail-panel">
@@ -200,6 +238,11 @@ function TaskDetail({ task }) {
   return (
     <section className="panel detail-panel">
       <PanelTitle eyebrow="Task Detail" title={task.task.title} detail={task.task.status} />
+      <RuntimePanel
+        taskDetail={task}
+        tokenReady={tokenReady}
+        onApproveExecution={onApproveExecution}
+      />
       {plan && (
         <div className="plan-box">
           <h3>{plan.summary}</h3>
@@ -223,6 +266,94 @@ function TaskDetail({ task }) {
           </div>
         ))}
       </div>
+    </section>
+  );
+}
+
+function RuntimePanel({ taskDetail, tokenReady = true, onApproveExecution = null }) {
+  const runtime = taskDetail?.runtime;
+  const checklist = runtime?.checklist || [];
+  const stats = buildRuntimeStats(runtime);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState('');
+
+  if (!taskDetail) {
+    return null;
+  }
+
+  async function handleApprove() {
+    if (!onApproveExecution || busy) {
+      return;
+    }
+
+    try {
+      setBusy(true);
+      setError('');
+      await onApproveExecution(taskDetail.task.id);
+    } catch (nextError) {
+      setError(toErrorMessage(nextError));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <section className="runtime-panel">
+      <div className="runtime-header">
+        <div>
+          <strong>Live run context</strong>
+          <p>{runtime?.detail || 'Transient runtime details will appear here while the task is active.'}</p>
+        </div>
+        <div className="runtime-actions">
+          <span>{runtime?.live ? 'live' : 'snapshot'}</span>
+          {isTaskWaitingApproval(taskDetail) && (
+            <button
+              className="secondary runtime-approve"
+              disabled={!tokenReady || busy}
+              onClick={handleApprove}
+            >
+              {busy ? 'Approving...' : 'Approve execution'}
+            </button>
+          )}
+        </div>
+      </div>
+      {error && <div className="error">{error}</div>}
+      <div className="runtime-grid">
+        {stats.map(([label, value]) => (
+          <div className="runtime-stat" key={label}>
+            <span>{label}</span>
+            <strong>{value}</strong>
+          </div>
+        ))}
+      </div>
+      {runtime?.summary && <p className="runtime-summary">{runtime.summary}</p>}
+      {runtime?.currentStep && (
+        <div className="runtime-current">
+          <span>Current item</span>
+          <strong>{runtime.currentStep.objective}</strong>
+          <code>{runtime.currentStep.tool}</code>
+        </div>
+      )}
+      {checklist.length > 0 && (
+        <div className="runtime-checklist">
+          <div className="runtime-checklist-header">
+            <strong>Tasks to complete</strong>
+            <span>{runtime?.counts?.completed ?? 0}/{runtime?.counts?.total ?? checklist.length} done</span>
+          </div>
+          <div className="runtime-checklist-list">
+            {checklist.map((item) => (
+              <div className={`runtime-checklist-item ${item.status}`} key={item.stepNumber}>
+                <span>{item.stepNumber}</span>
+                <div>
+                  <strong>{item.objective}</strong>
+                  <p>{item.tool}</p>
+                </div>
+                <b>{item.status}</b>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
     </section>
   );
 }
@@ -277,7 +408,7 @@ function Approvals({ approvals, mutate, tokenReady }) {
   );
 }
 
-function Chat({ sessions, actors, projects, tokenReady, onRefresh }) {
+function Chat({ sessions, actors, projects, tokenReady, onRefresh, onSelectTask }) {
   const [activeSession, setActiveSession] = useState(null);
   const [sessionDetail, setSessionDetail] = useState(null);
   const [message, setMessage] = useState('');
@@ -285,6 +416,7 @@ function Chat({ sessions, actors, projects, tokenReady, onRefresh }) {
   const [projectPath, setProjectPath] = useState('');
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
+  const [runtimeTaskDetail, setRuntimeTaskDetail] = useState(null);
 
   useEffect(() => {
     if (!projectPath && projects[0]?.root_path) {
@@ -368,6 +500,68 @@ function Chat({ sessions, actors, projects, tokenReady, onRefresh }) {
   }
 
   const activeProject = projects.find((project) => project.root_path === projectPath);
+  const sessionTasks = sessionDetail?.tasks || [];
+  const activeRuntimeTask = useMemo(
+    () => sessionTasks.find((task) => liveTaskStatuses.has(task.status)) || sessionTasks[0] || null,
+    [sessionTasks]
+  );
+
+  useEffect(() => {
+    if (!activeRuntimeTask?.id) {
+      setRuntimeTaskDetail(null);
+      return undefined;
+    }
+
+    let cancelled = false;
+
+    const loadRuntimeTask = async () => {
+      try {
+        const detail = await api(`/v1/tasks/${activeRuntimeTask.id}`);
+        if (!cancelled) {
+          setRuntimeTaskDetail(detail);
+        }
+      } catch (nextError) {
+        if (!cancelled) {
+          setError(toErrorMessage(nextError));
+        }
+      }
+    };
+
+    loadRuntimeTask();
+
+    if (!liveTaskStatuses.has(activeRuntimeTask.status)) {
+      return () => {
+        cancelled = true;
+      };
+    }
+
+    const timer = setInterval(loadRuntimeTask, 2500);
+    return () => {
+      cancelled = true;
+      clearInterval(timer);
+    };
+  }, [activeRuntimeTask?.id, activeRuntimeTask?.status]);
+
+  async function approveExecution(taskId) {
+    if (!tokenReady) {
+      throw new Error('Paste CONTROL_API_TOKEN first.');
+    }
+
+    if (activeSession) {
+      await api(`/v1/chat/sessions/${activeSession}/approve-task`, {
+        method: 'POST',
+        body: { taskId },
+      });
+      await loadSession(activeSession);
+    } else {
+      await api(`/v1/tasks/${taskId}/approve-execution`, {
+        method: 'POST',
+      });
+    }
+
+    setRuntimeTaskDetail(await api(`/v1/tasks/${taskId}`));
+    await onRefresh();
+  }
 
   return (
     <section className="chat-workspace">
@@ -416,7 +610,7 @@ function Chat({ sessions, actors, projects, tokenReady, onRefresh }) {
           {!sessionDetail && (
             <div className="message assistant">
               <b>assistant</b>
-              <p>Paste the token, confirm the project, then type normally. I will answer here and will not execute tasks without explicit approval.</p>
+              <p>Paste the token, confirm the project, then type normally. `Send` keeps this in discussion mode. `Plan task` creates a tracked task and waits for approval before execution.</p>
             </div>
           )}
           {(sessionDetail?.messages || []).map((item) => (
@@ -432,6 +626,51 @@ function Chat({ sessions, actors, projects, tokenReady, onRefresh }) {
             </div>
           )}
         </div>
+        <section className="task-hints">
+          <div className="task-hint-card">
+            <strong>What chat expects</strong>
+            <p>Use `Send` for questions, scoping, and drafting. Use `Plan task` when you want LocalClaw to create a real task from the current prompt.</p>
+          </div>
+          <div className="task-hint-card">
+            <strong>Where progress shows</strong>
+            <p>Planned or approved work appears below as session tasks and in the `Tasks` view. `Send` by itself does not start execution.</p>
+          </div>
+        </section>
+        {runtimeTaskDetail && (
+          <RuntimePanel
+            taskDetail={runtimeTaskDetail}
+            tokenReady={tokenReady}
+            onApproveExecution={approveExecution}
+          />
+        )}
+        <section className="session-task-panel">
+          <div className="session-task-header">
+            <strong>Session tasks</strong>
+            <span>{sessionTasks.length > 0 ? `${sessionTasks.length} linked` : 'none yet'}</span>
+          </div>
+          {sessionTasks.length === 0 && (
+            <div className="empty compact-empty">
+              No task has been created in this chat yet. Enter the request, then click `Plan task`.
+            </div>
+          )}
+          {sessionTasks.length > 0 && (
+            <div className="session-task-list">
+              {sessionTasks.map((task) => (
+                <button
+                  className="session-task"
+                  key={task.id}
+                  onClick={() => onSelectTask(task.id)}
+                >
+                  <div>
+                    <strong>{task.title}</strong>
+                    <p>{new Date(task.updated_at || task.created_at).toLocaleString()}</p>
+                  </div>
+                  <span>{task.status}</span>
+                </button>
+              ))}
+            </div>
+          )}
+        </section>
         {error && <div className="error">{error}</div>}
         <textarea
           value={message}
@@ -470,6 +709,21 @@ function Projects({ projects, allowedRoots, mutate, onRefresh, tokenReady }) {
     }
   }
 
+  async function deleteProject(project) {
+    const confirmed = window.confirm(`Remove project "${project.name}" from LocalClaw?`);
+    if (!confirmed) {
+      return;
+    }
+
+    try {
+      setError('');
+      await mutate(`/v1/projects/${project.id}`, null, 'DELETE');
+      await onRefresh();
+    } catch (nextError) {
+      setError(nextError.message);
+    }
+  }
+
   return (
     <section className="panel">
       <PanelTitle eyebrow="Workspace Allowlist" title="Projects" detail={`${projects.length} registered`} />
@@ -482,8 +736,17 @@ function Projects({ projects, allowedRoots, mutate, onRefresh, tokenReady }) {
       {error && <div className="error">{error}</div>}
       {projects.map((project) => (
         <div className="project" key={project.id}>
-          <b>{project.name}</b>
-          <span>{project.root_path}</span>
+          <div>
+            <b>{project.name}</b>
+            <span>{project.root_path}</span>
+          </div>
+          <button
+            disabled={!tokenReady}
+            className="ghost danger-button"
+            onClick={() => deleteProject(project)}
+          >
+            Delete
+          </button>
         </div>
       ))}
     </section>
@@ -588,8 +851,8 @@ function App() {
   }, []);
 
   const mutate = useMemo(
-    () => async (path, body) => {
-      await api(path, { method: 'POST', body });
+    () => async (path, body, method = 'POST') => {
+      await api(path, { method, body });
       await refresh();
     },
     []
@@ -605,6 +868,15 @@ function App() {
     }
   }
 
+  async function approveTaskExecution(taskId) {
+    await api(`/v1/tasks/${taskId}/approve-execution`, {
+      method: 'POST',
+    });
+    await refresh();
+    setSelectedTask(await api(`/v1/tasks/${taskId}`));
+    setActiveView('tasks');
+  }
+
   const content = {
     chat: (
       <Chat
@@ -613,12 +885,17 @@ function App() {
         projects={state.projects}
         tokenReady={tokenReady}
         onRefresh={refresh}
+        onSelectTask={selectTask}
       />
     ),
     tasks: (
       <div className="split-view">
         <Tasks tasks={state.tasks} selectedTask={selectedTask} onSelect={selectTask} />
-        <TaskDetail task={selectedTask} />
+        <TaskDetail
+          task={selectedTask}
+          tokenReady={tokenReady}
+          onApproveExecution={approveTaskExecution}
+        />
       </div>
     ),
     approvals: <Approvals approvals={state.approvals} mutate={mutate} tokenReady={tokenReady} />,

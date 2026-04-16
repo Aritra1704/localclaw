@@ -91,6 +91,15 @@ JSON contract:
 }`;
 }
 
+function buildUsage(response) {
+  return {
+    promptEvalCount: response?.promptEvalCount ?? null,
+    evalCount: response?.evalCount ?? null,
+    totalDuration: response?.totalDuration ?? null,
+    loadDuration: response?.loadDuration ?? null,
+  };
+}
+
 export function createVerifier({ client, modelSelector }) {
   return {
     async verifyTask(task, context) {
@@ -107,6 +116,9 @@ export function createVerifier({ client, modelSelector }) {
 
       try {
         const model = modelSelector.select('review');
+        context.onStart?.({
+          model,
+        });
         const response = await client.generate({
           model,
           prompt: buildVerifierPrompt(task, {
@@ -128,6 +140,7 @@ export function createVerifier({ client, modelSelector }) {
           workspaceFiles,
           modelUsed: model,
           usedFallback: false,
+          usage: buildUsage(response),
         };
       } catch (error) {
         return {
@@ -135,6 +148,7 @@ export function createVerifier({ client, modelSelector }) {
           workspaceFiles,
           modelUsed: null,
           usedFallback: true,
+          usage: null,
         };
       }
     },

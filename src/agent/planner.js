@@ -333,12 +333,25 @@ Malformed planner output:
 ${rawOutput}`;
 }
 
+function buildUsage(response) {
+  return {
+    promptEvalCount: response?.promptEvalCount ?? null,
+    evalCount: response?.evalCount ?? null,
+    totalDuration: response?.totalDuration ?? null,
+    loadDuration: response?.loadDuration ?? null,
+  };
+}
+
 export function createPlanner({ client, modelSelector }) {
   return {
     async planTask(task, context) {
       const prompt = buildPlannerPrompt(task, context);
       const startedAt = Date.now();
       const primaryModel = modelSelector.select(context.overrideRole ?? 'planner');
+      context.onStart?.({
+        stage: 'primary',
+        model: primaryModel,
+      });
       const primaryResponse = await client.generate({
         model: primaryModel,
         prompt,
@@ -355,9 +368,14 @@ export function createPlanner({ client, modelSelector }) {
           modelUsed: primaryModel,
           repaired: false,
           durationMs: Date.now() - startedAt,
+          usage: buildUsage(primaryResponse),
         };
       } catch (error) {
         const repairModel = modelSelector.select('fast');
+        context.onStart?.({
+          stage: 'repair',
+          model: repairModel,
+        });
         const repairedResponse = await client.generate({
           model: repairModel,
           prompt: buildRepairPrompt(primaryResponse.responseText, error.message),
@@ -374,6 +392,7 @@ export function createPlanner({ client, modelSelector }) {
             modelUsed: repairModel,
             repaired: true,
             durationMs: Date.now() - startedAt,
+            usage: buildUsage(repairedResponse),
           };
         } catch (repairError) {
           const plan = buildDeterministicFallbackPlan(task);
@@ -385,6 +404,7 @@ export function createPlanner({ client, modelSelector }) {
             fallback: true,
             fallbackReason: `${error.message} | ${repairError.message}`,
             durationMs: Date.now() - startedAt,
+            usage: buildUsage(repairedResponse),
           };
         }
       }

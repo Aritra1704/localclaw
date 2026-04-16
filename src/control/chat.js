@@ -35,7 +35,7 @@ const draftTaskSchema = z
   .partial()
   .strict();
 
-const CHAT_MODEL_TIMEOUT_MS = 7000;
+const CHAT_MODEL_TIMEOUT_MS = 20000;
 
 function compact(value, limit = 4000) {
   const text = `${value ?? ''}`.trim();
@@ -253,7 +253,7 @@ export function createChatService({
     }
 
     // Chat should feel responsive; deeper role-specific models are used by planning/execution.
-    const models = modelSelector.selectWithFallback('fast').slice(0, 1);
+    const models = modelSelector.selectWithFallback('fast');
     let lastError = null;
 
     for (const model of models) {

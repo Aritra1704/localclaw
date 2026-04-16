@@ -30,6 +30,16 @@ test('project service only accepts paths inside configured workspace roots', asy
         return { rows };
       }
 
+      if (sql.includes('DELETE FROM project_targets')) {
+        const index = rows.findIndex((row) => row.id === params[0]);
+        if (index === -1) {
+          return { rows: [] };
+        }
+
+        const [deleted] = rows.splice(index, 1);
+        return { rows: [deleted] };
+      }
+
       throw new Error(`Unexpected query: ${sql}`);
     },
   };
@@ -50,4 +60,10 @@ test('project service only accepts paths inside configured workspace roots', asy
     () => service.addProject({ rootPath: outside }),
     /outside allowed workspace roots/
   );
+
+  const deleted = await service.deleteProject(project.id);
+  assert.equal(deleted?.id, project.id);
+
+  const missing = await service.deleteProject(project.id);
+  assert.equal(missing, null);
 });

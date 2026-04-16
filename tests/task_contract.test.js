@@ -31,6 +31,15 @@ test('normalizeTaskContract accepts valid task_contract_v1 payload', () => {
   assert.equal(parsed.successCriteria.length, 1);
 });
 
+test('normalizeTaskContract accepts longer objectives used by chat planning', () => {
+  const parsed = normalizeTaskContract({
+    ...validContract,
+    objective: 'Build a tiny single-page UI project in the selected workspace using React and Vite with one page, a compact task tracker, minimal styling, no backend, no auth, no routing, no database, no external UI libraries, and clear local run instructions for the final output.',
+  });
+
+  assert.match(parsed.objective, /tiny single-page UI project/);
+});
+
 test('normalizeTaskContract rejects missing required fields', () => {
   assert.throws(
     () =>

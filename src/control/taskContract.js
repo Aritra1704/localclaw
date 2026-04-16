@@ -19,7 +19,7 @@ export const taskContractSchema = z
       .string()
       .trim()
       .regex(/^[a-z0-9][a-z0-9-_]{1,63}$/i, 'projectName must be 2-64 chars: letters, numbers, -, _'),
-    objective: z.string().trim().min(10).max(300),
+    objective: z.string().trim().min(10).max(2000),
     inScope: nonEmptyList,
     outOfScope: nonEmptyList,
     constraints: nonEmptyList,

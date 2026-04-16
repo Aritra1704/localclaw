@@ -494,6 +494,11 @@ nav button.active {
   font-size: 0.84rem;
 }
 
+.project > div {
+  display: grid;
+  gap: 0.2rem;
+}
+
 .inline-form {
   grid-template-columns: 0.58fr 1fr auto;
 }
@@ -538,6 +543,233 @@ nav button.active {
   display: flex;
   justify-content: space-between;
   gap: 1rem;
+}
+
+.task-hints {
+  display: grid;
+  gap: 0.9rem;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.task-hint-card,
+.session-task-panel {
+  background: rgba(248, 250, 252, 0.78);
+  border: 1px solid var(--line);
+  border-radius: 18px;
+  padding: 0.95rem 1rem;
+}
+
+.task-hint-card strong,
+.session-task-header strong,
+.session-task strong {
+  color: var(--accent);
+}
+
+.task-hint-card p,
+.session-task p {
+  color: var(--muted);
+  margin: 0.35rem 0 0;
+}
+
+.runtime-panel {
+  background: rgba(248, 250, 252, 0.82);
+  border: 1px solid var(--line);
+  border-radius: 18px;
+  display: grid;
+  gap: 1rem;
+  padding: 1rem 1.05rem;
+}
+
+.runtime-header,
+.runtime-checklist-header,
+.runtime-current {
+  align-items: start;
+  display: flex;
+  gap: 1rem;
+  justify-content: space-between;
+}
+
+.runtime-actions {
+  align-items: flex-end;
+  display: grid;
+  gap: 0.55rem;
+  justify-items: end;
+}
+
+.runtime-approve {
+  white-space: nowrap;
+}
+
+.runtime-header strong,
+.runtime-checklist-header strong,
+.runtime-current strong,
+.runtime-checklist-item strong {
+  color: var(--accent);
+}
+
+.runtime-header p,
+.runtime-summary,
+.runtime-checklist-item p {
+  color: var(--muted);
+  margin: 0.3rem 0 0;
+}
+
+.runtime-header span,
+.runtime-checklist-header span,
+.runtime-current span,
+.runtime-checklist-item b {
+  color: var(--accent-strong);
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 0.76rem;
+  text-transform: lowercase;
+}
+
+.runtime-grid {
+  display: grid;
+  gap: 0.8rem;
+  grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
+}
+
+.runtime-stat {
+  background: rgba(255, 255, 255, 0.74);
+  border: 1px solid rgba(39, 74, 117, 0.08);
+  border-radius: 16px;
+  display: grid;
+  gap: 0.32rem;
+  padding: 0.8rem 0.9rem;
+}
+
+.runtime-stat span {
+  color: var(--dim);
+  font-size: 0.77rem;
+  font-weight: 700;
+}
+
+.runtime-stat strong,
+.runtime-current code {
+  color: var(--accent);
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 0.9rem;
+}
+
+.runtime-current {
+  background: rgba(255, 255, 255, 0.7);
+  border: 1px solid rgba(39, 74, 117, 0.08);
+  border-radius: 16px;
+  padding: 0.9rem 1rem;
+}
+
+.runtime-checklist {
+  display: grid;
+  gap: 0.7rem;
+}
+
+.runtime-checklist-list {
+  display: grid;
+  gap: 0.65rem;
+}
+
+.runtime-checklist-item {
+  align-items: center;
+  background: rgba(255, 255, 255, 0.72);
+  border: 1px solid var(--line);
+  border-radius: 16px;
+  display: grid;
+  gap: 0.85rem;
+  grid-template-columns: auto 1fr auto;
+  padding: 0.85rem 0.95rem;
+}
+
+.runtime-checklist-item > span {
+  align-items: center;
+  background: rgba(39, 74, 117, 0.12);
+  border-radius: 999px;
+  color: var(--accent-strong);
+  display: grid;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 0.78rem;
+  font-weight: 800;
+  height: 28px;
+  place-items: center;
+  width: 28px;
+}
+
+.runtime-checklist-item.completed {
+  border-color: rgba(15, 118, 110, 0.16);
+}
+
+.runtime-checklist-item.completed > span {
+  background: rgba(15, 118, 110, 0.14);
+  color: var(--success);
+}
+
+.runtime-checklist-item.current {
+  border-color: rgba(39, 74, 117, 0.16);
+  box-shadow: inset 0 0 0 1px rgba(39, 74, 117, 0.06);
+}
+
+.runtime-checklist-item.failed {
+  border-color: rgba(180, 35, 24, 0.16);
+}
+
+.runtime-checklist-item.failed > span,
+.runtime-checklist-item.failed b {
+  color: var(--danger);
+}
+
+.session-task-panel {
+  display: grid;
+  gap: 0.8rem;
+}
+
+.session-task-header {
+  align-items: center;
+  display: flex;
+  justify-content: space-between;
+  gap: 1rem;
+}
+
+.session-task-header span {
+  color: var(--dim);
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 0.76rem;
+}
+
+.compact-empty {
+  min-height: 88px;
+}
+
+.session-task-list {
+  display: grid;
+  gap: 0.7rem;
+}
+
+.session-task {
+  align-items: center;
+  background: rgba(255, 255, 255, 0.72);
+  border-color: var(--line);
+  border-radius: 16px;
+  color: var(--text);
+  display: flex;
+  justify-content: space-between;
+  padding: 0.9rem 1rem;
+  text-align: left;
+}
+
+.session-task:hover:not(:disabled) {
+  background: rgba(255, 255, 255, 0.95);
+}
+
+.session-task > div {
+  display: grid;
+  gap: 0.2rem;
+}
+
+.session-task span {
+  color: var(--accent-strong);
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 0.8rem;
+  text-transform: lowercase;
 }
 
 .messages {
@@ -604,6 +836,15 @@ nav button.active {
   color: var(--muted);
 }
 
+.danger-button {
+  border-color: rgba(180, 35, 24, 0.12);
+  color: var(--danger);
+}
+
+.danger-button:hover:not(:disabled) {
+  background: rgba(180, 35, 24, 0.08);
+}
+
 @keyframes pulse {
   0%,
   100% {
@@ -634,6 +875,10 @@ nav button.active {
   .token-card {
     grid-template-columns: 1fr;
   }
+
+  .task-hints {
+    grid-template-columns: 1fr;
+  }
 }
 
 @media (max-width: 680px) {
@@ -648,7 +893,9 @@ nav button.active {
 
   .topbar,
   .chat-header,
-  .token-card > div {
+  .token-card > div,
+  .runtime-header,
+  .runtime-current {
     align-items: stretch;
     flex-direction: column;
   }
@@ -657,7 +904,8 @@ nav button.active {
   .project,
   .inline-form,
   .timeline-row,
-  .log-line {
+  .log-line,
+  .runtime-checklist-item {
     grid-template-columns: 1fr;
   }
 

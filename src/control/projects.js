@@ -101,6 +101,17 @@ export function createProjectService({ pool, workspaceRoots = [] }) {
       return result.rows[0] ?? null;
     },
 
+    async deleteProject(id) {
+      const result = await pool.query(
+        `DELETE FROM project_targets
+         WHERE id = $1
+         RETURNING id, name, root_path, created_at, updated_at`,
+        [id]
+      );
+
+      return result.rows[0] ?? null;
+    },
+
     validateProjectPath,
   };
 }
