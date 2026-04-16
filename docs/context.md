@@ -20,8 +20,11 @@ As of 2026-04-11, the project status is:
 | Phase 7A: CLI Control Plane | complete | Local control API, `.env` token discovery, `doctor`, project allowlist, chat sessions, actors, and plan-gated task creation are implemented. |
 | Phase 7B: Browser Operator UI | complete | React/Vite UI is served by LocalClaw and covers dashboard, tasks, approvals, projects, skills, and chat. |
 | Phase 7C: Operator Cockpit Reliability | complete | Sidebar navigation, chat-first workspace, visible token state, faster chat fallbacks, task timeline, approval UX, diagnostics, and clearer empty/error states are implemented. |
-| Phase 8: Safe-Commit Proving Run | not started | next phase; depends on the Phase 7 operator surface being usable for normal project intake. |
-| Phase 9: Hardening | not started | depends on Safe-Commit execution evidence and operational pain points. |
+| Phase 8: Safe-Commit Proving Run | complete | LocalClaw has successfully executed its first major proving mission (Safe-Commit) and stabilized the multi-agent routing engine. |
+| Phase 9: Hardening & Sandbox | complete | Mandatory Docker sandbox escalation, workspace cleanup protections, and operator-safe recovery guardrails are in place. |
+| Phase 10: Specialized Agents | complete | Documentation, Security, and Dependency agents now run before publish, refresh workspace docs, flag risky findings, and create dependency follow-up tasks. |
+| Phase 11: MCP Integration | in progress | Filesystem, retrieval-oriented PostgreSQL access, and GitHub repository operations are being standardized behind internal MCP-style servers. |
+| Phase 12: Cognitive Memory | planned | Implementing a Knowledge Graph for codebase semantic mapping beyond simple flat RAG. |
 
 ## 1. Mission
 
@@ -300,22 +303,70 @@ Outputs:
 
 - LocalClaw proves value on a real project
 
-### Phase 9: Hardening
+### Phase 9: Hardening & Sandbox Escalation
 
 Inputs:
 
-- real-world execution evidence from earlier phases
+- real-world execution evidence from Phase 8
 
 Actions:
 
-- introduce stronger Docker sandbox enforcement
-- add backups and summaries
-- add failure auto-pause
-- refine health checks and resource controls
+- [x] introduce mandatory Docker sandbox enforcement for all `Executor` tasks
+- [x] add automated backups for PostgreSQL and project workspaces
+- [x] add failure auto-pause and "Self-Diagnostic" skill
+- [x] refine health checks and resource controls for the external SSD
 
 Outputs:
 
-- LocalClaw is production-grade for personal autonomous use
+- LocalClaw is production-grade for personal autonomous use with zero-risk host impact
+
+### Phase 10: Specialized Agent Domain Expansion
+
+Inputs:
+
+- stable hardening and multi-agent routing foundation
+
+Actions:
+
+- implement **Security Review Agent**: scans diffs for secrets and common CVEs
+- implement **Documentation Agent**: autonomously updates HLDs and READMEs based on code changes
+- implement **Dependency Agent**: monitors and creates tasks for patching outdated packages
+
+Outputs:
+
+- multi-layered autonomous review process before any code reaches the `Publisher`
+
+### Phase 11: MCP Server Integration & Tool Standardization
+
+Inputs:
+
+- requirements for standardized tool access across models
+
+Actions:
+
+- implement **Filesystem MCP Server**: for high-performance, standardized file operations
+- implement **PostgreSQL MCP Server**: allowing models to query task history and learnings fluidly
+- implement **GitHub MCP Server**: for advanced PR management and CI/CD status monitoring
+
+Outputs:
+
+- decoupled, standardized tool ecosystem compatible with the broader AI engineering landscape
+
+### Phase 12: Knowledge Graph & Cognitive Memory
+
+Inputs:
+
+- large-scale project context exceeding flat RAG capabilities
+
+Actions:
+
+- implement **Knowledge Graph**: map symbols, dependencies, and historical changes
+- integrate graph-based retrieval into the `Planner`
+- add **Semantic Reasoning Layer**: for impact analysis before any code is written
+
+Outputs:
+
+- "Senior Engineer" level awareness of codebase architectural debt and cross-cutting impacts
 
 ## 5. Phase 4 Checkpoint
 

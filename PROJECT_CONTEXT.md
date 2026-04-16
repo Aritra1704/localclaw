@@ -17,13 +17,21 @@ LocalClaw is a local-first autonomous engineering platform that plans work, exec
 - Phase 7B: complete
 - Phase 7C: complete
 - Phase 8: complete (V2 Upgrade: Multi-Agent Routing, Reflection Engine, Web Dashboard, Auto-Tooling Sandbox)
-- Phase 9: not started (Live Production Field Testing & Complex Project Execution)
+- Phase 9: complete (Hardening, Sandbox Escalation & Production Field Safety)
+- Phase 10: complete (Specialized Agent Expansion: Security, Docs, & Deps)
+- Phase 11: in progress (MCP Server Integration: Standardized Tooling & DB Access)
+- Phase 12: planned (Cognitive Memory: Knowledge Graph & Advanced RAG)
 
 ## Current Focus
 
-- Deploy workloads using the newly unlocked Control Center Web Dashboard `http://localhost:5173`.
-- Test autonomous Auto-Tooling (asking it to download external modules) and watch it route requests dynamically between `gemma4:e4b` and `qwen2.5`.
-- Monitor the `PROJECT_RULES.md` to watch LocalClaw learn from its own mistakes natively overnight.
+- Standardize filesystem, retrieval-oriented PostgreSQL access, and GitHub repository operations behind internal MCP-style servers.
+- Keep publish, verification, and specialized review behavior stable while those boundaries are being swapped underneath the runtime.
+- Keep external MCP daemons out of scope until the internal MCP boundary is complete and the process split is justified by real operator needs.
+- Use the Control Center Web Dashboard `http://localhost:5173` to monitor approvals, follow-up tasks, and runtime health during the Phase 11 transition.
+
+## Deferred Backlog
+
+- Evaluate standalone external MCP daemons for filesystem, PostgreSQL, and GitHub only after the internal MCP boundary is fully migrated and there is a concrete need for process isolation, multi-client sharing, or remote tool hosting.
 
 ## Local Overrides
 
