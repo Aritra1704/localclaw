@@ -230,3 +230,220 @@ test('skills manager maps port->servicePort and projectName->serviceRoot for tem
 
   await cleanupSkill(skillName);
 });
+
+test('skills manager uses postgres MCP server for registry, lookup, and run logging', async () => {
+  const skillName = `test_skill_mcp_${Date.now()}`;
+  const skillDir = await fs.mkdtemp(path.join(os.tmpdir(), 'localclaw-skills-mcp-'));
+  const skillPath = path.join(skillDir, `${skillName}.json`);
+  const toolCalls = [];
+  const skills = new Map();
+  const runs = [];
+
+  await fs.writeFile(
+    skillPath,
+    JSON.stringify(
+      {
+        name: skillName,
+        version: 1,
+        description: 'Phase 11 MCP skill test',
+        sourceType: 'builtin',
+        isEnabled: true,
+        inputDefaults: {
+          text: 'fallback',
+        },
+        steps: [
+          {
+            tool: 'append_file',
+            args: {
+              path: 'README.md',
+              content: '{{text}}',
+            },
+          },
+        ],
+      },
+      null,
+      2
+    ),
+    'utf8'
+  );
+
+  const postgresServer = {
+    async callTool(toolName, args = {}) {
+      toolCalls.push(toolName);
+
+      switch (toolName) {
+        case 'get_skill_by_name': {
+          const row = skills.get(args.name);
+          return { rows: row ? [{ ...row }] : [] };
+        }
+
+        case 'upsert_skill_definition': {
+          const row = {
+            id: args.id ?? `skill-${skills.size + 1}`,
+            name: args.name,
+            version: args.version,
+            source_type: args.sourceType,
+            description: args.description,
+            definition: args.definition,
+            is_enabled: args.isEnabled,
+            updated_at: new Date().toISOString(),
+          };
+          skills.set(args.name, row);
+          return { rows: [{ ...row }] };
+        }
+
+        case 'list_skills_catalog': {
+          const rows = [...skills.values()]
+            .filter((row) => (args.includeDisabled ?? true) || row.is_enabled)
+            .filter((row) => !args.sourceType || row.source_type === args.sourceType)
+            .sort((left, right) => left.name.localeCompare(right.name))
+            .slice(0, args.limit ?? 20)
+            .map((row) => {
+              const base = {
+                id: row.id,
+                name: row.name,
+                version: row.version,
+                source_type: row.source_type,
+                description: row.description,
+                is_enabled: row.is_enabled,
+                updated_at: row.updated_at,
+              };
+
+              if (args.includeDefinition) {
+                base.definition = row.definition;
+              }
+
+              if (args.includeMetrics) {
+                const relatedRuns = runs.filter((run) => run.skill_id === row.id);
+                base.total_runs = relatedRuns.length;
+                base.success_runs = relatedRuns.filter((run) => run.status === 'success').length;
+                base.failed_runs = relatedRuns.filter((run) => run.status === 'error').length;
+                base.last_run_at = relatedRuns.at(-1)?.created_at ?? null;
+              }
+
+              return base;
+            });
+          return { rows };
+        }
+
+        case 'set_skill_enabled': {
+          const row = skills.get(args.name);
+          if (!row) {
+            return { rows: [] };
+          }
+
+          row.is_enabled = args.enabled;
+          row.updated_at = new Date().toISOString();
+          return {
+            rows: [
+              {
+                id: row.id,
+                name: row.name,
+                source_type: row.source_type,
+                version: row.version,
+                is_enabled: row.is_enabled,
+              },
+            ],
+          };
+        }
+
+        case 'search_enabled_skills': {
+          const rows = [...skills.values()]
+            .filter((row) => row.is_enabled)
+            .filter((row) =>
+              (args.patterns ?? []).some((pattern) => {
+                const needle = pattern.replaceAll('%', '').toLowerCase();
+                return JSON.stringify(row.definition).toLowerCase().includes(needle);
+              })
+            )
+            .map((row) => ({
+              name: row.name,
+              version: row.version,
+              description: row.description,
+              source_type: row.source_type,
+            }))
+            .slice(0, args.limit ?? 4);
+          return { rows };
+        }
+
+        case 'insert_skill_run': {
+          runs.push({
+            skill_id: args.skillId,
+            status: args.status,
+            skill_version: args.skillVersion,
+            output_summary: args.outputSummary,
+            created_at: new Date().toISOString(),
+          });
+          return { rows: [{ id: `run-${runs.length}` }] };
+        }
+
+        default:
+          throw new Error(`Unexpected tool: ${toolName}`);
+      }
+    },
+  };
+
+  const skillManager = createSkillManager({
+    logger,
+    pool: {
+      query() {
+        throw new Error('pool.query should not be used when MCP server is available');
+      },
+    },
+    builtInDirectory: skillDir,
+    mcpRegistry: {
+      getServer(name) {
+        return name === 'postgres' ? postgresServer : null;
+      },
+    },
+  });
+
+  const syncSummary = await skillManager.syncRegistry();
+  assert.equal(syncSummary.builtInsDiscovered, 1);
+
+  const listed = await skillManager.listSkills({
+    includeDisabled: true,
+    sourceType: 'builtin',
+    limit: 10,
+  });
+  assert.equal(listed.some((skill) => skill.name === skillName), true);
+
+  const suggested = await skillManager.suggestSkillsForTask({
+    title: 'Need README append helper',
+    description: 'append file content into the project readme',
+  });
+  assert.equal(suggested.some((skill) => skill.name === skillName), true);
+
+  const execution = await skillManager.executeSkill({
+    name: skillName,
+    input: { text: 'from-mcp' },
+    workspaceRoot: '/tmp/workspace-not-used',
+    toolRunner: async (tool, args) => ({
+      summary: `${tool}:${args.path}`,
+      artifacts: [],
+    }),
+  });
+
+  assert.equal(execution.output.skill, skillName);
+  assert.equal(runs.length, 1);
+  assert.deepEqual(
+    toolCalls.filter((toolName) =>
+      [
+        'get_skill_by_name',
+        'upsert_skill_definition',
+        'list_skills_catalog',
+        'search_enabled_skills',
+        'insert_skill_run',
+      ].includes(toolName)
+    ),
+    [
+      'get_skill_by_name',
+      'upsert_skill_definition',
+      'list_skills_catalog',
+      'list_skills_catalog',
+      'search_enabled_skills',
+      'get_skill_by_name',
+      'insert_skill_run',
+    ]
+  );
+});
