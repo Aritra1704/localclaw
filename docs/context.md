@@ -377,6 +377,28 @@ Outputs:
 
 - "Senior Engineer" level awareness of codebase architectural debt and cross-cutting impacts
 
+### Phase 13: Self-Healing & Proactive Autonomy (Planned)
+
+Inputs:
+
+- All prior phases (0-12) completed and stable, providing robust foundation.
+- Continuous execution history and learnings from diverse engineering tasks.
+
+Actions:
+
+- Implement **Automated Failure Analysis**: When a tool execution or verification step fails, an LLM-driven module within the Executor will analyze logs and context to diagnose the root cause.
+- Develop **Repair Planning Agent**: An LLM (e.g., specialized qwen2.5-coder with prompt engineering) generates a corrective plan (e.g., adjust tool args, modify code, re-prompt planner, install missing dependencies).
+- Integrate **Automated Retry & Back-off**: The Executor will be enhanced to manage multiple repair attempts with intelligent back-off strategies and contextual retries.
+- Capture **Learnings from Self-Repair**: Successful self-corrections are fed into the reflection engine and knowledge graph as new, high-value learnings, enhancing future problem-solving.
+- Refine **Human Escalation**: If automated repair attempts are exhausted or the identified risk is too high, the system escalates to the operator with a comprehensive diagnostic report and proposed manual intervention.
+- Introduce **Proactive System Remediation**: Beyond passive monitoring (Space Guard), the system will actively attempt to fix minor operational issues (e.g., restart a hung Ollama process, clear specific caches).
+
+Outputs:
+
+- LocalClaw can automatically recover from a significant percentage of common execution failures.
+- Reduced operator intervention for routine errors.
+- Enhanced platform resilience and operational stability.
+
 ## 5. Phase 4 Checkpoint
 
 Phase 4 is the formal MVP gate. LocalClaw does not claim platform readiness before this checkpoint is crossed.
