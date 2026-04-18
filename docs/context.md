@@ -399,6 +399,29 @@ Outputs:
 - Reduced operator intervention for routine errors.
 - Enhanced platform resilience and operational stability.
 
+### Phase 14: Conversational Agent & Iterative Planning (Planned)
+
+Inputs:
+
+- All prior phases (0-13) completed and stable.
+- Operator requirements for seamless, natural language interaction for task definition and planning.
+
+Actions:
+
+- Implement **Persistent Chat Session Context**: Modify `src/control/chat.js` to store and retrieve full conversational history for `localclaw chat` sessions in the PostgreSQL database.
+- Develop **Contextual Understanding & Iterative Planning Loop**: Enhance `chatService` to process new user messages in the context of the historical conversation, leveraging a specialized "Chat Planner" agent to:
+    - Interpret user intent (refine task, ask clarification, new task).
+    - Iteratively draft a `task_contract_v1` JSON structure based on dialogue.
+    - Ask clarifying questions or present evolving contract for discussion.
+- Integrate **Natural Language Discussion & Clarification**: Enable the chat agent to ask for missing details, present options, explain reasoning, and generate human-like responses during planning.
+- Ensure **Seamless Transition to Execution**: Allow direct conversion of an approved `task_contract` (negotiated in chat) into an executable task, linking the conversation to the new `task_id`.
+
+Outputs:
+
+- LocalClaw transforms from a plan-gated execution engine to an interactive, persistent, and contextual conversational engineering partner.
+- Operators can define and refine tasks through natural language dialogue.
+- Reduced friction in task initiation and planning.
+
 ## 5. Phase 4 Checkpoint
 
 Phase 4 is the formal MVP gate. LocalClaw does not claim platform readiness before this checkpoint is crossed.

@@ -217,3 +217,16 @@ pm2 start pm2.config.cjs
 until curl -sf http://127.0.0.1:4173/health >/dev/null; do sleep 1; done
 pm2 status
 pm2 logs localclaw
+
+
+CLI:
+localclaw status
+localclaw doctor
+localclaw chat --project .
+
+
+UI:
+cd /Users/aritrarpal/Documents/workspace_biz/localclaw
+npm run ui:dev
+
+http://127.0.0.1:5173/
