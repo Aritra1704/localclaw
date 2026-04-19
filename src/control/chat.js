@@ -2,6 +2,7 @@ import { z } from 'zod';
 
 import {
   actorSchema,
+  actorModelRole,
   actorSystemPrompt,
   listActors,
 } from './actors.js';
@@ -36,6 +37,33 @@ const draftTaskSchema = z
   .strict();
 
 const CHAT_MODEL_TIMEOUT_MS = 20000;
+const EXECUTION_APPROVAL_PHRASES = new Set([
+  'yes',
+  'yes start it',
+  'yes start this',
+  'yes run it',
+  'yes run this',
+  'yep',
+  'yeah',
+  'go ahead',
+  'go ahead start it',
+  'go ahead start this',
+  'start',
+  'start it',
+  'start this',
+  'start now',
+  'run it',
+  'run this',
+  'run now',
+  'execute it',
+  'execute this',
+  'approve it',
+  'approve this',
+  'proceed',
+  'continue',
+  'do it',
+  'ship it',
+]);
 
 function compact(value, limit = 4000) {
   const text = `${value ?? ''}`.trim();
@@ -55,6 +83,15 @@ function buildGreetingResponse({ actor, projectPath }) {
   return `Hi. I am LocalClaw in ${actor} mode.${projectLine}
 
 I can discuss, review, plan, draft a task contract, or create an approval-gated execution plan. I will not execute anything until you explicitly approve it.`;
+}
+
+function isExecutionApprovalIntent(message) {
+  const normalized = `${message ?? ''}`
+    .toLowerCase()
+    .replace(/[^a-z0-9\s-]+/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+  return EXECUTION_APPROVAL_PHRASES.has(normalized);
 }
 
 function buildDraftContract({ session, messages, objective }) {
@@ -187,6 +224,27 @@ export function createChatService({
     return result.rows.reverse();
   }
 
+  async function listTasksForSession(sessionId, limit = 20) {
+    const result = await callPostgresTool(
+      'list_tasks_by_chat_session',
+      {
+        sessionId,
+        limit,
+      },
+      () =>
+        pool.query(
+          `SELECT id, title, status, priority, created_at, updated_at
+           FROM tasks
+           WHERE chat_session_id = $1
+           ORDER BY created_at DESC
+           LIMIT $2`,
+          [sessionId, limit]
+        )
+    );
+
+    return result.rows;
+  }
+
   async function getSessionRow(sessionId) {
     const result = await callPostgresTool(
       'get_chat_session',
@@ -295,8 +353,8 @@ export function createChatService({
       });
     }
 
-    // Chat should feel responsive; deeper role-specific models are used by planning/execution.
-    const models = modelSelector.selectWithFallback('fast');
+    const modelRole = actorModelRole(actor);
+    const models = modelSelector.selectWithFallback(modelRole);
     let lastError = null;
 
     for (const model of models) {
@@ -399,28 +457,13 @@ export function createChatService({
 
       const [messages, tasks] = await Promise.all([
         listMessages(sessionId),
-        callPostgresTool(
-          'list_tasks_by_chat_session',
-          {
-            sessionId,
-            limit: 20,
-          },
-          () =>
-            pool.query(
-              `SELECT id, title, status, priority, created_at, updated_at
-               FROM tasks
-               WHERE chat_session_id = $1
-               ORDER BY created_at DESC
-               LIMIT 20`,
-              [sessionId]
-            )
-        ),
+        listTasksForSession(sessionId, 20),
       ]);
 
       return {
         session,
         messages,
-        tasks: tasks.rows,
+        tasks,
       };
     },
 
@@ -439,6 +482,64 @@ export function createChatService({
         content: parsed.content,
       });
       const messages = await listMessages(sessionId);
+      const sessionTasks = await listTasksForSession(sessionId, 20);
+      const pendingExecutionTasks = sessionTasks.filter(
+        (task) => task.status === 'waiting_approval'
+      );
+
+      if (isExecutionApprovalIntent(parsed.content)) {
+        if (pendingExecutionTasks.length === 1) {
+          const pendingTask = pendingExecutionTasks[0];
+          const approved = await orchestrator.approveTaskExecution(pendingTask.id, {
+            respondedVia: 'chat',
+            note: `Approved from natural-language chat reply in session ${sessionId}`,
+          });
+
+          if (approved) {
+            const assistant = await insertMessage({
+              sessionId,
+              role: 'assistant',
+              actor,
+              content: `Execution approved for task ${pendingTask.id}. Work is now in progress. Use /status ${pendingTask.id} if you want another snapshot.`,
+              metadata: {
+                taskId: pendingTask.id,
+                executionApproval: approved,
+                autoApprovedFromChat: true,
+              },
+            });
+
+            await updateSummary(session, [...messages, assistant]);
+
+            return {
+              user,
+              assistant,
+            };
+          }
+        } else {
+          const content =
+            pendingExecutionTasks.length > 1
+              ? `I found ${pendingExecutionTasks.length} tasks waiting for execution approval in this chat. Please approve one explicitly with /approve <task-id> or /status <task-id> first.`
+              : 'There is no task waiting for execution approval in this chat yet. Create one with /plan first.';
+          const assistant = await insertMessage({
+            sessionId,
+            role: 'assistant',
+            actor,
+            content,
+            metadata: {
+              conservativeExecution: true,
+              approvalIntentDetected: true,
+            },
+          });
+
+          await updateSummary(session, [...messages, assistant]);
+
+          return {
+            user,
+            assistant,
+          };
+        }
+      }
+
       const content = await generateAssistantResponse({
         session: {
           ...session,

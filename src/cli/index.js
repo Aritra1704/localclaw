@@ -203,6 +203,126 @@ function makePrinter(io) {
   };
 }
 
+function formatPlanOutput(plan) {
+  const lines = [];
+  const summary = typeof plan?.summary === 'string' ? plan.summary.trim() : '';
+  if (summary) {
+    lines.push(`Plan: ${summary}`);
+  }
+
+  const steps = Array.isArray(plan?.steps) ? plan.steps : [];
+  if (steps.length > 0) {
+    lines.push('Steps:');
+    for (const step of steps) {
+      const stepNumber = step?.stepNumber ?? '?';
+      const objective = `${step?.objective ?? 'No objective'}`.trim();
+      const tool = `${step?.tool ?? 'unspecified'}`.trim();
+      lines.push(`${stepNumber}. ${objective} [${tool}]`);
+    }
+  }
+
+  return lines.join('\n');
+}
+
+function formatTaskProgressOutput(taskDetail) {
+  const task = taskDetail?.task ?? {};
+  const runtime = taskDetail?.runtime ?? {};
+  const lines = [
+    `[task ${task.id}] ${task.status ?? 'unknown'} | ${runtime.phaseLabel ?? runtime.phase ?? 'unknown'}`,
+  ];
+
+  if (runtime.currentStep?.objective) {
+    lines.push(`Step: ${runtime.currentStep.objective} [${runtime.currentStep.tool ?? 'unspecified'}]`);
+  }
+
+  if (runtime.detail) {
+    lines.push(`Detail: ${runtime.detail}`);
+  }
+
+  if (task.status === 'blocked' || task.status === 'failed') {
+    const reason = task.blocked_reason || runtime.detail;
+    if (reason) {
+      lines.push(`Reason: ${reason}`);
+    }
+  }
+
+  if (
+    task.status === 'waiting_approval' &&
+    task.result?.publication?.published === true &&
+    task.repo_url
+  ) {
+    lines.push(`Repo: ${task.repo_url}`);
+  }
+
+  return lines.join('\n');
+}
+
+function taskWatchSignature(taskDetail) {
+  return JSON.stringify({
+    status: taskDetail?.task?.status ?? null,
+    approvalStatus: taskDetail?.task?.result?.preExecutionPlan?.status ?? null,
+    runtimePhase: taskDetail?.runtime?.phase ?? null,
+    runtimeDetail: taskDetail?.runtime?.detail ?? null,
+    currentStep: taskDetail?.runtime?.currentStep?.stepNumber ?? null,
+    blockedReason: taskDetail?.task?.blocked_reason ?? null,
+    repoUrl: taskDetail?.task?.repo_url ?? null,
+  });
+}
+
+function shouldStopWatchingTask(taskDetail) {
+  const status = taskDetail?.task?.status;
+  const executionApprovalStatus = taskDetail?.task?.result?.preExecutionPlan?.status ?? null;
+  const publishWaiting =
+    status === 'waiting_approval' && taskDetail?.task?.result?.publication?.published === true;
+
+  if (status === 'done' || status === 'failed' || status === 'blocked') {
+    return true;
+  }
+
+  if (publishWaiting) {
+    return true;
+  }
+
+  if (status === 'waiting_approval' && executionApprovalStatus === 'pending') {
+    return true;
+  }
+
+  return false;
+}
+
+async function watchTaskProgress({
+  taskId,
+  logger,
+  fetchImpl,
+  baseUrl,
+  waitMs,
+  sleepImpl,
+}) {
+  let previousSignature = null;
+
+  while (true) {
+    const detail = await requestJson({
+      fetchImpl,
+      baseUrl,
+      pathName: `/v1/tasks/${taskId}`,
+      waitMs,
+      sleepImpl,
+    });
+
+    const signature = taskWatchSignature(detail);
+    if (signature !== previousSignature) {
+      logger.out(formatTaskProgressOutput(detail));
+      previousSignature = signature;
+    }
+
+    if (shouldStopWatchingTask(detail)) {
+      return detail;
+    }
+
+    await sleepImpl(2000);
+  }
+}
+
 function shouldRetryFetch(error) {
   const code = error?.cause?.code;
   return (
@@ -611,11 +731,14 @@ export async function runCli(argv, io = {}, deps = {}) {
       if (session.project_path) {
         logger.out(`Project: ${session.project_path}`);
       }
-      logger.out('Type /exit to quit, /draft <objective> to draft a task, /plan <objective> to create a plan.');
+      logger.out(
+        'Type /exit to quit, /draft <objective> to draft a task, /plan <objective> to create a plan, /approve [task-id] to start execution, and /status [task-id] to inspect progress.'
+      );
 
       const input = deps.input ?? process.stdin;
       const output = deps.output ?? process.stdout;
       const rl = readline.createInterface({ input, output });
+      let lastPlannedTaskId = null;
 
       try {
         while (true) {
@@ -654,7 +777,73 @@ export async function runCli(argv, io = {}, deps = {}) {
             });
             logger.out(`Task: ${plan.task.id}`);
             logger.out(`Status: ${plan.task.status}`);
-            logger.out(`Plan: ${plan.plan.summary}`);
+            logger.out(formatPlanOutput(plan.plan));
+            logger.out('Execution is still approval-gated. Use /approve to start this task.');
+            lastPlannedTaskId = plan.task.id;
+            continue;
+          }
+
+          if (line.startsWith('/approve')) {
+            const requestedTaskId = line.slice('/approve'.length).trim();
+            let taskId = requestedTaskId || lastPlannedTaskId;
+
+            if (!taskId) {
+              const sessionDetail = await requestJson({
+                fetchImpl,
+                baseUrl,
+                pathName: `/v1/chat/sessions/${session.id}`,
+                waitMs,
+                sleepImpl,
+              });
+              taskId =
+                sessionDetail.tasks?.find((task) => task.status === 'waiting_approval')?.id ?? null;
+            }
+
+            taskId = ensureArg(
+              taskId,
+              'No task is ready to approve in this session. Use /plan first or pass /approve <task-id>.'
+            );
+
+            const approval = await requestJson({
+              fetchImpl,
+              baseUrl,
+              pathName: `/v1/chat/sessions/${session.id}/approve-task`,
+              method: 'POST',
+              token,
+              body: { taskId },
+              waitMs,
+              sleepImpl,
+            });
+
+            logger.out(`Execution approved: ${approval.task_id}`);
+            lastPlannedTaskId = approval.task_id;
+            logger.out('Watching task progress...');
+            await watchTaskProgress({
+              taskId: approval.task_id,
+              logger,
+              fetchImpl,
+              baseUrl,
+              waitMs,
+              sleepImpl,
+            });
+            continue;
+          }
+
+          if (line.startsWith('/status')) {
+            const requestedTaskId = line.slice('/status'.length).trim();
+            const taskId = ensureArg(
+              requestedTaskId || lastPlannedTaskId,
+              'No task selected. Use /status <task-id> or create a plan first.'
+            );
+
+            const detail = await requestJson({
+              fetchImpl,
+              baseUrl,
+              pathName: `/v1/tasks/${taskId}`,
+              waitMs,
+              sleepImpl,
+            });
+            logger.out(formatTaskProgressOutput(detail));
             continue;
           }
 
@@ -672,6 +861,22 @@ export async function runCli(argv, io = {}, deps = {}) {
             sleepImpl,
           });
           logger.out(response.assistant.content);
+          const approvedTaskId =
+            response.assistant?.metadata?.executionApproval?.task_id ??
+            response.assistant?.metadata?.taskId ??
+            null;
+          if (approvedTaskId) {
+            lastPlannedTaskId = approvedTaskId;
+            logger.out('Watching task progress...');
+            await watchTaskProgress({
+              taskId: approvedTaskId,
+              logger,
+              fetchImpl,
+              baseUrl,
+              waitMs,
+              sleepImpl,
+            });
+          }
         }
       } finally {
         rl.close();
@@ -772,7 +977,7 @@ export async function runCli(argv, io = {}, deps = {}) {
           [
             `Task: ${response.task.id}`,
             `Status: ${response.task.status}`,
-            `Plan: ${response.plan.summary}`,
+            formatPlanOutput(response.plan),
           ].join('\n')
         );
         return 0;

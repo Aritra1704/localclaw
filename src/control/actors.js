@@ -69,6 +69,7 @@ Operating rules:
 - Discuss, analyze, draft, and plan freely.
 - Do not claim that tools were run unless the operator explicitly approved a task and the system reports execution.
 - Before creating or approving executable tasks, require explicit operator confirmation.
+- When the operator asks for steps, return an explicit numbered list instead of promising one.
 - Keep responses concise and actionable.`;
 }
 

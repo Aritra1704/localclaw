@@ -11,6 +11,13 @@ import {
   buildTaskTitleFromContract,
 } from './control/taskContract.js';
 import { getPool } from './db/client.js';
+import {
+  buildPersonaArtifactsForExecution,
+  buildPersonaArtifactsForExecutionError,
+  buildPersonaArtifactsForRepairApproval,
+  buildPersonaProfileArtifact,
+  hydratePersonaArtifacts,
+} from './persona/artifacts.js';
 import { ReflectionEngine } from './selfimprovement/reflectionEngine.js';
 import { RepairEngine } from './selfhealing/repairEngine.js';
 import { ChatHistoryManager } from './control/chatHistory.js';
@@ -288,6 +295,14 @@ function deriveBlockedReason(result) {
     result?.specializedReview?.summary ??
     result?.verification?.review?.summary ??
     null
+  );
+}
+
+function findArtifactMetadata(artifacts = [], artifactType) {
+  return (
+    (Array.isArray(artifacts) ? artifacts : []).find(
+      (artifact) => artifact.artifactType === artifactType
+    )?.metadata ?? null
   );
 }
 
@@ -747,7 +762,31 @@ export class Orchestrator {
         return;
       }
 
-      await this.persistArtifacts(task.id, result.artifacts ?? []);
+      let personaArtifacts = [];
+      let taskStatus = null;
+
+      if (result.publication?.published && this.deployer?.isEnabled?.()) {
+        personaArtifacts = buildPersonaArtifactsForExecution({
+          task,
+          result,
+          taskStatus: 'waiting_approval',
+        });
+      } else {
+        const publishBlocked =
+          result.publication?.attempted === true &&
+          result.publication?.published === false;
+
+        taskStatus = publishBlocked
+          ? 'blocked'
+          : deriveFinalReviewStatus(result);
+        personaArtifacts = buildPersonaArtifactsForExecution({
+          task,
+          result,
+          taskStatus,
+        });
+      }
+
+      await this.persistArtifacts(task.id, [...(result.artifacts ?? []), ...personaArtifacts]);
       await this.persistLearnings(task, result);
       await this.enqueueSpecializedFollowUpTasks(task, result.specializedReview?.followUpTasks ?? []);
 
@@ -790,6 +829,20 @@ export class Orchestrator {
             ]
           );
 
+          const blockedPersonaArtifacts = buildPersonaArtifactsForExecution({
+            task,
+            result,
+            taskStatus: 'blocked',
+          });
+          await this.persistArtifacts(task.id, blockedPersonaArtifacts);
+          const blockedNarrative = findArtifactMetadata(
+            blockedPersonaArtifacts,
+            'narrated_summary_v1'
+          );
+          if (blockedNarrative?.channelDrafts?.telegram) {
+            await this.notify(blockedNarrative.channelDrafts.telegram);
+          }
+
           this.logger.warn(
             {
               taskId: task.id,
@@ -818,17 +871,13 @@ export class Orchestrator {
           modelRole: null,
           currentStep: null,
         });
-        await this.queueDeploymentApproval(task, result);
+        await this.queueDeploymentApproval(
+          task,
+          result,
+          findArtifactMetadata(personaArtifacts, 'narrated_summary_v1')
+        );
         return;
       }
-
-      const publishBlocked =
-        result.publication?.attempted === true &&
-        result.publication?.published === false;
-
-      const taskStatus = publishBlocked
-        ? 'blocked'
-        : deriveFinalReviewStatus(result);
 
       await this.pool.query(
         `UPDATE tasks
@@ -902,6 +951,11 @@ export class Orchestrator {
       } else {
         await this.incrementStats('tasks_failed');
       }
+
+      const narratedSummary = findArtifactMetadata(personaArtifacts, 'narrated_summary_v1');
+      if (narratedSummary?.channelDrafts?.telegram) {
+        await this.notify(narratedSummary.channelDrafts.telegram);
+      }
     } catch (error) {
       await this.logTaskStep(task.id, {
         stepNumber: 999,
@@ -923,6 +977,13 @@ export class Orchestrator {
          WHERE id = $1`,
         [task.id, error.message]
       );
+
+      const errorArtifacts = buildPersonaArtifactsForExecutionError({ task, error });
+      await this.persistArtifacts(task.id, errorArtifacts);
+      const narratedSummary = findArtifactMetadata(errorArtifacts, 'narrated_summary_v1');
+      if (narratedSummary?.channelDrafts?.telegram) {
+        await this.notify(narratedSummary.channelDrafts.telegram);
+      }
 
       this.logger.error(
         {
@@ -1232,7 +1293,7 @@ export class Orchestrator {
     return this.skillManager.setSkillEnabled(name, enabled);
   }
 
-  async queueDeploymentApproval(task, result) {
+  async queueDeploymentApproval(task, result, narratedSummary = null) {
     const target = this.deployer.getTarget();
     const approvalResult = await this.callPostgresTool(
       'insert_approval',
@@ -1360,6 +1421,7 @@ export class Orchestrator {
 
     const message = [
       `Deploy approval requested.`,
+      narratedSummary?.channelDrafts?.telegram ?? null,
       `Task: ${task.title}`,
       `Approval: ${approval.id}`,
       `Deployment: ${deploymentResult.rows[0].id}`,
@@ -1367,7 +1429,9 @@ export class Orchestrator {
       `Target: ${target.projectId} / ${target.environmentName} / ${target.serviceName ?? target.serviceId}`,
       `Approve: /approve ${approval.id}`,
       `Reject: /reject ${approval.id} not ready`,
-    ].join('\n');
+    ]
+      .filter(Boolean)
+      .join('\n');
 
     const sentMessage = await this.notify(message, {
       reply_markup: {
@@ -1414,6 +1478,9 @@ export class Orchestrator {
   }
 
   async queueRepairApproval(task, result) {
+    const personaArtifacts = buildPersonaArtifactsForRepairApproval({ task, result });
+    await this.persistArtifacts(task.id, [...(result.artifacts ?? []), ...personaArtifacts]);
+
     const approvalResult = await this.callPostgresTool(
       'insert_approval',
       {
@@ -1485,15 +1552,20 @@ export class Orchestrator {
     });
 
     const stepsText = result.repairProposal.steps.map(s => `- ${s.objective} (${s.tool})`).join('\n');
+    const narratedSummary = findArtifactMetadata(personaArtifacts, 'narrated_summary_v1');
+    const handoverSummary = findArtifactMetadata(personaArtifacts, 'handover_summary_v1');
     const message = [
       `🛠 *REPAIR PROPOSAL*`,
+      narratedSummary?.channelDrafts?.telegram ?? null,
       `Task: ${task.title}`,
-      `Error: ${result.repairProposal.reasoning}`,
+      `Error: ${handoverSummary?.summary ?? result.repairProposal.reasoning}`,
       `Proposed Fix:`,
       stepsText,
       `Approve: /approve_repair ${approval.id}`,
       `Reject: /reject_repair ${approval.id}`,
-    ].join('\n');
+    ]
+      .filter(Boolean)
+      .join('\n');
 
     const sentMessage = await this.notify(message, {
       parse_mode: 'Markdown',
@@ -2553,6 +2625,9 @@ export class Orchestrator {
             fallback: planning.fallback === true,
           },
         },
+        buildPersonaProfileArtifact(task, {
+          preferenceSource: task.chat_session_id ? 'chat_session_defaults' : 'platform_defaults',
+        }),
       ]);
 
       await this.logTaskStep(task.id, {
@@ -2931,9 +3006,32 @@ export class Orchestrator {
         )
     );
 
+    const artifactsResult = await this.callPostgresTool(
+      'list_task_artifacts',
+      {
+        taskId,
+        limit: 80,
+      },
+      () =>
+        this.pool.query(
+          `SELECT
+             artifact_type,
+             artifact_path,
+             metadata,
+             created_at
+           FROM task_artifacts
+           WHERE task_id = $1
+           ORDER BY created_at DESC
+           LIMIT $2`,
+          [taskId, 80]
+        )
+    );
+
     return {
       task,
       logs: logsResult.rows,
+      artifacts: artifactsResult.rows,
+      persona: hydratePersonaArtifacts(artifactsResult.rows),
       runtime: mergeRuntimeSnapshots(
         derivePersistedRuntime(task, logsResult.rows),
         this.liveTaskRuntime.get(taskId) ?? null

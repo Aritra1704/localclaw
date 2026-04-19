@@ -50,8 +50,8 @@ test('buildRetrievalContext increments learning usage when learnings are injecte
     description: 'Tune deployment retries and approval behavior',
   });
 
-  assert.match(context, /Learnings:/);
-  assert.match(context, /deployment-safe defaults/);
+  assert.match(context.retrievalContext, /Learnings:/);
+  assert.match(context.retrievalContext, /deployment-safe defaults/);
   assert.equal(usageUpdates.length, 1);
   assert.deepEqual(usageUpdates[0], [learningId]);
 });
@@ -141,9 +141,9 @@ test('buildRetrievalContext includes graph-based impact context when available',
     description: 'Analyze helper imports before editing index.js',
   });
 
-  assert.match(context, /Architecture graph:/);
-  assert.match(context, /Historical changes:/);
-  assert.match(context, /Semantic impact analysis:/);
+  assert.match(context.retrievalContext, /Architecture graph:/);
+  assert.match(context.retrievalContext, /Historical changes:/);
+  assert.match(context.retrievalContext, /Semantic impact analysis:/);
 });
 
 test('getTaskDetails merges transient runtime with persisted task context', async () => {
@@ -211,6 +211,29 @@ test('getTaskDetails merges transient runtime with persisted task context', asyn
         };
       }
 
+      if (sql.includes('FROM task_artifacts')) {
+        return {
+          rows: [
+            {
+              artifact_type: 'narrated_summary_v1',
+              artifact_path: 'task://task-runtime-1/narrated_summary_v1',
+              metadata: {
+                version: 'narrated_summary_v1',
+                summary: 'I finished the main implementation path and verification passed.',
+                channelDrafts: {
+                  ui: 'I finished the main implementation path and verification passed.',
+                },
+                evidence: {
+                  stepNumbers: [1, 2],
+                  changedFiles: ['package.json', 'README.md'],
+                },
+              },
+              created_at: '2026-04-13T00:02:30.000Z',
+            },
+          ],
+        };
+      }
+
       throw new Error(`Unexpected query: ${sql.slice(0, 80)}`);
     },
   };
@@ -258,4 +281,6 @@ test('getTaskDetails merges transient runtime with persisted task context', asyn
   assert.equal(detail.runtime.currentModel, null);
   assert.equal(detail.runtime.summary, 'Write files and verify output');
   assert.equal(detail.runtime.checklist[1].status, 'current');
+  assert.equal(detail.persona.narratedSummary.summary, 'I finished the main implementation path and verification passed.');
+  assert.equal(detail.artifacts.length, 1);
 });

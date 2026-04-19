@@ -95,6 +95,101 @@ function buildRuntimeStats(runtime) {
   ];
 }
 
+function formatDateTime(value) {
+  if (!value) {
+    return 'n/a';
+  }
+
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) {
+    return 'n/a';
+  }
+
+  return date.toLocaleString();
+}
+
+function buildRawFactRows(taskDetail) {
+  const task = taskDetail?.task || {};
+  const result = task.result || {};
+  const verification = result.verification?.review || {};
+  const specialized = result.specializedReview || {};
+  const publication = result.publication || {};
+
+  return [
+    ['Status', task.status || 'unknown'],
+    ['Workspace', result.workspaceRoot || task.project_path || 'n/a'],
+    ['Plan', result.plan?.summary || result.preExecutionPlan?.plan?.summary || 'n/a'],
+    ['Verification', verification.summary || 'n/a'],
+    ['Specialized review', specialized.summary || 'n/a'],
+    ['Repo', publication.repo?.htmlUrl || task.repo_url || 'n/a'],
+    ['Blocked reason', task.blocked_reason || 'n/a'],
+    ['Updated', formatDateTime(task.updated_at)],
+  ];
+}
+
+function NarrativePanel({ taskDetail }) {
+  const persona = taskDetail?.persona;
+  const narrated = persona?.narratedSummary;
+  const handover = persona?.handoverSummary;
+  const observations = persona?.observationNotes || [];
+  const facts = buildRawFactRows(taskDetail);
+
+  return (
+    <section className="persona-panel">
+      <div className="persona-column">
+        <div className="persona-header">
+          <strong>Narrated summary</strong>
+          <span>{narrated?.taskStatus || taskDetail?.task?.status || 'snapshot'}</span>
+        </div>
+        <p className="persona-summary">
+          {narrated?.channelDrafts?.ui || narrated?.summary || 'No narrated summary has been generated for this task yet.'}
+        </p>
+        {handover?.summary && (
+          <div className="persona-callout">
+            <span>Operator handover</span>
+            <p>{handover.summary}</p>
+            {handover.nextAction && <small>Next: {handover.nextAction}</small>}
+          </div>
+        )}
+        {observations.length > 0 && (
+          <div className="persona-observations">
+            <span>By the way</span>
+            {observations.map((note, index) => (
+              <div className="persona-observation" key={`${note.title || 'note'}-${index}`}>
+                <strong>{note.title || `Observation ${index + 1}`}</strong>
+                <p>{note.note}</p>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+      <div className="persona-column">
+        <div className="persona-header">
+          <strong>Raw facts</strong>
+          <span>evidence first</span>
+        </div>
+        <div className="fact-grid">
+          {facts.map(([label, value]) => (
+            <div className="fact-card" key={label}>
+              <span>{label}</span>
+              <strong>{value}</strong>
+            </div>
+          ))}
+        </div>
+        {narrated?.evidence?.stepNumbers?.length > 0 && (
+          <div className="persona-evidence">
+            <span>Evidence</span>
+            <p>Step numbers: {narrated.evidence.stepNumbers.join(', ')}</p>
+            {narrated.evidence.changedFiles?.length > 0 && (
+              <p>Changed files: {narrated.evidence.changedFiles.join(', ')}</p>
+            )}
+          </div>
+        )}
+      </div>
+    </section>
+  );
+}
+
 function isTaskWaitingApproval(taskDetail) {
   return taskDetail?.task?.status === 'waiting_approval';
 }
@@ -243,6 +338,7 @@ function TaskDetail({ task, tokenReady, onApproveExecution }) {
         tokenReady={tokenReady}
         onApproveExecution={onApproveExecution}
       />
+      <NarrativePanel taskDetail={task} />
       {plan && (
         <div className="plan-box">
           <h3>{plan.summary}</h3>

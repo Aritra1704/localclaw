@@ -43,7 +43,7 @@ test('cli task init writes a valid task_contract_v1 template', async () => {
   assert.match(capture.out.join(''), /Task template written:/);
 });
 
-test('cli task plan posts contract payload and prints task id', async () => {
+test('cli task plan posts contract payload and prints task id and steps', async () => {
   const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'localclaw-cli-'));
   const contractPath = path.join(tempRoot, 'task.json');
 
@@ -88,6 +88,18 @@ test('cli task plan posts contract payload and prints task id', async () => {
             },
             plan: {
               summary: 'Plan generated',
+              steps: [
+                {
+                  stepNumber: 1,
+                  objective: 'Define API contract',
+                  tool: 'planner',
+                },
+                {
+                  stepNumber: 2,
+                  objective: 'Prepare execution checklist',
+                  tool: 'planner',
+                },
+              ],
             },
           },
         };
@@ -121,6 +133,9 @@ test('cli task plan posts contract payload and prints task id', async () => {
   const body = JSON.parse(calls[1].options.body);
   assert.equal(body.contract.projectName, 'phase7-cli');
   assert.match(capture.out.join(''), /Task: 11111111-1111-4111-8111-111111111111/);
+  assert.match(capture.out.join(''), /Steps:/);
+  assert.match(capture.out.join(''), /1\. Define API contract \[planner\]/);
+  assert.match(capture.out.join(''), /2\. Prepare execution checklist \[planner\]/);
 });
 
 test('cli task run --approve sends approveExecution=true', async () => {

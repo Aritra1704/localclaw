@@ -168,6 +168,20 @@ test('orchestrator routes queue recovery, leasing, and task history through post
               },
             ],
           };
+        case 'list_task_artifacts':
+          return {
+            rows: [
+              {
+                artifact_type: 'narrated_summary_v1',
+                artifact_path: `task://${args.taskId}/narrated_summary_v1`,
+                metadata: {
+                  version: 'narrated_summary_v1',
+                  summary: 'I finished the run and verification passed.',
+                },
+                created_at: '2026-04-16T00:02:10.000Z',
+              },
+            ],
+          };
         default:
           throw new Error(`Unexpected MCP tool: ${toolName}`);
       }
@@ -203,6 +217,7 @@ test('orchestrator routes queue recovery, leasing, and task history through post
   assert.equal(leased.id, 'task-2');
   assert.equal(detail.task.id, 'task-2');
   assert.equal(detail.logs.length, 1);
+  assert.equal(detail.persona.narratedSummary.summary, 'I finished the run and verification passed.');
   assert.deepEqual(
     calls.map((entry) => entry.toolName),
     [
@@ -212,6 +227,7 @@ test('orchestrator routes queue recovery, leasing, and task history through post
       'lease_next_task',
       'get_task_by_id',
       'list_task_logs',
+      'list_task_artifacts',
     ]
   );
 });

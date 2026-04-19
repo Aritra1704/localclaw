@@ -717,6 +717,109 @@ nav button.active {
   color: var(--danger);
 }
 
+.persona-panel {
+  display: grid;
+  gap: 1rem;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  margin-bottom: 1.4rem;
+}
+
+.persona-column {
+  background: rgba(248, 250, 252, 0.82);
+  border: 1px solid var(--line);
+  border-radius: 20px;
+  display: grid;
+  gap: 0.9rem;
+  padding: 1rem 1.05rem;
+}
+
+.persona-header,
+.persona-callout,
+.persona-evidence {
+  align-items: start;
+  display: flex;
+  gap: 0.75rem;
+  justify-content: space-between;
+}
+
+.persona-header span,
+.persona-callout span,
+.persona-observations > span,
+.persona-evidence span,
+.fact-card span {
+  color: var(--accent-strong);
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 0.76rem;
+  text-transform: lowercase;
+}
+
+.persona-summary,
+.persona-callout p,
+.persona-observation p,
+.persona-evidence p {
+  color: var(--muted);
+  line-height: 1.55;
+  margin: 0;
+}
+
+.persona-callout,
+.persona-evidence {
+  background: rgba(255, 255, 255, 0.72);
+  border: 1px solid rgba(39, 74, 117, 0.08);
+  border-radius: 16px;
+  padding: 0.9rem 1rem;
+}
+
+.persona-callout,
+.persona-evidence,
+.persona-observation {
+  display: grid;
+  gap: 0.35rem;
+}
+
+.persona-callout small {
+  color: var(--dim);
+}
+
+.persona-observations {
+  display: grid;
+  gap: 0.7rem;
+}
+
+.persona-observation {
+  background: rgba(255, 255, 255, 0.66);
+  border: 1px solid rgba(39, 74, 117, 0.08);
+  border-radius: 16px;
+  padding: 0.85rem 0.95rem;
+}
+
+.persona-observation strong,
+.persona-header strong,
+.fact-card strong {
+  color: var(--accent);
+}
+
+.fact-grid {
+  display: grid;
+  gap: 0.75rem;
+  grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+}
+
+.fact-card {
+  background: rgba(255, 255, 255, 0.72);
+  border: 1px solid rgba(39, 74, 117, 0.08);
+  border-radius: 16px;
+  display: grid;
+  gap: 0.35rem;
+  padding: 0.85rem 0.95rem;
+}
+
+.fact-card strong {
+  font-size: 0.92rem;
+  line-height: 1.4;
+  overflow-wrap: anywhere;
+}
+
 .session-task-panel {
   display: grid;
   gap: 0.8rem;
@@ -871,6 +974,7 @@ nav button.active {
   }
 
   .split-view,
+  .persona-panel,
   .chat-workspace,
   .token-card {
     grid-template-columns: 1fr;

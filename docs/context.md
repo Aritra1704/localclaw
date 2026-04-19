@@ -423,6 +423,16 @@ Actions:
 - Add **Conversation Summaries & Preference Extraction**: distill long chat histories into structured summaries, extract explicit and inferred operator preferences, and record confidence so later phases do not rely on raw message replay alone.
 - Define **Preference Override & Decay Rules**: explicit operator instructions override inferred preferences, and stale tone/style inferences expire unless re-confirmed by newer interactions.
 
+Current progress:
+
+- persistent chat sessions, chat history storage, and session summaries are already implemented in the control plane
+- actor-based chat now selects the actor model role instead of forcing the fast chat path, so `architect` discussions use planner-oriented model selection
+- chat and CLI plan output now render explicit numbered plan steps instead of only brief summaries when the operator asks for steps
+- CLI chat now exposes `/approve [task-id]` and `/status [task-id]` so an operator can start an approval-gated task and inspect progress without leaving the chat session
+- after approval, CLI chat now watches the task and prints state changes such as `in_progress`, current step, `blocked`, `failed`, and `done`
+- natural-language approval now works conservatively inside chat when there is exactly one task in `waiting_approval`; replies such as "yes, start it" approve that task and start execution tracking
+- execution remains approval-gated; open-ended chat discussion still does not execute code unless the operator gives an explicit approval signal
+
 Outputs:
 
 - LocalClaw transforms from a plan-gated execution engine to an interactive, persistent, and contextual conversational engineering partner.
@@ -456,6 +466,14 @@ Actions:
 - Make narrated output **Evidence-Bound**: every meaningful claim in a narrated summary, handover note, or review draft should be traceable to task step logs, plan artifacts, verification output, or stored approvals.
 - Add **Operator Controls**: allow persona enablement, verbosity, teaching depth, proactive observation opt-in, and GitHub review voice to be configured per operator/team.
 - Add **Public Surface Guardrails**: GitHub persona output starts as a draft or approval-gated comment path before any fully automatic public posting.
+
+Current progress:
+
+- deterministic persona artifacts now exist for execution and handoff state: `persona_profile_v1`, `narrated_summary_v1`, `handover_summary_v1`, `observation_note_v1`, and `review_comment_draft_v1`
+- orchestrator task details now hydrate persona artifacts alongside raw logs so downstream surfaces can compare narration against evidence
+- Telegram and operator-facing task views now use narrated summaries when available for completion, blocked, failed, repair, and deploy-approval states
+- Browser UI task detail now shows narrated summary, handover notes, observation notes, and raw facts side by side so the operator can see both the humanized explanation and the underlying execution state
+- persona output remains post-execution and non-authoritative; it does not choose tools, bypass approval gates, or alter verification results
 
 Outputs:
 

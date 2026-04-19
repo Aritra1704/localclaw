@@ -32,6 +32,10 @@ const POSTGRES_TOOLS = [
     description: 'List task logs ordered for operator or model inspection.',
   },
   {
+    name: 'list_task_artifacts',
+    description: 'List task artifacts ordered for operator inspection.',
+  },
+  {
     name: 'create_task',
     description: 'Insert a task row and return the created task.',
   },
@@ -510,6 +514,23 @@ export function createPostgresMcpServer({ pool }) {
              FROM agent_logs
              WHERE task_id = $1
              ORDER BY step_number ${descending ? 'DESC' : 'ASC'}, created_at ${descending ? 'DESC' : 'ASC'}
+             LIMIT $2`,
+            [args.taskId, limit]
+          );
+          return { rows: result.rows };
+        }
+
+        case 'list_task_artifacts': {
+          const limit = Math.max(1, Math.min(Number(args.limit ?? 80) || 80, 200));
+          const result = await pool.query(
+            `SELECT
+               artifact_type,
+               artifact_path,
+               metadata,
+               created_at
+             FROM task_artifacts
+             WHERE task_id = $1
+             ORDER BY created_at DESC
              LIMIT $2`,
             [args.taskId, limit]
           );
