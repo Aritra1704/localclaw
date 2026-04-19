@@ -64,6 +64,10 @@ const EXECUTION_APPROVAL_PHRASES = new Set([
   'do it',
   'ship it',
 ]);
+const EXECUTION_REQUEST_PATTERNS = [
+  /^(?:please\s+)?(?:can you\s+|could you\s+|would you\s+)?(?:create|build|implement|set up|setup|scaffold|generate|write|draft|fix|update|add|remove|refactor|rename|move|delete|start)\b/i,
+  /^(?:please\s+)?(?:i need you to|need you to|help me)\s+(?:create|build|implement|set up|setup|scaffold|generate|write|draft|fix|update|add|remove|refactor|rename|move|delete|start)\b/i,
+];
 
 function compact(value, limit = 4000) {
   const text = `${value ?? ''}`.trim();
@@ -92,6 +96,54 @@ function isExecutionApprovalIntent(message) {
     .replace(/\s+/g, ' ')
     .trim();
   return EXECUTION_APPROVAL_PHRASES.has(normalized);
+}
+
+function isExecutionTaskRequest(message) {
+  const normalized = `${message ?? ''}`.trim();
+  if (!normalized || normalized.startsWith('/')) {
+    return false;
+  }
+
+  if (isExecutionApprovalIntent(normalized)) {
+    return false;
+  }
+
+  return EXECUTION_REQUEST_PATTERNS.some((pattern) => pattern.test(normalized));
+}
+
+function formatPlanForChat(plan) {
+  const lines = [];
+  const summary = `${plan?.summary ?? ''}`.trim();
+  if (summary) {
+    lines.push(`Plan: ${summary}`);
+  }
+
+  const steps = Array.isArray(plan?.steps) ? plan.steps : [];
+  if (steps.length > 0) {
+    lines.push('Steps:');
+    for (const step of steps) {
+      lines.push(
+        `${step?.stepNumber ?? '?'}. ${`${step?.objective ?? 'No objective'}`.trim()} [${`${step?.tool ?? 'unspecified'}`.trim()}]`
+      );
+    }
+  }
+
+  return lines.join('\n');
+}
+
+function buildPlannedTaskChatResponse({ task, plan, autoPlannedFromChat = false }) {
+  const header = autoPlannedFromChat
+    ? 'I turned that request into an approval-gated task.'
+    : 'Plan created and waiting for execution approval.';
+  const lines = [header, '', `Task: ${task.id}`];
+  const formattedPlan = formatPlanForChat(plan);
+  if (formattedPlan) {
+    lines.push(formattedPlan);
+  }
+  lines.push(
+    'Execution has not started yet. Use /approve, the chat approval control, or reply "yes, start it" to begin.'
+  );
+  return lines.join('\n');
 }
 
 function buildDraftContract({ session, messages, objective }) {
@@ -337,6 +389,50 @@ export function createChatService({
     return summary;
   }
 
+  async function createPlannedTaskMessage({
+    session,
+    sessionId,
+    actor,
+    objective,
+    autoPlannedFromChat = false,
+  }) {
+    const messages = await listMessages(sessionId);
+    const contract = buildDraftContract({
+      session,
+      messages,
+      objective,
+    });
+    const planned = await orchestrator.createPlannedTask(contract, {
+      source: autoPlannedFromChat ? 'chat_auto_plan' : 'chat',
+      chatSessionId: sessionId,
+      projectPath: session.project_path,
+    });
+    const assistant = await insertMessage({
+      sessionId,
+      role: 'assistant',
+      actor,
+      content: buildPlannedTaskChatResponse({
+        task: planned.task,
+        plan: planned.plan,
+        autoPlannedFromChat,
+      }),
+      metadata: {
+        taskId: planned.task.id,
+        taskStatus: planned.task.status,
+        plan: planned.plan,
+        executionPending: true,
+        autoPlannedFromChat,
+      },
+    });
+
+    await updateSummary(session, [...messages, assistant]);
+
+    return {
+      planned,
+      assistant,
+    };
+  }
+
   async function generateAssistantResponse({ session, actor, messages, userMessage }) {
     if (/^(hi|hello|hey|yo|hola)$/i.test(userMessage.trim())) {
       return buildGreetingResponse({
@@ -540,6 +636,24 @@ export function createChatService({
         }
       }
 
+      if (pendingExecutionTasks.length === 0 && isExecutionTaskRequest(parsed.content)) {
+        const { assistant } = await createPlannedTaskMessage({
+          session: {
+            ...session,
+            actor,
+          },
+          sessionId,
+          actor,
+          objective: parsed.content,
+          autoPlannedFromChat: true,
+        });
+
+        return {
+          user,
+          assistant,
+        };
+      }
+
       const content = await generateAssistantResponse({
         session: {
           ...session,
@@ -600,24 +714,39 @@ export function createChatService({
         return null;
       }
 
-      const contract = input.contract
-        ? normalizeTaskContract(input.contract)
-        : (await this.draftTask(sessionId, { objective: input.objective })).contract;
-      const planned = await orchestrator.createPlannedTask(contract, {
-        source: 'chat',
-        chatSessionId: sessionId,
-        projectPath: session.project_path,
-      });
+      if (input.contract) {
+        const messages = await listMessages(sessionId);
+        const planned = await orchestrator.createPlannedTask(normalizeTaskContract(input.contract), {
+          source: 'chat',
+          chatSessionId: sessionId,
+          projectPath: session.project_path,
+        });
 
-      await insertMessage({
+        const assistant = await insertMessage({
+          sessionId,
+          role: 'assistant',
+          actor: session.actor,
+          content: buildPlannedTaskChatResponse({
+            task: planned.task,
+            plan: planned.plan,
+          }),
+          metadata: {
+            taskId: planned.task.id,
+            taskStatus: planned.task.status,
+            plan: planned.plan,
+            executionPending: true,
+          },
+        });
+
+        await updateSummary(session, [...messages, assistant]);
+        return planned;
+      }
+
+      const { planned } = await createPlannedTaskMessage({
+        session,
         sessionId,
-        role: 'assistant',
         actor: session.actor,
-        content: `Plan created and waiting for execution approval.\n\nTask: ${planned.task.id}\nPlan: ${planned.plan.summary}`,
-        metadata: {
-          taskId: planned.task.id,
-          plan: planned.plan,
-        },
+        objective: input.objective,
       });
 
       return planned;

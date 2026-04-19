@@ -742,7 +742,15 @@ export async function runCli(argv, io = {}, deps = {}) {
 
       try {
         while (true) {
-          const line = (await rl.question('localclaw> ')).trim();
+          let line;
+          try {
+            line = (await rl.question('localclaw> ')).trim();
+          } catch (error) {
+            if (error?.message === 'readline was closed' || error?.code === 'ERR_USE_AFTER_CLOSE') {
+              break;
+            }
+            throw error;
+          }
           if (!line || line === '/exit' || line === '/quit') {
             break;
           }
@@ -861,10 +869,29 @@ export async function runCli(argv, io = {}, deps = {}) {
             sleepImpl,
           });
           logger.out(response.assistant.content);
-          const approvedTaskId =
-            response.assistant?.metadata?.executionApproval?.task_id ??
-            response.assistant?.metadata?.taskId ??
-            null;
+          const assistantMetadata = response.assistant?.metadata ?? {};
+          const approvedTaskId = assistantMetadata.executionApproval?.task_id ?? null;
+          const plannedTaskId = assistantMetadata.taskId ?? null;
+
+          if (plannedTaskId) {
+            lastPlannedTaskId = plannedTaskId;
+          }
+
+          if (
+            assistantMetadata.executionPending === true &&
+            plannedTaskId &&
+            assistantMetadata.executionApproval?.status !== 'approved'
+          ) {
+            logger.out(`Task: ${plannedTaskId}`);
+            if (assistantMetadata.taskStatus) {
+              logger.out(`Status: ${assistantMetadata.taskStatus}`);
+            }
+            if (assistantMetadata.plan) {
+              logger.out(formatPlanOutput(assistantMetadata.plan));
+            }
+            logger.out('Execution is still approval-gated. Use /approve or say "yes, start it".');
+          }
+
           if (approvedTaskId) {
             lastPlannedTaskId = approvedTaskId;
             logger.out('Watching task progress...');

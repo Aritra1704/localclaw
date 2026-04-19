@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
+import { PassThrough } from 'node:stream';
 import test from 'node:test';
 
 import { normalizeTaskContract } from '../src/control/taskContract.js';
@@ -437,4 +438,103 @@ test('cli doctor reports token without printing its value', async () => {
       process.env.CONTROL_API_TOKEN = previousToken;
     }
   }
+});
+
+test('cli chat shows pending plan details for auto-planned requests without starting execution', async () => {
+  const capture = createIO();
+  const calls = [];
+  const input = new PassThrough();
+  const fetchImpl = async (url, options = {}) => {
+    calls.push({ url, options });
+
+    if (url.endsWith('/health')) {
+      return {
+        ok: true,
+        status: 200,
+        async json() {
+          return { ok: true };
+        },
+      };
+    }
+
+    if (url.endsWith('/v1/chat/sessions')) {
+      return {
+        ok: true,
+        status: 201,
+        async json() {
+          return {
+            data: {
+              id: 'chat-session-1',
+              actor: 'architect',
+              project_path: '/tmp/demo-project',
+            },
+          };
+        },
+      };
+    }
+
+    if (url.endsWith('/v1/chat/sessions/chat-session-1/messages')) {
+      return {
+        ok: true,
+        status: 200,
+        async json() {
+          return {
+            data: {
+              assistant: {
+                content: 'I turned that request into an approval-gated task.',
+                metadata: {
+                  taskId: '55555555-5555-4555-8555-555555555555',
+                  taskStatus: 'waiting_approval',
+                  executionPending: true,
+                  autoPlannedFromChat: true,
+                  plan: {
+                    summary: 'Create the project directory and write the plan file.',
+                    steps: [
+                      {
+                        stepNumber: 1,
+                        objective: 'Create the project directory',
+                        tool: 'shell',
+                      },
+                      {
+                        stepNumber: 2,
+                        objective: 'Write the planning markdown file',
+                        tool: 'filesystem',
+                      },
+                    ],
+                  },
+                },
+              },
+            },
+          };
+        },
+      };
+    }
+
+    throw new Error(`unexpected url ${url}`);
+  };
+
+  queueMicrotask(() => {
+    input.write('create the project directory and write the plan file\n');
+    input.write('/exit\n');
+    input.end();
+  });
+
+  const exitCode = await runCli(['chat', '--project', '/tmp/demo-project', '--token', 'abc123'], capture.io, {
+    fetchImpl,
+    input,
+  });
+
+  assert.equal(exitCode, 0);
+  assert.equal(
+    calls.filter((call) => /\/v1\/tasks\/55555555-5555-4555-8555-555555555555$/.test(call.url)).length,
+    0
+  );
+
+  const output = capture.out.join('');
+  assert.match(output, /approval-gated task/);
+  assert.match(output, /Task: 55555555-5555-4555-8555-555555555555/);
+  assert.match(output, /Status: waiting_approval/);
+  assert.match(output, /1\. Create the project directory \[shell\]/);
+  assert.match(output, /Execution is still approval-gated/);
+  assert.doesNotMatch(output, /Watching task progress/);
 });

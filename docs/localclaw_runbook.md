@@ -133,12 +133,13 @@ http://127.0.0.1:5173/
 
 In the browser chat:
 
-- `Send` is discussion only. It does not create or run a task.
+- `Send` stays conversational for discussion prompts, but a clear execution-style request can now create an approval-gated task automatically.
 - `Plan task` creates a real task from the current prompt and links it to the chat session.
 - Session tasks also appear in the `Tasks` view.
 
 Current execution approval behavior:
 
+- Auto-created chat tasks still stop in `waiting_approval`; they do not execute until you approve them.
 - If a task is in `waiting_approval`, you can approve it directly from the chat runtime card or the task detail view.
 - CLI and API approval paths still work and are useful for manual or scripted operation.
 

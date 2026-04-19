@@ -399,3 +399,151 @@ test('chat service can approve the only pending planned task from natural langua
   assert.equal(response.assistant.metadata.executionApproval.task_id, 'ffffffff-ffff-4fff-8fff-ffffffffffff');
   assert.match(response.assistant.content, /Work is now in progress/);
 });
+
+test('chat service turns a clear execution request into an approval-gated planned task', async () => {
+  const sessionId = '99999999-9999-4999-8999-999999999999';
+  const plannedContracts = [];
+
+  const chatService = createChatService({
+    pool: {
+      async query(sql, params) {
+        if (sql.includes('INSERT INTO chat_sessions')) {
+          return {
+            rows: [
+              {
+                id: sessionId,
+                title: 'Demo chat',
+                actor: 'architect',
+                project_target_id: null,
+                project_path: '/tmp/demo-project',
+                summary: '',
+                status: 'active',
+                created_at: '2026-04-16T00:00:00.000Z',
+                updated_at: '2026-04-16T00:00:00.000Z',
+              },
+            ],
+          };
+        }
+
+        if (sql.includes('FROM chat_sessions')) {
+          return {
+            rows: [
+              {
+                id: sessionId,
+                title: 'Demo chat',
+                actor: 'architect',
+                project_target_id: null,
+                project_path: '/tmp/demo-project',
+                summary: '',
+                status: 'active',
+                created_at: '2026-04-16T00:00:00.000Z',
+                updated_at: '2026-04-16T00:00:00.000Z',
+                project_name: null,
+              },
+            ],
+          };
+        }
+
+        if (sql.includes('FROM chat_messages')) {
+          return {
+            rows: [
+              {
+                id: 'user-msg-1',
+                session_id: sessionId,
+                role: 'user',
+                actor: 'architect',
+                content: 'create the new directory and write the project plan into a markdown file',
+                metadata: {},
+                created_at: '2026-04-16T00:00:01.000Z',
+              },
+            ],
+          };
+        }
+
+        if (sql.includes('WHERE chat_session_id =')) {
+          return { rows: [] };
+        }
+
+        if (sql.includes('INSERT INTO chat_messages')) {
+          return {
+            rows: [
+              {
+                id: 'msg-auto-plan',
+                session_id: sessionId,
+                role: params[1],
+                actor: params[2],
+                content: params[3],
+                metadata: JSON.parse(params[4]),
+                created_at: '2026-04-16T00:00:02.000Z',
+              },
+            ],
+          };
+        }
+
+        if (sql.includes('UPDATE chat_sessions SET updated_at')) {
+          return { rowCount: 1, rows: [] };
+        }
+
+        if (sql.includes('SET summary =')) {
+          return { rowCount: 1, rows: [] };
+        }
+
+        if (sql.includes('INSERT INTO chat_summaries')) {
+          return { rowCount: 1, rows: [] };
+        }
+
+        throw new Error(`Unexpected query: ${sql.slice(0, 80)}`);
+      },
+    },
+    projectService: {
+      async ensureProjectTarget() {
+        return null;
+      },
+    },
+    orchestrator: {
+      async createPlannedTask(contract, options) {
+        plannedContracts.push({ contract, options });
+        return {
+          task: {
+            id: 'aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee',
+            status: 'waiting_approval',
+          },
+          plan: {
+            summary: 'Create the new project directory and seed the planning document.',
+            steps: [
+              {
+                stepNumber: 1,
+                objective: 'Create the target directory',
+                tool: 'shell',
+              },
+              {
+                stepNumber: 2,
+                objective: 'Write the planning markdown file',
+                tool: 'filesystem',
+              },
+            ],
+          },
+        };
+      },
+    },
+  });
+
+  await chatService.createSession({
+    title: 'Demo chat',
+    actor: 'architect',
+    projectPath: '/tmp/demo-project',
+  });
+
+  const response = await chatService.appendMessage(sessionId, {
+    content: 'create the new directory and write the project plan into a markdown file',
+  });
+
+  assert.equal(plannedContracts.length, 1);
+  assert.equal(plannedContracts[0].options.source, 'chat_auto_plan');
+  assert.equal(plannedContracts[0].options.chatSessionId, sessionId);
+  assert.equal(response.assistant.metadata.taskId, 'aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee');
+  assert.equal(response.assistant.metadata.executionPending, true);
+  assert.equal(response.assistant.metadata.autoPlannedFromChat, true);
+  assert.match(response.assistant.content, /approval-gated task/i);
+  assert.match(response.assistant.content, /Execution has not started yet/i);
+});
