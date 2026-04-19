@@ -538,3 +538,129 @@ test('cli chat shows pending plan details for auto-planned requests without star
   assert.match(output, /Execution is still approval-gated/);
   assert.doesNotMatch(output, /Watching task progress/);
 });
+
+test('cli chat prints heartbeat updates while an approved task stays active', async () => {
+  const capture = createIO();
+  const calls = [];
+  const input = new PassThrough();
+  let taskPollCount = 0;
+
+  const fetchImpl = async (url, options = {}) => {
+    calls.push({ url, options });
+
+    if (url.endsWith('/health')) {
+      return {
+        ok: true,
+        status: 200,
+        async json() {
+          return { ok: true };
+        },
+      };
+    }
+
+    if (url.endsWith('/v1/chat/sessions')) {
+      return {
+        ok: true,
+        status: 201,
+        async json() {
+          return {
+            data: {
+              id: 'chat-session-2',
+              actor: 'architect',
+              project_path: '/tmp/demo-project',
+            },
+          };
+        },
+      };
+    }
+
+    if (url.endsWith('/v1/chat/sessions/chat-session-2/messages')) {
+      return {
+        ok: true,
+        status: 200,
+        async json() {
+          return {
+            data: {
+              assistant: {
+                content: 'Execution approved for task 66666666-6666-4666-8666-666666666666. Work is now in progress.',
+                metadata: {
+                  executionApproval: {
+                    task_id: '66666666-6666-4666-8666-666666666666',
+                    status: 'approved',
+                  },
+                },
+              },
+            },
+          };
+        },
+      };
+    }
+
+    if (url.endsWith('/v1/tasks/66666666-6666-4666-8666-666666666666')) {
+      taskPollCount += 1;
+      if (taskPollCount < 4) {
+        return {
+          ok: true,
+          status: 200,
+          async json() {
+            return {
+              data: {
+                task: {
+                  id: '66666666-6666-4666-8666-666666666666',
+                  status: 'in_progress',
+                },
+                runtime: {
+                  phase: 'planning',
+                  phaseLabel: 'Planning task',
+                  detail: 'Planner model is generating the execution checklist.',
+                },
+              },
+            };
+          },
+        };
+      }
+
+      return {
+        ok: true,
+        status: 200,
+        async json() {
+          return {
+            data: {
+              task: {
+                id: '66666666-6666-4666-8666-666666666666',
+                status: 'done',
+              },
+              runtime: {
+                phase: 'complete',
+                phaseLabel: 'Done',
+                detail: 'Task finished successfully.',
+              },
+            },
+          };
+        },
+      };
+    }
+
+    throw new Error(`unexpected url ${url}`);
+  };
+
+  queueMicrotask(() => {
+    input.write('yes, start it\n');
+    input.write('/exit\n');
+    input.end();
+  });
+
+  const exitCode = await runCli(['chat', '--project', '/tmp/demo-project', '--token', 'abc123'], capture.io, {
+    fetchImpl,
+    input,
+    sleepImpl: async () => {},
+  });
+
+  assert.equal(exitCode, 0);
+
+  const output = capture.out.join('');
+  assert.match(output, /Watching task progress/);
+  assert.match(output, /\[task 66666666-6666-4666-8666-666666666666\] in_progress \| Planning task/);
+  assert.match(output, /\[task 66666666-6666-4666-8666-666666666666\] still planning the task\.\.\./);
+  assert.match(output, /\[task 66666666-6666-4666-8666-666666666666\] done \| Done/);
+});

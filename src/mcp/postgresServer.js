@@ -244,6 +244,10 @@ const POSTGRES_TOOLS = [
     description: 'List deployments that are approved and ready to start.',
   },
   {
+    name: 'list_ready_repairs',
+    description: 'List repair approvals that are approved and ready to resume.',
+  },
+  {
     name: 'list_active_deployments',
     description: 'List actively deploying rows that have a remote deployment id.',
   },
@@ -1629,6 +1633,24 @@ export function createPostgresMcpServer({ pool }) {
              WHERE approvals.status = 'approved'
                AND deployments.status IN ('approval_pending', 'approved')
              ORDER BY deployments.created_at ASC`
+          );
+          return { rows: result.rows };
+        }
+
+        case 'list_ready_repairs': {
+          const result = await pool.query(
+            `SELECT
+               approvals.id AS approval_id,
+               approvals.task_id,
+               approvals.response_payload->'repairProposal' AS repair_proposal,
+               tasks.title,
+               tasks.result AS task_result
+             FROM approvals
+             JOIN tasks ON tasks.id = approvals.task_id
+             WHERE approvals.status = 'approved'
+               AND approvals.approval_type = 'repair'
+               AND tasks.status = 'waiting_approval'
+             ORDER BY approvals.requested_at ASC`
           );
           return { rows: result.rows };
         }

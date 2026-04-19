@@ -142,6 +142,7 @@ Current execution approval behavior:
 - Auto-created chat tasks still stop in `waiting_approval`; they do not execute until you approve them.
 - If a task is in `waiting_approval`, you can approve it directly from the chat runtime card or the task detail view.
 - CLI and API approval paths still work and are useful for manual or scripted operation.
+- After approval, CLI chat prints the current phase immediately and then emits short heartbeat lines if the task is still queued, planning, working, or verifying for a while.
 
 Approve a task from CLI:
 

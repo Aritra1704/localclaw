@@ -431,6 +431,7 @@ Current progress:
 - clear execution-style chat requests can now be converted directly into approval-gated planned tasks, so imperative asks such as creating files or scaffolding a project no longer stall in discussion-only mode
 - CLI chat now exposes `/approve [task-id]` and `/status [task-id]` so an operator can start an approval-gated task and inspect progress without leaving the chat session
 - after approval, CLI chat now watches the task and prints state changes such as `in_progress`, current step, `blocked`, `failed`, and `done`
+- while a task remains active without a state transition, CLI chat now emits short heartbeat phrases such as queued, planning, working, or verifying so the terminal does not go silent during long operations
 - natural-language approval now works conservatively inside chat when there is exactly one task in `waiting_approval`; replies such as "yes, start it" approve that task and start execution tracking
 - CLI chat now distinguishes a planned-but-not-started task from a running task: it shows the task id, waiting-approval status, and plan steps immediately, but only starts live progress watching after execution approval succeeds
 - execution remains approval-gated; open-ended discussion stays conversational, while clear execution requests create a pending task that still needs explicit operator approval before any code runs

@@ -257,6 +257,31 @@ function formatTaskProgressOutput(taskDetail) {
   return lines.join('\n');
 }
 
+function formatTaskHeartbeatOutput(taskDetail) {
+  const task = taskDetail?.task ?? {};
+  const runtime = taskDetail?.runtime ?? {};
+  const stepObjective = `${runtime.currentStep?.objective ?? ''}`.trim();
+  let phrase = 'still working...';
+
+  if (task.status === 'pending' || runtime.phase === 'queued') {
+    phrase = 'still queued... waiting for an executor slot.';
+  } else if (runtime.phase === 'preparing') {
+    phrase = 'still preparing the workspace...';
+  } else if (runtime.phase === 'planning') {
+    phrase = 'still planning the task...';
+  } else if (runtime.phase === 'acting') {
+    phrase = stepObjective
+      ? `still working... ${stepObjective}.`
+      : 'still executing the plan...';
+  } else if (runtime.phase === 'verifying') {
+    phrase = 'still verifying the result...';
+  } else if (runtime.detail) {
+    phrase = `still working... ${runtime.detail}`;
+  }
+
+  return `[task ${task.id}] ${phrase}`;
+}
+
 function taskWatchSignature(taskDetail) {
   return JSON.stringify({
     status: taskDetail?.task?.status ?? null,
@@ -299,6 +324,7 @@ async function watchTaskProgress({
   sleepImpl,
 }) {
   let previousSignature = null;
+  let unchangedPolls = 0;
 
   while (true) {
     const detail = await requestJson({
@@ -313,6 +339,13 @@ async function watchTaskProgress({
     if (signature !== previousSignature) {
       logger.out(formatTaskProgressOutput(detail));
       previousSignature = signature;
+      unchangedPolls = 0;
+    } else {
+      unchangedPolls += 1;
+      if (unchangedPolls >= 2 && !shouldStopWatchingTask(detail)) {
+        logger.out(formatTaskHeartbeatOutput(detail));
+        unchangedPolls = 0;
+      }
     }
 
     if (shouldStopWatchingTask(detail)) {
