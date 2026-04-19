@@ -1,12 +1,12 @@
 # LocalClaw Context
 
-Version: 1.2  
-Date: 2026-04-11  
+Version: 1.3  
+Date: 2026-04-19  
 Purpose: end-to-end execution context and checkpoint guide for LocalClaw delivery
 
 ## 0. Current Phase Status
 
-As of 2026-04-11, the project status is:
+As of 2026-04-19, the project status is:
 
 | Phase | Status | Notes |
 |---|---|---|
@@ -25,6 +25,9 @@ As of 2026-04-11, the project status is:
 | Phase 10: Specialized Agents | complete | Documentation, Security, and Dependency agents now run before publish, refresh workspace docs, flag risky findings, and create dependency follow-up tasks. |
 | Phase 11: MCP Integration | complete | Filesystem, GitHub, task/runtime PostgreSQL access, RAG indexing/retrieval, reflection, chat, projects, and skills now run through internal MCP-style servers with verified runtime coverage. |
 | Phase 12: Cognitive Memory | complete | Knowledge graph storage now maps files, symbols, dependencies, document references, historical changes, and related learnings, and semantic impact analysis is injected into planning and approval previews alongside flat RAG. |
+| Phase 13: Self-Healing & Proactive Autonomy | planned | Automated failure analysis, repair planning, retry/back-off, and stronger operator escalation will raise execution resilience. |
+| Phase 14: Conversational Agent & Iterative Planning | planned | Persistent chat context and iterative contract drafting will turn LocalClaw into a dialogue-driven planning partner. |
+| Phase 15: Persona Layer & Humanized Presence | planned | A channel-aware narration and preference layer will make LocalClaw sound like a consistent teammate across Telegram, UI, and GitHub. |
 
 ## 1. Mission
 
@@ -372,6 +375,7 @@ Current progress:
 - retrieval context now includes graph matches, nearby relationships, historical changes, and related learnings before planning
 - semantic impact analysis now summarizes likely edit targets, upstream dependencies, downstream dependents, volatility, and historical cautions before code is written
 - approval-gated planning now stores impact analysis in the pre-execution preview for operator visibility
+- this phase remains focused on codebase, architecture, and task memory; operator/team communication preferences are intentionally deferred to later persona work so factual retrieval stays cleanly separated from tone adaptation
 
 Outputs:
 
@@ -392,6 +396,7 @@ Actions:
 - Capture **Learnings from Self-Repair**: Successful self-corrections are fed into the reflection engine and knowledge graph as new, high-value learnings, enhancing future problem-solving.
 - Refine **Human Escalation**: If automated repair attempts are exhausted or the identified risk is too high, the system escalates to the operator with a comprehensive diagnostic report and proposed manual intervention.
 - Introduce **Proactive System Remediation**: Beyond passive monitoring (Space Guard), the system will actively attempt to fix minor operational issues (e.g., restart a hung Ollama process, clear specific caches).
+- Keep **Autonomy Scope Narrow**: proactive behavior in this phase is operational and recovery-oriented only; repo hygiene suggestions, review tone, and user-facing teammate behaviors are deferred to Phase 15.
 
 Outputs:
 
@@ -415,12 +420,57 @@ Actions:
     - Ask clarifying questions or present evolving contract for discussion.
 - Integrate **Natural Language Discussion & Clarification**: Enable the chat agent to ask for missing details, present options, explain reasoning, and generate human-like responses during planning.
 - Ensure **Seamless Transition to Execution**: Allow direct conversion of an approved `task_contract` (negotiated in chat) into an executable task, linking the conversation to the new `task_id`.
+- Add **Conversation Summaries & Preference Extraction**: distill long chat histories into structured summaries, extract explicit and inferred operator preferences, and record confidence so later phases do not rely on raw message replay alone.
+- Define **Preference Override & Decay Rules**: explicit operator instructions override inferred preferences, and stale tone/style inferences expire unless re-confirmed by newer interactions.
 
 Outputs:
 
 - LocalClaw transforms from a plan-gated execution engine to an interactive, persistent, and contextual conversational engineering partner.
 - Operators can define and refine tasks through natural language dialogue.
 - Reduced friction in task initiation and planning.
+
+### Phase 15: Persona Layer & Humanized Presence (Planned)
+
+Inputs:
+
+- All prior phases (0-14) planned and sequenced, with Phase 12 memory and Phase 14 chat context available as the main personalization substrate.
+- Stable Telegram, Browser UI, and GitHub integration boundaries from Phases 7B, 7C, and 11.
+- Operator need for LocalClaw to communicate like a credible engineering teammate instead of a neutral status bot.
+
+Actions:
+
+- Implement a **Persona Layer** in the orchestrator/reporting path: a specialized narration step converts raw task logs, verification results, repair attempts, and approvals into grounded human-friendly summaries before they are emitted to Telegram, UI activity feeds, or GitHub.
+- Keep the **Persona Layer Non-Authoritative**: persona output narrates and formats execution state after planning/execution steps are complete; it does not choose tools, alter verification outcomes, or override approval gates.
+- Add **Narrative Personality** controls: define a consistent LocalClaw voice for progress updates, completions, risk notes, and review comments while preserving a strict link back to factual execution records.
+- Add **Inner Monologue / Why Trace** support: expose reasoning-oriented summaries in logs and previews such as why a pattern, retry path, or tool choice was selected, without leaking chain-of-thought-style raw model internals.
+- Build **User Preference Profiles** on top of Phase 12 memory and Phase 14 chat history: persist explicit and inferred operator/team preferences such as brevity, explanation depth, coding-style bias, review tone, and tolerance for comment noise.
+- Add **Adaptive Tone & Audience Policy**: vary tone, verbosity, and teaching depth by surface and recipient so Telegram can stay concise, the UI can stay explanatory, and GitHub can sound like a peer reviewer rather than a deployment notifier.
+- Implement **Proactive Observation Hooks**: while executing or retrieving context, capture adjacent findings such as stale READMEs, TODO clusters, dependency drift, or suspicious code paths and offer them as optional "by the way" suggestions or follow-up tasks instead of silently expanding scope.
+- Extend **Human Handover Narration** for blocked/self-healing failures: when automated repair is exhausted, summarize what was tried, where it failed, what context may be missing, and which logs or artifacts the operator should inspect next.
+- Add **PR Persona** workflows: let validation and review runs generate human-style GitHub feedback that can highlight concerns, ask targeted questions, or acknowledge strong logic instead of posting only pass/fail state.
+- Define **Persona Guardrails and Evaluation**: narrated output must stay faithful to logged facts, clearly separate observations from inferences, avoid invented confidence, and remain testable with golden examples for each channel.
+- Split delivery into three internal tracks:
+  - **Narration pipeline** for evidence-bound summary generation from logs, plans, verification, and repair state
+  - **Preference memory** for explicit/inferred persona controls and audience-specific defaults
+  - **Channel adapters** for Telegram, Browser UI, and GitHub-specific rendering and policy
+- Make narrated output **Evidence-Bound**: every meaningful claim in a narrated summary, handover note, or review draft should be traceable to task step logs, plan artifacts, verification output, or stored approvals.
+- Add **Operator Controls**: allow persona enablement, verbosity, teaching depth, proactive observation opt-in, and GitHub review voice to be configured per operator/team.
+- Add **Public Surface Guardrails**: GitHub persona output starts as a draft or approval-gated comment path before any fully automatic public posting.
+
+Outputs:
+
+- LocalClaw communicates with a recognizable, consistent engineering persona across Telegram, UI, and GitHub.
+- Operator preferences measurably shape summaries, explanations, and review tone without sacrificing auditability.
+- The platform behaves more like a proactive teammate by surfacing useful adjacent observations and better stuck-state handovers.
+- Execution facts remain durable and machine-readable while persona-rich summaries improve trust and usability.
+
+First implementation slice:
+
+- introduce a `narrated_summary_v1` artifact generated from execution logs and verification output
+- add `persona_profile_v1`, `handover_summary_v1`, `observation_note_v1`, and `review_comment_draft_v1` as separate artifacts instead of collapsing all communication into one generic summary type
+- emit narrated output to Telegram and the Browser UI before expanding to GitHub review/comment workflows
+- show raw facts alongside narrated summaries in the Browser UI so operators can compare evidence and wording directly
+- keep raw logs, narrated summaries, and preference inputs stored separately so the persona layer stays debuggable and reversible
 
 ## 5. Phase 4 Checkpoint
 
