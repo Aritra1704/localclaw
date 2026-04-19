@@ -33,6 +33,7 @@ import { Orchestrator } from './orchestrator.js';
 import { startTelegramBot } from './telegram/bot.js';
 import { createToolRegistry } from './tools/registry.js';
 import { ReflectionEngine } from './selfimprovement/reflectionEngine.js';
+import { RepairEngine } from './selfhealing/repairEngine.js';
 import { createDynamicRouter } from './agent/router.js';
 
 const logger = pino({
@@ -243,11 +244,18 @@ async function bootstrap() {
   await setBootPhase('boot_railway_ready');
   await setBootPhase('boot_skills_ready');
 
+  const repairEngine = new RepairEngine({
+    ollamaClient,
+    logger,
+    modelName: config.modelReview,
+  });
+
   const taskExecutor = createTaskExecutor({
     planner,
     specializedReviewer,
     verifier,
     toolRegistry,
+    repairEngine,
     router: createDynamicRouter({ client: ollamaClient, modelSelector }),
   });
 
@@ -269,6 +277,7 @@ async function bootstrap() {
     knowledgeGraph,
     skillManager,
     reflectionEngine,
+    repairEngine,
     mcpRegistry,
   });
 

@@ -85,6 +85,7 @@ export function createTaskExecutor({
   verifier,
   toolRegistry,
   router,
+  repairEngine = null,
   specializedReviewer = null,
 }) {
   async function previewTaskPlan(task, options = {}) {
@@ -339,6 +340,45 @@ export function createTaskExecutor({
             errorMessage: error.message,
             durationMs: Date.now() - toolStartedAt,
           });
+
+          if (repairEngine) {
+            hooks.runtimeUpdate?.({
+              phase: 'repairing',
+              phaseLabel: 'Analyzing failure',
+              detail: `Step ${planStep.stepNumber} failed. Generating repair proposal...`,
+              currentModel: null,
+              modelRole: 'repair',
+            });
+
+            try {
+              const workspaceSnapshot = await collectWorkspaceSnapshot(workspaceRoot, {
+                recursive: true,
+                limit: 100,
+              });
+
+              const repair = await repairEngine.generateRepairProposal(task, {
+                workspaceRoot,
+                failedStep: planStep,
+                errorMessage: error.message,
+                executionLogs: toolRuns,
+                workspaceSnapshot,
+              });
+
+              return {
+                status: 'needs_repair',
+                repairProposal: repair.proposal,
+                workspaceRoot,
+                workspaceName,
+                plan: planning.plan,
+                toolRuns,
+                artifacts,
+              };
+            } catch (repairError) {
+              // If repair engine fails, fall back to normal failure
+              console.error('Repair engine failed:', repairError);
+            }
+          }
+
           hooks.runtimeUpdate?.({
             phase: 'failed',
             phaseLabel: 'Execution failed',

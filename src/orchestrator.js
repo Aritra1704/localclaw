@@ -12,6 +12,7 @@ import {
 } from './control/taskContract.js';
 import { getPool } from './db/client.js';
 import { ReflectionEngine } from './selfimprovement/reflectionEngine.js';
+import { RepairEngine } from './selfhealing/repairEngine.js';
 
 const logger = pino({
   name: 'localclaw-orchestrator',
@@ -307,6 +308,7 @@ export class Orchestrator {
     this.notifier = options.notifier ?? null;
     this.mcpRegistry = options.mcpRegistry ?? null;
     this.reflectionEngine = options.reflectionEngine ?? null;
+    this.repairEngine = options.repairEngine ?? null;
     this.reflectionInFlight = false;
     this.lastReflectionAt = 0;
     this.timer = null;
@@ -425,6 +427,7 @@ export class Orchestrator {
       }
 
       await this.processReadyDeployments();
+      await this.processReadyRepairs();
 
       if (this.activeTasks.size >= this.maxConcurrency) {
         return;
@@ -735,6 +738,11 @@ export class Orchestrator {
           this.updateTaskRuntime(task.id, snapshot);
         },
       });
+
+      if (result.status === 'needs_repair') {
+        await this.queueRepairApproval(task, result);
+        return;
+      }
 
       await this.persistArtifacts(task.id, result.artifacts ?? []);
       await this.persistLearnings(task, result);
@@ -1393,6 +1401,270 @@ export class Orchestrator {
     );
   }
 
+  async queueRepairApproval(task, result) {
+    const approvalResult = await this.callPostgresTool(
+      'insert_approval',
+      {
+        taskId: task.id,
+        approvalType: 'repair',
+        status: 'pending',
+        requestedVia: 'telegram',
+        responsePayload: {
+          repairProposal: result.repairProposal,
+        },
+      },
+      () =>
+        this.pool.query(
+          `INSERT INTO approvals (
+             task_id,
+             approval_type,
+             status,
+             requested_via,
+             response_payload
+           )
+           VALUES ($1, $2, 'pending', 'telegram', $3::jsonb)
+           RETURNING id, task_id, requested_at`,
+          [
+            task.id,
+            'repair',
+            JSON.stringify({
+              repairProposal: result.repairProposal,
+            }),
+          ]
+        )
+    );
+
+    const approval = approvalResult.rows[0];
+
+    await this.callPostgresTool(
+      'update_task_record',
+      {
+        taskId: task.id,
+        patch: {
+          status: 'waiting_approval',
+          result,
+          clear_blocked_reason: true,
+          clear_lock: true,
+          touch_heartbeat: true,
+        },
+      },
+      () =>
+        this.pool.query(
+          `UPDATE tasks
+           SET
+             status = 'waiting_approval',
+             blocked_reason = NULL,
+             result = $2::jsonb,
+             updated_at = NOW(),
+             locked_by = NULL,
+             lease_expires_at = NULL,
+             last_heartbeat_at = NOW()
+           WHERE id = $1`,
+          [task.id, JSON.stringify(result)]
+        )
+    );
+
+    await this.logTaskStep(task.id, {
+      stepNumber: 910,
+      stepType: 'approval',
+      status: 'success',
+      inputSummary: result.repairProposal.summary,
+      outputSummary: `Repair approval requested: ${approval.id}`,
+    });
+
+    const stepsText = result.repairProposal.steps.map(s => `- ${s.objective} (${s.tool})`).join('\n');
+    const message = [
+      `🛠 *REPAIR PROPOSAL*`,
+      `Task: ${task.title}`,
+      `Error: ${result.repairProposal.reasoning}`,
+      `Proposed Fix:`,
+      stepsText,
+      `Approve: /approve_repair ${approval.id}`,
+      `Reject: /reject_repair ${approval.id}`,
+    ].join('\n');
+
+    const sentMessage = await this.notify(message, {
+      parse_mode: 'Markdown',
+      reply_markup: {
+        inline_keyboard: [
+          [
+            {
+              text: 'Approve Repair',
+              callback_data: `approval:approve_repair:${approval.id}`,
+            },
+            {
+              text: 'Reject Repair',
+              callback_data: `approval:reject_repair:${approval.id}`,
+            },
+          ],
+        ],
+      },
+    });
+
+    if (sentMessage?.message_id) {
+      await this.callPostgresTool(
+        'update_approval_request_message',
+        {
+          approvalId: approval.id,
+          requestMessageId: sentMessage.message_id.toString(),
+        },
+        () =>
+          this.pool.query(
+            `UPDATE approvals
+             SET request_message_id = $2
+             WHERE id = $1`,
+            [approval.id, sentMessage.message_id.toString()]
+          )
+      );
+    }
+
+    this.logger.info(
+      {
+        taskId: task.id,
+        approvalId: approval.id,
+      },
+      'Repair approval requested'
+    );
+  }
+
+  async resumeWithRepair(taskId, approvalId) {
+    // This will be implemented in the next step to trigger re-execution
+    this.logger.info({ taskId, approvalId }, 'Resuming task with repair');
+  }
+
+  async processReadyRepairs() {
+    const result = await this.callPostgresTool(
+      'list_ready_repairs',
+      {},
+      () =>
+        this.pool.query(
+          `SELECT
+             approvals.id AS approval_id,
+             approvals.task_id,
+             approvals.response_payload->'repairProposal' AS repair_proposal,
+             tasks.title,
+             tasks.result AS task_result
+           FROM approvals
+           JOIN tasks ON tasks.id = approvals.task_id
+           WHERE approvals.status = 'approved'
+             AND approvals.approval_type = 'repair'
+             AND tasks.status = 'waiting_approval'
+           ORDER BY approvals.requested_at ASC`
+        )
+    );
+
+    for (const row of result.rows) {
+      await this.startApprovedRepair(row);
+    }
+  }
+
+  async startApprovedRepair(row) {
+    const task = {
+      id: row.task_id,
+      title: row.title,
+      // ... other task fields needed for executor
+    };
+
+    this.logger.info({ taskId: row.task_id }, 'Starting approved repair');
+
+    // Update task status back to in_progress
+    await this.callPostgresTool(
+      'update_task_record',
+      {
+        taskId: row.task_id,
+        patch: {
+          status: 'in_progress',
+          locked_by: this.instanceId,
+          lease_expires_at: new Date(Date.now() + 15 * 60 * 1000).toISOString(),
+          touch_heartbeat: true,
+        },
+      },
+      () =>
+        this.pool.query(
+          `UPDATE tasks
+           SET
+             status = 'in_progress',
+             locked_by = $2,
+             lease_expires_at = NOW() + INTERVAL '15 minutes',
+             last_heartbeat_at = NOW(),
+             updated_at = NOW()
+           WHERE id = $1`,
+          [row.task_id, this.instanceId]
+        )
+    );
+
+    // Update approval status to 'applied' or similar
+    await this.pool.query(
+      `UPDATE approvals SET status = 'applied' WHERE id = $1`,
+      [row.approval_id]
+    );
+
+    // Trigger execution with repair steps
+    const taskObj = { id: row.task_id, promise: null };
+    taskObj.promise = this.executeTaskWithRepair(row).finally(() => {
+      this.activeTasks.delete(taskObj);
+    });
+    this.activeTasks.add(taskObj);
+  }
+
+  async executeTaskWithRepair(row) {
+    const task = {
+      id: row.task_id,
+      title: row.title,
+      description: row.task_result.plan.summary, // Use plan summary or original description
+      result: row.task_result,
+    };
+
+    this.logger.info({ taskId: task.id }, 'Executing repair steps');
+
+    try {
+      // 1. Apply repair steps
+      const repairProposal = row.repair_proposal;
+      const workspaceRoot = row.task_result.workspaceRoot;
+
+      for (const step of repairProposal.steps) {
+        await this.logTaskStep(task.id, {
+          stepNumber: 911,
+          stepType: 'repair',
+          toolCalled: step.tool,
+          status: 'started',
+          inputSummary: step.objective,
+        });
+
+        const toolResult = await this.taskExecutor.toolRegistry.runTool(step.tool, step.args, {
+          workspaceRoot,
+          taskId: task.id,
+        });
+
+        await this.logTaskStep(task.id, {
+          stepNumber: 911,
+          stepType: 'repair',
+          toolCalled: step.tool,
+          status: 'success',
+          outputSummary: toolResult.summary,
+        });
+      }
+
+      // 2. Resume original task
+      // For now, we just re-run the whole task. 
+      // A more sophisticated implementation would resume from the failed step.
+      const taskRecord = (await this.pool.query('SELECT * FROM tasks WHERE id = $1', [task.id])).rows[0];
+      await this.executeTask(taskRecord);
+    } catch (error) {
+      this.logger.error({ err: error, taskId: task.id }, 'Repair failed');
+      await this.logTaskStep(task.id, {
+        stepNumber: 911,
+        stepType: 'repair',
+        status: 'error',
+        errorMessage: error.message,
+      });
+      await this.pool.query(
+        `UPDATE tasks SET status = 'failed', blocked_reason = $2 WHERE id = $1`,
+        [task.id, `Repair failed: ${error.message}`]
+      );
+    }
+  }
+
   async listPendingApprovals(limit = 10) {
     const result = await this.callPostgresTool(
       'list_pending_approvals',
@@ -1411,7 +1683,7 @@ export class Orchestrator {
            JOIN tasks ON tasks.id = approvals.task_id
            LEFT JOIN deployments ON deployments.approval_id = approvals.id
            WHERE approvals.status = 'pending'
-             AND approvals.approval_type = 'railway_deploy'
+             AND approvals.approval_type IN ('railway_deploy', 'repair')
            ORDER BY approvals.requested_at ASC
            LIMIT $1`,
           [limit]

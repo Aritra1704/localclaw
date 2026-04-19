@@ -6,7 +6,7 @@ function formatTimestamp(value) {
   return new Date(value).toISOString();
 }
 
-const APPROVAL_ACTION_PATTERN = /^approval:(approve|reject):([0-9a-f-]{36})$/i;
+const APPROVAL_ACTION_PATTERN = /^approval:(approve|reject|approve_repair|reject_repair):([0-9a-f-]{36})$/i;
 
 function formatTaskLine(task) {
   return [
@@ -234,6 +234,55 @@ export function createTelegramHandlers(dependencies) {
       );
     },
 
+    approveRepair: async (ctx) => {
+      const value = ctx.message.text.replace(/^\/approve_repair\s*/, '').trim();
+
+      if (!value) {
+        await ctx.reply('Usage: /approve_repair <approval_id>');
+        return;
+      }
+
+      const approval = await orchestrator.approveApproval(value, {
+        respondedVia: 'telegram',
+      });
+
+      if (!approval) {
+        await ctx.reply('Approval not found or already handled.');
+        return;
+      }
+
+      logger.info({ approvalId: value }, 'Repair approval granted from Telegram');
+      await ctx.reply(
+        `Repair approved.\nApproval: ${approval.id}\nTask: ${approval.task_id}\nRepair will be applied on the next processing cycle.`
+      );
+    },
+
+    rejectRepair: async (ctx) => {
+      const value = ctx.message.text.replace(/^\/reject_repair\s*/, '').trim();
+
+      if (!value) {
+        await ctx.reply('Usage: /reject_repair <approval_id> [reason]');
+        return;
+      }
+
+      const [approvalId, ...reasonParts] = value.split(/\s+/);
+      const reason = reasonParts.join(' ').trim() || 'Repair rejected via Telegram';
+      const approval = await orchestrator.rejectApproval(approvalId, {
+        respondedVia: 'telegram',
+        reason,
+      });
+
+      if (!approval) {
+        await ctx.reply('Approval not found or already handled.');
+        return;
+      }
+
+      logger.info({ approvalId, reason }, 'Repair approval rejected from Telegram');
+      await ctx.reply(
+        `Repair rejected.\nApproval: ${approval.id}\nTask: ${approval.task_id}\nReason: ${reason}`
+      );
+    },
+
     approvalAction: async (ctx) => {
       const data = ctx.callbackQuery?.data ?? '';
       const match = data.match(APPROVAL_ACTION_PATTERN);
@@ -260,6 +309,38 @@ export function createTelegramHandlers(dependencies) {
         await ctx.answerCbQuery('Deployment approved.');
         await ctx.reply(
           `Deployment approved.\nApproval: ${approval.id}\nTask: ${approval.task_id}\nRailway deploy will be triggered on the next processing cycle.`
+        );
+      } else if (action === 'approve_repair') {
+        const approval = await orchestrator.approveApproval(approvalId, {
+          respondedVia: 'telegram_button',
+        });
+
+        if (!approval) {
+          await ctx.answerCbQuery('Approval already handled.');
+          return;
+        }
+
+        logger.info({ approvalId }, 'Repair approval granted from Telegram button');
+        await ctx.answerCbQuery('Repair approved.');
+        await ctx.reply(
+          `Repair approved.\nApproval: ${approval.id}\nTask: ${approval.task_id}\nRepair will be applied on the next processing cycle.`
+        );
+      } else if (action === 'reject_repair') {
+        const reason = 'Repair rejected via Telegram button';
+        const approval = await orchestrator.rejectApproval(approvalId, {
+          respondedVia: 'telegram_button',
+          reason,
+        });
+
+        if (!approval) {
+          await ctx.answerCbQuery('Approval already handled.');
+          return;
+        }
+
+        logger.info({ approvalId, reason }, 'Repair approval rejected from Telegram button');
+        await ctx.answerCbQuery('Repair rejected.');
+        await ctx.reply(
+          `Repair rejected.\nApproval: ${approval.id}\nTask: ${approval.task_id}\nReason: ${reason}`
         );
       } else {
         const reason = 'Rejected via Telegram button';
@@ -317,6 +398,8 @@ export function registerTelegramCommands(bot, dependencies) {
   bot.command('approvals', handlers.approvals);
   bot.command('approve', handlers.approve);
   bot.command('reject', handlers.reject);
+  bot.command('approve_repair', handlers.approveRepair);
+  bot.command('reject_repair', handlers.rejectRepair);
   bot.command('skills', handlers.skills);
   bot.command('enable_skill', handlers.enableSkill);
   bot.command('disable_skill', handlers.disableSkill);

@@ -1,6 +1,6 @@
-# localclaw: can you create an agentic PR validator application for me?
+# Fallback Plan
 
-## Task Description
+Task: localclaw: can you create an agentic PR validator application for me?
 
 [task_contract_v1]
 
@@ -35,11 +35,3 @@ can you create an agentic PR validator application for me?
 
 ## Notes
 Drafted from chat session 3ceef44e-7fd0-4e77-9162-4c7583776571
-
-## Metadata
-
-- task_id: cf7ac15f-169c-46b4-9daf-f7462594529e
-- priority: medium
-- source: chat
-- created_at: Sat Apr 18 2026 23:12:49 GMT+0530 (India Standard Time)
-  
