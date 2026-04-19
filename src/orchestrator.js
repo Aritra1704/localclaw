@@ -13,6 +13,7 @@ import {
 import { getPool } from './db/client.js';
 import { ReflectionEngine } from './selfimprovement/reflectionEngine.js';
 import { RepairEngine } from './selfhealing/repairEngine.js';
+import { ChatHistoryManager } from './control/chatHistory.js';
 
 const logger = pino({
   name: 'localclaw-orchestrator',
@@ -309,6 +310,7 @@ export class Orchestrator {
     this.mcpRegistry = options.mcpRegistry ?? null;
     this.reflectionEngine = options.reflectionEngine ?? null;
     this.repairEngine = options.repairEngine ?? null;
+    this.chatHistoryManager = options.chatHistoryManager ?? null;
     this.reflectionInFlight = false;
     this.lastReflectionAt = 0;
     this.timer = null;
@@ -651,7 +653,7 @@ export class Orchestrator {
           await client.query('BEGIN');
 
           const selected = await client.query(
-            `SELECT id, title, description, priority, project_name, project_path
+            `SELECT id, title, description, priority, project_name, project_path, chat_session_id
              FROM tasks
              WHERE status = 'pending'
              ORDER BY
@@ -724,12 +726,13 @@ export class Orchestrator {
     });
 
     try {
-      const retrievalContext = await this.buildRetrievalContext(task);
+      const { retrievalContext, chatHistory } = await this.buildRetrievalContext(task);
       const result = await this.taskExecutor.executeTask(task, {
         startStepNumber: 2,
         publisher: this.publisher,
         deployer: this.deployer,
         retrievalContext,
+        chatHistory,
         logStep: async (step) => {
           await this.logTaskStep(task.id, step);
           await this.touchTaskLease(task.id);
@@ -1078,6 +1081,12 @@ export class Orchestrator {
         impactAnalysis
       );
 
+      let chatHistory = null;
+      if (this.chatHistoryManager && task.chat_session_id) {
+        const history = await this.chatHistoryManager.getHistory(task.chat_session_id);
+        chatHistory = this.chatHistoryManager.formatForPrompt(history);
+      }
+
       try {
         await this.bumpLearningUsage(
           learningResult.rows.map((row) => row.id).filter(Boolean)
@@ -1089,10 +1098,13 @@ export class Orchestrator {
         );
       }
 
-      return context.length > 0 ? context : null;
+      return {
+        retrievalContext: context.length > 0 ? context : null,
+        chatHistory
+      };
     } catch (error) {
-      this.logger.warn({ err: error, taskId: task.id }, 'Failed to retrieve Phase 5 context');
-      return null;
+      this.logger.warn({ err: error, taskId: task.id }, 'Failed to retrieve Phase 5/14 context');
+      return { retrievalContext: null, chatHistory: null };
     }
   }
 

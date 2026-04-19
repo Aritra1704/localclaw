@@ -34,6 +34,7 @@ import { startTelegramBot } from './telegram/bot.js';
 import { createToolRegistry } from './tools/registry.js';
 import { ReflectionEngine } from './selfimprovement/reflectionEngine.js';
 import { RepairEngine } from './selfhealing/repairEngine.js';
+import { ChatHistoryManager } from './control/chatHistory.js';
 import { createDynamicRouter } from './agent/router.js';
 
 const logger = pino({
@@ -250,6 +251,10 @@ async function bootstrap() {
     modelName: config.modelReview,
   });
 
+  const chatHistoryManager = new ChatHistoryManager({
+    pool: getPool(),
+  });
+
   const taskExecutor = createTaskExecutor({
     planner,
     specializedReviewer,
@@ -278,6 +283,7 @@ async function bootstrap() {
     skillManager,
     reflectionEngine,
     repairEngine,
+    chatHistoryManager,
     mcpRegistry,
   });
 

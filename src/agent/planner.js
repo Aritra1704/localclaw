@@ -265,6 +265,11 @@ function buildPlannerPrompt(task, context) {
       ? context.retrievalContext.trim()
       : '- none';
 
+  const chatHistory = 
+    typeof context.chatHistory === 'string' && context.chatHistory.trim().length > 0
+      ? `Recent Conversation Context:\n${context.chatHistory.trim()}`
+      : '';
+
   return `You are the LocalClaw planner.
 Return exactly one JSON object and nothing else.
 
@@ -296,6 +301,8 @@ ${existingFiles}
 
 Retrieved historical context:
 ${retrievedContext}
+
+${chatHistory}
 
 JSON contract:
 {

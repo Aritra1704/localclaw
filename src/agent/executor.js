@@ -102,6 +102,7 @@ export function createTaskExecutor({
       workspaceSnapshot,
       toolCatalog: toolRegistry.plannerCatalog(),
       retrievalContext: options.retrievalContext ?? null,
+      chatHistory: options.chatHistory ?? null,
       overrideRole: options.overrideRole ?? null,
       onStart: options.onStart,
     });
@@ -220,6 +221,7 @@ export function createTaskExecutor({
       const planning = await previewTaskPlan(task, {
         workspaceRoot,
         retrievalContext: hooks.retrievalContext ?? null,
+        chatHistory: hooks.chatHistory ?? null,
         overrideRole: actorRole,
         onStart: ({ stage, model }) => {
           hooks.runtimeUpdate?.({
