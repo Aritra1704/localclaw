@@ -1,0 +1,14 @@
+{
+  "version": 1,
+  "generatedBy": "localclaw",
+  "projectTaskId": "ac3e82df-e816-481f-b06c-eb59b02bded0",
+  "projectTaskTitle": "localclaw: Create a task plan to add SAMPLE_TEST.md at repo root with a short he",
+  "deploy": {
+    "provider": "railway",
+    "approvalRequired": true
+  },
+  "hygiene": {
+    "ignoreOsJunk": true,
+    "enforceRepoContract": true
+  }
+}
