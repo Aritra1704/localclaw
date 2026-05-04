@@ -7,6 +7,7 @@ const tokenKey = 'localclaw.controlToken';
 const controlApiOrigin = 'http://127.0.0.1:4173';
 const navItems = [
   ['chat', 'Chat'],
+  ['persona', 'Persona'],
   ['tasks', 'Tasks'],
   ['approvals', 'Approvals'],
   ['projects', 'Projects'],
@@ -62,6 +63,13 @@ const dashboardLoaders = [
     apply: (nextState, data) => {
       nextState.projects = data.projects || [];
       nextState.allowedRoots = data.allowedRoots || [];
+    },
+  },
+  {
+    key: 'personaSettings',
+    load: () => api('/v1/persona/settings'),
+    apply: (nextState, data) => {
+      nextState.personaSettings = data;
     },
   },
 ];
@@ -1004,6 +1012,129 @@ function Diagnostics({ status, error }) {
   );
 }
 
+function PersonaSettings({ settings, mutate, tokenReady, onRefresh }) {
+  const [localSettings, setLocalSettings] = useState(settings);
+  const [error, setError] = useState('');
+  const [busy, setBusy] = useState(false);
+
+  useEffect(() => {
+    setLocalSettings(settings);
+  }, [settings]);
+
+  function updateChannel(channel, field, value) {
+    setLocalSettings((current) => ({
+      ...current,
+      channels: {
+        ...current.channels,
+        [channel]: {
+          ...current.channels?.[channel],
+          [field]: value,
+        },
+      },
+    }));
+  }
+
+  function updateControl(field, value) {
+    setLocalSettings((current) => ({
+      ...current,
+      controls: {
+        ...current.controls,
+        [field]: value,
+      },
+    }));
+  }
+
+  async function save() {
+    try {
+      setBusy(true);
+      setError('');
+      await mutate('/v1/persona/settings', localSettings, 'PUT');
+      await onRefresh();
+    } catch (nextError) {
+      setError(toErrorMessage(nextError));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  if (!localSettings) {
+    return <section className="panel"><Empty text="Persona settings are unavailable." /></section>;
+  }
+
+  return (
+    <section className="panel detail-panel">
+      <PanelTitle eyebrow="Phase 15" title="Persona Controls" detail={localSettings.voice || 'default voice'} />
+      <p className="muted">
+        These settings shape how LocalClaw narrates execution results across Telegram, the browser UI, and GitHub drafts.
+      </p>
+      <div className="persona-settings-grid">
+        {['telegram', 'ui', 'github'].map((channel) => (
+          <div className="persona-settings-card" key={channel}>
+            <strong>{humanizeKey(channel)}</strong>
+            <label>
+              Verbosity
+              <select
+                value={localSettings.channels?.[channel]?.verbosity || 'concise'}
+                onChange={(event) => updateChannel(channel, 'verbosity', event.target.value)}
+              >
+                <option value="concise">Concise</option>
+                <option value="detailed">Detailed</option>
+              </select>
+            </label>
+            <label>
+              Teaching depth
+              <select
+                value={localSettings.channels?.[channel]?.teachingDepth || 'low'}
+                onChange={(event) => updateChannel(channel, 'teachingDepth', event.target.value)}
+              >
+                <option value="low">Low</option>
+                <option value="medium">Medium</option>
+                <option value="high">High</option>
+              </select>
+            </label>
+            {channel === 'github' && (
+              <label>
+                Publication mode
+                <select
+                  value={localSettings.channels?.github?.mode || 'draft_or_approval_gated'}
+                  onChange={(event) => updateChannel('github', 'mode', event.target.value)}
+                >
+                  <option value="draft_or_approval_gated">Draft or approval gated</option>
+                  <option value="approval_gated_only">Approval gated only</option>
+                </select>
+              </label>
+            )}
+          </div>
+        ))}
+      </div>
+      <div className="persona-toggle-list">
+        <label className="toggle-row">
+          <input
+            type="checkbox"
+            checked={localSettings.controls?.proactiveObservations === true}
+            onChange={(event) => updateControl('proactiveObservations', event.target.checked)}
+          />
+          <span>Enable proactive observation notes</span>
+        </label>
+        <label className="toggle-row">
+          <input
+            type="checkbox"
+            checked={localSettings.controls?.githubVoiceEnabled === true}
+            onChange={(event) => updateControl('githubVoiceEnabled', event.target.checked)}
+          />
+          <span>Enable GitHub review voice in draft comments</span>
+        </label>
+      </div>
+      {error && <div className="error">{error}</div>}
+      <div className="actions">
+        <button disabled={!tokenReady || busy} onClick={save}>
+          {busy ? 'Saving...' : 'Save persona settings'}
+        </button>
+      </div>
+    </section>
+  );
+}
+
 function PanelTitle({ eyebrow, title, detail }) {
   return (
     <div className="panel-title">
@@ -1030,6 +1161,7 @@ function App() {
     sessions: [],
     projects: [],
     allowedRoots: [],
+    personaSettings: null,
   });
   const [activeView, setActiveView] = useState('chat');
   const [selectedTask, setSelectedTask] = useState(null);
@@ -1113,6 +1245,14 @@ function App() {
         tokenReady={tokenReady}
         onRefresh={refresh}
         onSelectTask={selectTask}
+      />
+    ),
+    persona: (
+      <PersonaSettings
+        settings={state.personaSettings}
+        mutate={mutate}
+        tokenReady={tokenReady}
+        onRefresh={refresh}
       />
     ),
     tasks: (

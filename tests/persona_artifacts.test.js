@@ -2,10 +2,12 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 
 import {
+  DEFAULT_PERSONA_SETTINGS,
   buildPersonaArtifactsForExecution,
   buildPersonaArtifactsForRepairApproval,
   buildPersonaProfileArtifact,
   hydratePersonaArtifacts,
+  normalizePersonaSettings,
 } from '../src/persona/artifacts.js';
 
 test('buildPersonaProfileArtifact creates a non-authoritative default profile', () => {
@@ -16,6 +18,23 @@ test('buildPersonaProfileArtifact creates a non-authoritative default profile', 
   assert.equal(artifact.artifactType, 'persona_profile_v1');
   assert.equal(artifact.metadata.nonAuthoritative, true);
   assert.equal(artifact.metadata.channels.telegram.verbosity, 'concise');
+});
+
+test('normalizePersonaSettings preserves defaults while applying overrides', () => {
+  const settings = normalizePersonaSettings({
+    channels: {
+      ui: {
+        verbosity: 'concise',
+      },
+    },
+    controls: {
+      githubVoiceEnabled: true,
+    },
+  });
+
+  assert.equal(settings.channels.telegram.verbosity, DEFAULT_PERSONA_SETTINGS.channels.telegram.verbosity);
+  assert.equal(settings.channels.ui.verbosity, 'concise');
+  assert.equal(settings.controls.githubVoiceEnabled, true);
 });
 
 test('buildPersonaArtifactsForExecution creates narrated summary, handover, observations, and review draft', () => {
@@ -88,6 +107,77 @@ test('buildPersonaArtifactsForExecution creates narrated summary, handover, obse
   assert.equal(persona.reviewCommentDraft.mode, 'draft');
   assert.equal(persona.observationNotes.length, 1);
   assert.match(persona.observationNotes[0].note, /By the way/i);
+});
+
+test('buildPersonaArtifactsForExecution respects persona settings for channel drafts and observations', () => {
+  const task = {
+    id: '25252525-2525-4252-8252-252525252525',
+    title: 'Tune review voice',
+  };
+  const result = {
+    toolRuns: [
+      {
+        stepNumber: 1,
+        objective: 'Update docs',
+        tool: 'write_file',
+        status: 'success',
+        summary: 'Updated onboarding docs.',
+      },
+    ],
+    verification: {
+      review: {
+        status: 'passed',
+        summary: 'Verification passed and the docs build is green.',
+      },
+      workspaceFiles: ['README.md'],
+    },
+    specializedReview: {
+      status: 'needs_human_review',
+      summary: 'Dependency drift was detected.',
+      followUpTasks: [
+        {
+          title: 'Review dependency drift',
+          description: 'A dependency follow-up may be needed.',
+          priority: 'medium',
+        },
+      ],
+    },
+    publication: {
+      attempted: false,
+      published: false,
+    },
+  };
+
+  const artifacts = buildPersonaArtifactsForExecution({
+    task,
+    result,
+    taskStatus: 'done',
+    settings: {
+      channels: {
+        telegram: { verbosity: 'detailed' },
+        ui: { verbosity: 'concise' },
+      },
+      controls: {
+        proactiveObservations: false,
+        githubVoiceEnabled: true,
+      },
+    },
+    preferenceSource: 'operator_settings',
+  });
+  const persona = hydratePersonaArtifacts(
+    artifacts.map((artifact) => ({
+      artifact_type: artifact.artifactType,
+      artifact_path: artifact.artifactPath,
+      metadata: artifact.metadata,
+      created_at: '2026-04-19T00:00:00.000Z',
+    }))
+  );
+
+  assert.match(persona.narratedSummary.channelDrafts.telegram, /Execution:/);
+  assert.equal(persona.narratedSummary.channelDrafts.ui, persona.narratedSummary.summary);
+  assert.equal(persona.observationNotes.length, 0);
+  assert.equal(persona.reviewCommentDraft.githubVoiceEnabled, true);
+  assert.equal(persona.profile.preferenceSource, 'operator_settings');
 });
 
 test('buildPersonaArtifactsForRepairApproval creates narrated and handover summaries', () => {

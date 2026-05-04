@@ -120,6 +120,28 @@ test('control API enforces token on mutating routes and returns deterministic re
     },
     async pause() {},
     async resume() {},
+    async getPersonaSettings() {
+      return {
+        version: 'persona_settings_v1',
+        voice: 'grounded_engineering_teammate',
+        channels: {
+          telegram: { verbosity: 'concise', teachingDepth: 'low' },
+          ui: { verbosity: 'detailed', teachingDepth: 'medium' },
+          github: {
+            verbosity: 'concise',
+            teachingDepth: 'low',
+            mode: 'draft_or_approval_gated',
+          },
+        },
+        controls: {
+          proactiveObservations: true,
+          githubVoiceEnabled: false,
+        },
+      };
+    },
+    async updatePersonaSettings(settings) {
+      return settings;
+    },
   };
 
   const api = createControlApiServer({
@@ -221,6 +243,28 @@ test('control API exposes project and chat operator endpoints', async () => {
     },
     async pause() {},
     async resume() {},
+    async getPersonaSettings() {
+      return {
+        version: 'persona_settings_v1',
+        voice: 'grounded_engineering_teammate',
+        channels: {
+          telegram: { verbosity: 'concise', teachingDepth: 'low' },
+          ui: { verbosity: 'detailed', teachingDepth: 'medium' },
+          github: {
+            verbosity: 'concise',
+            teachingDepth: 'low',
+            mode: 'draft_or_approval_gated',
+          },
+        },
+        controls: {
+          proactiveObservations: true,
+          githubVoiceEnabled: false,
+        },
+      };
+    },
+    async updatePersonaSettings(settings) {
+      return settings;
+    },
   };
   const projectService = {
     async listProjects() {
@@ -413,6 +457,31 @@ test('control API exposes project and chat operator endpoints', async () => {
       sessionDetailPayload.data.session.summary_state.contractDraft.pendingClarification,
       true
     );
+
+    const personaSettings = await fetch(`${baseUrl}/v1/persona/settings`);
+    assert.equal(personaSettings.status, 200);
+    const personaSettingsPayload = await personaSettings.json();
+    assert.equal(personaSettingsPayload.data.channels.ui.verbosity, 'detailed');
+
+    const updatedPersonaSettings = await fetch(`${baseUrl}/v1/persona/settings`, {
+      method: 'PUT',
+      headers: {
+        authorization: 'Bearer test-token',
+        'content-type': 'application/json',
+      },
+      body: JSON.stringify({
+        channels: {
+          ui: { verbosity: 'concise' },
+        },
+        controls: {
+          githubVoiceEnabled: true,
+        },
+      }),
+    });
+    assert.equal(updatedPersonaSettings.status, 200);
+    const updatedPersonaPayload = await updatedPersonaSettings.json();
+    assert.equal(updatedPersonaPayload.data.channels.ui.verbosity, 'concise');
+    assert.equal(updatedPersonaPayload.data.controls.githubVoiceEnabled, true);
   } finally {
     await api.stop();
   }

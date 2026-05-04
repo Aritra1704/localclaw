@@ -30,6 +30,8 @@ Phase 15 groundwork is already present:
 - channel drafts already exist for Telegram and UI
 - repair handoff narration already exists
 - review-comment drafts and proactive observation artifacts already exist
+- operator persona settings now persist in `agent_state` and are editable through the control API and browser UI
+- orchestrator persona generation now consumes those settings plus chat-session preferences when building task persona artifacts
 
 ## Fastest Closure Order
 
@@ -39,11 +41,10 @@ Most of the narration primitives already exist. What is left is integration and 
 
 Remaining work:
 
-- add operator controls for verbosity, teaching depth, proactive observations, and GitHub voice
 - add channel adapters so Telegram, UI, and GitHub render from the same evidence bundle with different policies
 - gate GitHub review-comment publication behind explicit approval or config
 - add golden tests that verify narrated output stays evidence-bound
-- persist preference profiles separately from task artifacts
+- persist preference profiles separately from task artifacts when the controls outgrow the current global settings profile
 
 Exit criteria:
 
@@ -53,12 +54,12 @@ Exit criteria:
 
 ## Recommended Sequence
 
-1. Bind persisted chat preferences into Phase 15 channel controls and UI surfacing.
-2. Add approval-gated GitHub review publication using the existing persona artifacts.
+1. Add approval-gated GitHub review publication using the existing persona artifacts.
+2. Add dedicated channel adapters for Telegram, UI, and GitHub policy differences.
 3. Add golden tests last so the behavior is locked before future expansion.
 
 ## Suggested Next Concrete Tasks
 
-1. Add persona/operator settings to the control API and browser UI.
-2. Add approval-gated GitHub review draft publication using existing persona artifacts.
+1. Add approval-gated GitHub review draft publication using existing persona artifacts.
+2. Add dedicated channel adapters and policy tests.
 3. Add golden evidence-bound narration tests across Telegram, UI, and GitHub drafts.

@@ -1,6 +1,6 @@
 # LocalClaw Context
 
-Version: 1.6
+Version: 1.7
 Date: 2026-05-04  
 Purpose: end-to-end execution context and checkpoint guide for LocalClaw delivery
 
@@ -27,7 +27,7 @@ As of 2026-05-04, the project status is:
 | Phase 12: Cognitive Memory | complete | Knowledge graph storage now maps files, symbols, dependencies, document references, historical changes, and related learnings, and semantic impact analysis is injected into planning and approval previews alongside flat RAG. |
 | Phase 13: Self-Healing & Proactive Autonomy | complete | Repair proposal generation, immediate repair resume, bounded retry budget, self-healing learnings, structured operator diagnostics, and allowlisted proactive remediations are now in place. |
 | Phase 14: Conversational Agent & Iterative Planning | complete | Persistent chat context, structured summaries/preferences, clarification-driven draft refinement, structural contract evolution, approval-gated planning, and browser visibility are now all in place. |
-| Phase 15: Persona Layer & Humanized Presence | planned | A channel-aware narration and preference layer will make LocalClaw sound like a consistent teammate across Telegram, UI, and GitHub. |
+| Phase 15: Persona Layer & Humanized Presence | in progress | Operator persona settings now persist in `agent_state`, the browser UI can edit channel controls, and Telegram/UI/GitHub drafts now consume those settings; deeper channel adapters and evaluation remain open. |
 
 ## 1. Mission
 
@@ -460,7 +460,7 @@ Outputs:
 - Operators can define and refine tasks through natural language dialogue.
 - Reduced friction in task initiation and planning.
 
-### Phase 15: Persona Layer & Humanized Presence (Planned)
+### Phase 15: Persona Layer & Humanized Presence (In Progress)
 
 Inputs:
 
@@ -494,6 +494,9 @@ Current progress:
 - orchestrator task details now hydrate persona artifacts alongside raw logs so downstream surfaces can compare narration against evidence
 - Telegram and operator-facing task views now use narrated summaries when available for completion, blocked, failed, repair, and deploy-approval states
 - Browser UI task detail now shows narrated summary, handover notes, observation notes, and raw facts side by side so the operator can see both the humanized explanation and the underlying execution state
+- operator persona settings now persist through `agent_state`, are exposed through the control API, and can be edited in the browser UI as channel-specific controls for Telegram, UI, and GitHub draft behavior
+- persona artifact generation now consumes those settings in the orchestrator, so Telegram/UI verbosity, proactive observation notes, and GitHub draft voice are no longer hard-coded defaults only
+- chat-session preferences from Phase 14 now flow into persona context resolution, letting explicit concise/detailed chat preferences influence later UI and GitHub narration for that task
 - persona output remains post-execution and non-authoritative; it does not choose tools, bypass approval gates, or alter verification results
 
 Outputs:

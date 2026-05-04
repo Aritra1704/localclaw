@@ -7,6 +7,7 @@ import { z } from 'zod';
 
 import { listActors } from './actors.js';
 import { normalizeTaskContract } from './taskContract.js';
+import { normalizePersonaSettings } from '../persona/artifacts.js';
 
 const jsonHeaders = {
   'content-type': 'application/json; charset=utf-8',
@@ -82,6 +83,47 @@ const addProjectSchema = z
     name: z.string().trim().min(1).max(120).optional(),
     rootPath: z.string().trim().min(1),
   })
+  .strict();
+
+const personaSettingsSchema = z
+  .object({
+    voice: z.string().trim().min(1).max(120).optional(),
+    channels: z
+      .object({
+        telegram: z
+          .object({
+            verbosity: z.enum(['concise', 'detailed']).optional(),
+            teachingDepth: z.enum(['low', 'medium', 'high']).optional(),
+          })
+          .partial()
+          .optional(),
+        ui: z
+          .object({
+            verbosity: z.enum(['concise', 'detailed']).optional(),
+            teachingDepth: z.enum(['low', 'medium', 'high']).optional(),
+          })
+          .partial()
+          .optional(),
+        github: z
+          .object({
+            verbosity: z.enum(['concise', 'detailed']).optional(),
+            teachingDepth: z.enum(['low', 'medium', 'high']).optional(),
+            mode: z.enum(['draft_or_approval_gated', 'approval_gated_only']).optional(),
+          })
+          .partial()
+          .optional(),
+      })
+      .partial()
+      .optional(),
+    controls: z
+      .object({
+        proactiveObservations: z.boolean().optional(),
+        githubVoiceEnabled: z.boolean().optional(),
+      })
+      .partial()
+      .optional(),
+  })
+  .partial()
   .strict();
 
 const staticTypes = new Map([
@@ -257,6 +299,42 @@ export function createControlApiServer({
 
       if (pathname === '/v1/mcp' && req.method === 'GET') {
         sendJson(res, 200, { data: orchestrator.getMcpStatus() });
+        return;
+      }
+
+      if (pathname === '/v1/persona/settings' && req.method === 'GET') {
+        sendJson(res, 200, { data: await orchestrator.getPersonaSettings() });
+        return;
+      }
+
+      if (pathname === '/v1/persona/settings' && req.method === 'PUT') {
+        const parsed = personaSettingsSchema.parse(await readJsonBody(req));
+        const current = await orchestrator.getPersonaSettings();
+        const next = normalizePersonaSettings({
+          ...current,
+          ...parsed,
+          channels: {
+            ...current.channels,
+            ...(parsed.channels ?? {}),
+            telegram: {
+              ...current.channels.telegram,
+              ...(parsed.channels?.telegram ?? {}),
+            },
+            ui: {
+              ...current.channels.ui,
+              ...(parsed.channels?.ui ?? {}),
+            },
+            github: {
+              ...current.channels.github,
+              ...(parsed.channels?.github ?? {}),
+            },
+          },
+          controls: {
+            ...current.controls,
+            ...(parsed.controls ?? {}),
+          },
+        });
+        sendJson(res, 200, { data: await orchestrator.updatePersonaSettings(next) });
         return;
       }
 

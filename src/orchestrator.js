@@ -12,11 +12,13 @@ import {
 } from './control/taskContract.js';
 import { getPool } from './db/client.js';
 import {
+  applyChatPreferencesToPersonaSettings,
   buildPersonaArtifactsForExecution,
   buildPersonaArtifactsForExecutionError,
   buildPersonaArtifactsForRepairApproval,
   buildPersonaProfileArtifact,
   hydratePersonaArtifacts,
+  normalizePersonaSettings,
 } from './persona/artifacts.js';
 import { removeWorkspaceJunk } from './project/contract.js';
 import { ReflectionEngine } from './selfimprovement/reflectionEngine.js';
@@ -31,6 +33,7 @@ const RAG_SYNC_INTERVAL_MS = 10 * 60 * 1000;
 const WORKSPACE_JUNK_REMEDIATION_INTERVAL_MS = 6 * 60 * 60 * 1000;
 const REPAIR_BASE_BACKOFF_MS = 30 * 1000;
 const REPAIR_MAX_BACKOFF_MS = 15 * 60 * 1000;
+const PERSONA_SETTINGS_STATE_KEY = 'persona_settings';
 
 const RETRIEVAL_STOP_WORDS = new Set([
   'about',
@@ -1036,12 +1039,15 @@ export class Orchestrator {
 
       let personaArtifacts = [];
       let taskStatus = null;
+      const personaContext = await this.resolvePersonaContext(task);
 
       if (result.publication?.published && this.deployer?.isEnabled?.()) {
         personaArtifacts = buildPersonaArtifactsForExecution({
           task,
           result,
           taskStatus: 'waiting_approval',
+          settings: personaContext.settings,
+          preferenceSource: personaContext.preferenceSource,
         });
       } else {
         const publishBlocked =
@@ -1055,6 +1061,8 @@ export class Orchestrator {
           task,
           result,
           taskStatus,
+          settings: personaContext.settings,
+          preferenceSource: personaContext.preferenceSource,
         });
       }
 
@@ -1105,6 +1113,8 @@ export class Orchestrator {
             task,
             result,
             taskStatus: 'blocked',
+            settings: personaContext.settings,
+            preferenceSource: personaContext.preferenceSource,
           });
           await this.persistArtifacts(task.id, blockedPersonaArtifacts);
           const blockedNarrative = findArtifactMetadata(
@@ -1250,7 +1260,13 @@ export class Orchestrator {
         [task.id, error.message]
       );
 
-      const errorArtifacts = buildPersonaArtifactsForExecutionError({ task, error });
+      const personaContext = await this.resolvePersonaContext(task);
+      const errorArtifacts = buildPersonaArtifactsForExecutionError({
+        task,
+        error,
+        settings: personaContext.settings,
+        preferenceSource: personaContext.preferenceSource,
+      });
       await this.persistArtifacts(task.id, errorArtifacts);
       const narratedSummary = findArtifactMetadata(errorArtifacts, 'narrated_summary_v1');
       if (narratedSummary?.channelDrafts?.telegram) {
@@ -1783,10 +1799,13 @@ export class Orchestrator {
 
     if (repairState.status === 'exhausted') {
       const reason = `Repair budget exhausted after ${repairState.exhaustedAfterAttempt} attempt(s). ${repairState.lastFailureMessage ?? 'No additional repair attempts remain.'}`.trim();
+      const personaContext = await this.resolvePersonaContext(task);
       const personaArtifacts = buildPersonaArtifactsForExecution({
         task,
         result: nextResult,
         taskStatus: 'failed',
+        settings: personaContext.settings,
+        preferenceSource: personaContext.preferenceSource,
       });
       await this.persistArtifacts(task.id, [...(result.artifacts ?? []), ...personaArtifacts]);
 
@@ -1849,7 +1868,13 @@ export class Orchestrator {
       return;
     }
 
-    const personaArtifacts = buildPersonaArtifactsForRepairApproval({ task, result: nextResult });
+    const personaContext = await this.resolvePersonaContext(task);
+    const personaArtifacts = buildPersonaArtifactsForRepairApproval({
+      task,
+      result: nextResult,
+      settings: personaContext.settings,
+      preferenceSource: personaContext.preferenceSource,
+    });
     await this.persistArtifacts(task.id, [...(result.artifacts ?? []), ...personaArtifacts]);
 
     const approvalResult = await this.callPostgresTool(
@@ -3000,6 +3025,58 @@ export class Orchestrator {
     );
   }
 
+  async getPersonaSettings() {
+    return normalizePersonaSettings(
+      await this.getAgentStateValue(PERSONA_SETTINGS_STATE_KEY, null)
+    );
+  }
+
+  async updatePersonaSettings(input) {
+    const settings = normalizePersonaSettings(input);
+    await this.setAgentStateValue(PERSONA_SETTINGS_STATE_KEY, settings);
+    return settings;
+  }
+
+  async getChatSessionSummaryState(chatSessionId) {
+    if (!chatSessionId) {
+      return null;
+    }
+
+    const result = await this.callPostgresTool(
+      'get_chat_session',
+      { sessionId: chatSessionId },
+      () =>
+        this.pool.query(
+          `SELECT summary_state
+           FROM chat_sessions
+           WHERE id = $1`,
+          [chatSessionId]
+        )
+    );
+
+    return result.rows[0]?.summary_state ?? null;
+  }
+
+  async resolvePersonaContext(task) {
+    const baseSettings = await this.getPersonaSettings();
+    const chatSummaryState = task?.chat_session_id
+      ? await this.getChatSessionSummaryState(task.chat_session_id)
+      : null;
+    const hasChatPreferences =
+      chatSummaryState?.preferences &&
+      Object.keys(chatSummaryState.preferences).length > 0;
+
+    return {
+      settings: hasChatPreferences
+        ? applyChatPreferencesToPersonaSettings(baseSettings, chatSummaryState)
+        : baseSettings,
+      preferenceSource: hasChatPreferences
+        ? 'operator_settings+chat_session_preferences'
+        : 'operator_settings',
+      chatSummaryState,
+    };
+  }
+
   async pause(reason = 'Paused via Telegram') {
     await this.setAgentStateValue('status', 'paused');
     await this.setAgentStateValue('pause_reason', reason);
@@ -3153,7 +3230,15 @@ export class Orchestrator {
           },
         },
         buildPersonaProfileArtifact(task, {
-          preferenceSource: task.chat_session_id ? 'chat_session_defaults' : 'platform_defaults',
+          settings: (
+            await this.resolvePersonaContext({
+              ...task,
+              chat_session_id: options.chatSessionId ?? task.chat_session_id ?? null,
+            })
+          ).settings,
+          preferenceSource: options.chatSessionId
+            ? 'operator_settings+chat_session_preferences'
+            : 'operator_settings',
         }),
       ]);
 

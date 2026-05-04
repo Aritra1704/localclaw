@@ -1,7 +1,121 @@
 import path from 'node:path';
 
+export const DEFAULT_PERSONA_SETTINGS = Object.freeze({
+  version: 'persona_settings_v1',
+  voice: 'grounded_engineering_teammate',
+  channels: {
+    telegram: { verbosity: 'concise', teachingDepth: 'low' },
+    ui: { verbosity: 'detailed', teachingDepth: 'medium' },
+    github: {
+      verbosity: 'concise',
+      teachingDepth: 'low',
+      mode: 'draft_or_approval_gated',
+    },
+  },
+  controls: {
+    proactiveObservations: true,
+    githubVoiceEnabled: false,
+  },
+});
+
 function unique(values = []) {
   return [...new Set(values.filter(Boolean))];
+}
+
+function cloneDefaultPersonaSettings() {
+  return JSON.parse(JSON.stringify(DEFAULT_PERSONA_SETTINGS));
+}
+
+function normalizeEnum(value, allowed, fallback) {
+  return allowed.has(value) ? value : fallback;
+}
+
+export function normalizePersonaSettings(input = {}) {
+  const defaults = cloneDefaultPersonaSettings();
+  const settings = input && typeof input === 'object' ? input : {};
+
+  return {
+    version: DEFAULT_PERSONA_SETTINGS.version,
+    voice: `${settings.voice ?? defaults.voice}`.trim() || defaults.voice,
+    channels: {
+      telegram: {
+        verbosity: normalizeEnum(
+          settings.channels?.telegram?.verbosity,
+          new Set(['concise', 'detailed']),
+          defaults.channels.telegram.verbosity
+        ),
+        teachingDepth: normalizeEnum(
+          settings.channels?.telegram?.teachingDepth,
+          new Set(['low', 'medium', 'high']),
+          defaults.channels.telegram.teachingDepth
+        ),
+      },
+      ui: {
+        verbosity: normalizeEnum(
+          settings.channels?.ui?.verbosity,
+          new Set(['concise', 'detailed']),
+          defaults.channels.ui.verbosity
+        ),
+        teachingDepth: normalizeEnum(
+          settings.channels?.ui?.teachingDepth,
+          new Set(['low', 'medium', 'high']),
+          defaults.channels.ui.teachingDepth
+        ),
+      },
+      github: {
+        verbosity: normalizeEnum(
+          settings.channels?.github?.verbosity,
+          new Set(['concise', 'detailed']),
+          defaults.channels.github.verbosity
+        ),
+        teachingDepth: normalizeEnum(
+          settings.channels?.github?.teachingDepth,
+          new Set(['low', 'medium', 'high']),
+          defaults.channels.github.teachingDepth
+        ),
+        mode: normalizeEnum(
+          settings.channels?.github?.mode,
+          new Set(['draft_or_approval_gated', 'approval_gated_only']),
+          defaults.channels.github.mode
+        ),
+      },
+    },
+    controls: {
+      proactiveObservations:
+        typeof settings.controls?.proactiveObservations === 'boolean'
+          ? settings.controls.proactiveObservations
+          : defaults.controls.proactiveObservations,
+      githubVoiceEnabled:
+        typeof settings.controls?.githubVoiceEnabled === 'boolean'
+          ? settings.controls.githubVoiceEnabled
+          : defaults.controls.githubVoiceEnabled,
+    },
+  };
+}
+
+export function applyChatPreferencesToPersonaSettings(settings, summaryState = null) {
+  const next = normalizePersonaSettings(settings);
+  const preferences = summaryState?.preferences ?? {};
+  const verbosity = preferences.verbosity?.value ?? null;
+  const explanationDepth = preferences.explanationDepth?.value ?? null;
+
+  if (verbosity === 'concise') {
+    next.channels.ui.verbosity = 'concise';
+    next.channels.github.verbosity = 'concise';
+  } else if (verbosity === 'detailed') {
+    next.channels.ui.verbosity = 'detailed';
+    next.channels.github.verbosity = 'detailed';
+  }
+
+  if (explanationDepth === 'low') {
+    next.channels.ui.teachingDepth = 'low';
+    next.channels.github.teachingDepth = 'low';
+  } else if (explanationDepth === 'high') {
+    next.channels.ui.teachingDepth = 'high';
+    next.channels.github.teachingDepth = 'high';
+  }
+
+  return next;
 }
 
 function compactText(value, maxLength = 600) {
@@ -185,42 +299,81 @@ function buildNarrativeText(task, result, taskStatus) {
   );
 }
 
-function buildChannelDrafts({ task, result, taskStatus, narrative }) {
+function buildChannelDrafts({ task, result, taskStatus, narrative, settings }) {
+  const resolvedSettings = normalizePersonaSettings(settings);
   const shortVerification = compactText(result?.verification?.review?.summary, 140);
-  const telegramLines = [
-    taskStatus === 'done'
-      ? `Task finished: ${task.title}`
-      : taskStatus === 'waiting_approval'
-        ? `Ready for deploy approval: ${task.title}`
-        : taskStatus === 'needs_repair'
-          ? `Repair handoff: ${task.title}`
-          : `Task needs attention: ${task.title}`,
-    narrative,
-    shortVerification && shortVerification !== narrative ? `Verification: ${shortVerification}` : null,
-  ].filter(Boolean);
+  const execution = summarizeExecution(result);
+  const verification = summarizeVerification(result);
+  const specialized = summarizeSpecializedReview(result);
+  const publication = summarizePublication(result.publication);
+  const telegramLines = resolvedSettings.channels.telegram.verbosity === 'detailed'
+    ? [
+        taskStatus === 'done'
+          ? `Task finished: ${task.title}`
+          : taskStatus === 'waiting_approval'
+            ? `Ready for deploy approval: ${task.title}`
+            : taskStatus === 'needs_repair'
+              ? `Repair handoff: ${task.title}`
+              : `Task needs attention: ${task.title}`,
+        narrative,
+        `Execution: ${execution}`,
+        `Verification: ${verification}`,
+        specialized ? `Specialized review: ${specialized}` : null,
+        publication,
+      ].filter(Boolean)
+    : [
+        taskStatus === 'done'
+          ? `Task finished: ${task.title}`
+          : taskStatus === 'waiting_approval'
+            ? `Ready for deploy approval: ${task.title}`
+            : taskStatus === 'needs_repair'
+              ? `Repair handoff: ${task.title}`
+              : `Task needs attention: ${task.title}`,
+        narrative,
+        shortVerification && shortVerification !== narrative ? `Verification: ${shortVerification}` : null,
+      ].filter(Boolean);
+
+  const uiDraft =
+    resolvedSettings.channels.ui.verbosity === 'detailed'
+      ? compactText(
+          [narrative, `Execution: ${execution}`, `Verification: ${verification}`, specialized, publication]
+            .filter(Boolean)
+            .join('\n\n'),
+          1400
+        )
+      : narrative;
 
   return {
     telegram: compactText(telegramLines.join('\n'), 900),
-    ui: narrative,
+    ui: uiDraft,
   };
 }
 
-function buildReviewCommentDraft(task, result, taskStatus) {
+function buildReviewCommentDraft(task, result, taskStatus, settings = DEFAULT_PERSONA_SETTINGS) {
+  const resolvedSettings = normalizePersonaSettings(settings);
   const verification = result?.verification?.review?.summary ?? 'Verification summary unavailable.';
   const specialized = result?.specializedReview?.summary ?? null;
   const body = compactText(
-    [
-      `Hey! I ran LocalClaw on "${task.title}".`,
-      taskStatus === 'done'
-        ? 'The implementation path completed and verification passed.'
-        : taskStatus === 'waiting_approval'
-          ? 'The implementation path completed and is waiting on deploy approval.'
-          : 'The run did not fully close cleanly and needs follow-up.',
-      `Verification: ${verification}`,
-      specialized ? `Specialized review: ${specialized}` : null,
-    ]
-      .filter(Boolean)
-      .join(' '),
+    resolvedSettings.controls.githubVoiceEnabled
+      ? [
+          `Hey! I ran LocalClaw on "${task.title}".`,
+          taskStatus === 'done'
+            ? 'The implementation path completed and verification passed.'
+            : taskStatus === 'waiting_approval'
+              ? 'The implementation path completed and is waiting on deploy approval.'
+              : 'The run did not fully close cleanly and needs follow-up.',
+          `Verification: ${verification}`,
+          specialized ? `Specialized review: ${specialized}` : null,
+        ]
+          .filter(Boolean)
+          .join(' ')
+      : [
+          `LocalClaw run summary for "${task.title}".`,
+          taskStatus === 'done' ? 'Verification passed.' : 'Follow-up is still required.',
+          `Verification: ${verification}`,
+        ]
+          .filter(Boolean)
+          .join(' '),
     900
   );
 
@@ -232,13 +385,20 @@ function buildReviewCommentDraft(task, result, taskStatus) {
       mode: 'draft',
       audience: 'github',
       approvalRequired: true,
+      publicationMode: resolvedSettings.channels.github.mode,
+      githubVoiceEnabled: resolvedSettings.controls.githubVoiceEnabled,
       taskStatus,
       body,
     },
   };
 }
 
-function buildObservationArtifacts(task, result) {
+function buildObservationArtifacts(task, result, settings = DEFAULT_PERSONA_SETTINGS) {
+  const resolvedSettings = normalizePersonaSettings(settings);
+  if (resolvedSettings.controls.proactiveObservations !== true) {
+    return [];
+  }
+
   return (result?.specializedReview?.followUpTasks ?? []).map((followUpTask, index) => ({
     artifactType: 'observation_note_v1',
     artifactPath: `task://${task.id}/observation_note_v1/${index + 1}`,
@@ -327,28 +487,23 @@ function buildSelfHealingDiagnosticArtifact(task, result, taskStatus) {
 }
 
 export function buildPersonaProfileArtifact(task, options = {}) {
+  const settings = normalizePersonaSettings(options.settings);
   return {
     artifactType: 'persona_profile_v1',
     artifactPath: `task://${task.id}/persona_profile_v1`,
     metadata: {
       version: 'persona_profile_v1',
-      voice: 'grounded_engineering_teammate',
+      voice: settings.voice,
       nonAuthoritative: true,
       preferenceSource: options.preferenceSource ?? 'platform_defaults',
-      channels: {
-        telegram: { verbosity: 'concise', teachingDepth: 'low' },
-        ui: { verbosity: 'detailed', teachingDepth: 'medium' },
-        github: { verbosity: 'concise', mode: 'draft_or_approval_gated' },
-      },
-      controls: {
-        proactiveObservations: true,
-        githubVoiceEnabled: false,
-      },
+      channels: settings.channels,
+      controls: settings.controls,
     },
   };
 }
 
-export function buildPersonaArtifactsForExecution({ task, result, taskStatus }) {
+export function buildPersonaArtifactsForExecution({ task, result, taskStatus, settings, preferenceSource }) {
+  const resolvedSettings = normalizePersonaSettings(settings);
   const evidence = buildEvidence(result);
   const facts = buildFacts(task, result, taskStatus);
   const narrative = buildNarrativeText(task, result, taskStatus);
@@ -357,9 +512,14 @@ export function buildPersonaArtifactsForExecution({ task, result, taskStatus }) 
     result,
     taskStatus,
     narrative,
+    settings: resolvedSettings,
   });
 
   const artifacts = [
+    buildPersonaProfileArtifact(task, {
+      settings: resolvedSettings,
+      preferenceSource: preferenceSource ?? 'platform_defaults',
+    }),
     {
       artifactType: 'narrated_summary_v1',
       artifactPath: `task://${task.id}/narrated_summary_v1`,
@@ -374,8 +534,8 @@ export function buildPersonaArtifactsForExecution({ task, result, taskStatus }) 
         channelDrafts,
       },
     },
-    buildReviewCommentDraft(task, result, taskStatus),
-    ...buildObservationArtifacts(task, result),
+    buildReviewCommentDraft(task, result, taskStatus, resolvedSettings),
+    ...buildObservationArtifacts(task, result, resolvedSettings),
   ];
   const selfHealingDiagnostic = buildSelfHealingDiagnosticArtifact(task, result, taskStatus);
   if (selfHealingDiagnostic) {
@@ -412,7 +572,8 @@ export function buildPersonaArtifactsForExecution({ task, result, taskStatus }) 
   return artifacts;
 }
 
-export function buildPersonaArtifactsForRepairApproval({ task, result }) {
+export function buildPersonaArtifactsForRepairApproval({ task, result, settings, preferenceSource }) {
+  const resolvedSettings = normalizePersonaSettings(settings);
   const repairProposal = result?.repairProposal ?? {};
   const repairState = result?.repairState ?? {};
   const steps = (repairProposal.steps ?? [])
@@ -420,6 +581,10 @@ export function buildPersonaArtifactsForRepairApproval({ task, result }) {
     .slice(0, 4);
 
   const artifacts = [
+    buildPersonaProfileArtifact(task, {
+      settings: resolvedSettings,
+      preferenceSource: preferenceSource ?? 'platform_defaults',
+    }),
     {
       artifactType: 'narrated_summary_v1',
       artifactPath: `task://${task.id}/narrated_summary_v1`,
@@ -444,14 +609,26 @@ export function buildPersonaArtifactsForRepairApproval({ task, result }) {
           artifactHints: ['repair_proposal'],
         },
         channelDrafts: {
-          telegram: compactText(
-            `Repair handoff: ${task.title}\n${repairProposal.reasoning ?? 'A repair proposal is ready for review.'}`,
-            900
-          ),
-          ui: compactText(
-            `I stopped after a failed step and drafted a repair path instead of improvising. ${repairProposal.reasoning ?? ''}`,
-            700
-          ),
+          telegram:
+            resolvedSettings.channels.telegram.verbosity === 'detailed'
+              ? compactText(
+                  `Repair handoff: ${task.title}\n${repairProposal.reasoning ?? 'A repair proposal is ready for review.'}\nAttempts: ${repairState.attemptCount ?? 'n/a'} / ${repairState.maxAttempts ?? 'n/a'}`,
+                  900
+                )
+              : compactText(
+                  `Repair handoff: ${task.title}\n${repairProposal.reasoning ?? 'A repair proposal is ready for review.'}`,
+                  900
+                ),
+          ui:
+            resolvedSettings.channels.ui.verbosity === 'detailed'
+              ? compactText(
+                  `I stopped after a failed step and drafted a repair path instead of improvising. ${repairProposal.reasoning ?? ''}\n\nAttempts: ${repairState.attemptCount ?? 'n/a'} / ${repairState.maxAttempts ?? 'n/a'}`,
+                  900
+                )
+              : compactText(
+                  `I stopped after a failed step and drafted a repair path instead of improvising. ${repairProposal.reasoning ?? ''}`,
+                  700
+                ),
         },
       },
     },
@@ -478,10 +655,15 @@ export function buildPersonaArtifactsForRepairApproval({ task, result }) {
   return artifacts;
 }
 
-export function buildPersonaArtifactsForExecutionError({ task, error }) {
+export function buildPersonaArtifactsForExecutionError({ task, error, settings, preferenceSource }) {
+  const resolvedSettings = normalizePersonaSettings(settings);
   const message = compactText(error?.message ?? 'Execution failed unexpectedly.', 240);
 
   return [
+    buildPersonaProfileArtifact(task, {
+      settings: resolvedSettings,
+      preferenceSource: preferenceSource ?? 'platform_defaults',
+    }),
     {
       artifactType: 'narrated_summary_v1',
       artifactPath: `task://${task.id}/narrated_summary_v1`,
@@ -503,8 +685,14 @@ export function buildPersonaArtifactsForExecutionError({ task, error }) {
           artifactHints: ['system_error'],
         },
         channelDrafts: {
-          telegram: `Task failed: ${task.title}\n${message}`,
-          ui: `I hit a failure while working on "${task.title}". ${message}`,
+          telegram:
+            resolvedSettings.channels.telegram.verbosity === 'detailed'
+              ? compactText(`Task failed: ${task.title}\n${message}\nInspect the latest logs before retrying.`, 900)
+              : `Task failed: ${task.title}\n${message}`,
+          ui:
+            resolvedSettings.channels.ui.verbosity === 'detailed'
+              ? compactText(`I hit a failure while working on "${task.title}". ${message}\n\nInspect the latest logs before retrying.`, 900)
+              : `I hit a failure while working on "${task.title}". ${message}`,
         },
       },
     },

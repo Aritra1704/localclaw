@@ -10,7 +10,7 @@
 - Phase 12: complete. Knowledge graph storage, graph-based retrieval, semantic impact analysis, and historical learnings are integrated into planning and approval previews.
 - Phase 13: complete. Repair proposal generation, immediate repair resume, bounded retry budget, self-healing learnings, structured operator diagnostics, and allowlisted proactive remediations are now in place.
 - Phase 14: complete. Persistent chat context, structured `chat_summary_v1` summaries, preference extraction, clarification-driven contract refinement, and browser chat visibility are now in place.
-- Phase 15: planned. Persona Layer and Humanized Presence will stay post-execution and non-authoritative while adding evidence-bound narration, operator preference profiles, channel adapters, optional "by the way" observations, and approval-gated GitHub voice.
+- Phase 15: in progress. Persona settings now persist through the control API and browser UI, and those controls already shape Telegram/UI/GitHub draft output while narration remains post-execution and non-authoritative.
 
 ## Start LocalClaw
 
