@@ -299,83 +299,217 @@ function buildNarrativeText(task, result, taskStatus) {
   );
 }
 
-function buildChannelDrafts({ task, result, taskStatus, narrative, settings }) {
+function summarizeEvidenceLine(evidence = {}) {
+  const stepText = Array.isArray(evidence.stepNumbers) && evidence.stepNumbers.length > 0
+    ? `steps ${evidence.stepNumbers.join(', ')}`
+    : null;
+  const fileText = Array.isArray(evidence.changedFiles) && evidence.changedFiles.length > 0
+    ? `files ${evidence.changedFiles.join(', ')}`
+    : null;
+  const artifactText = Array.isArray(evidence.artifactHints) && evidence.artifactHints.length > 0
+    ? `artifacts ${evidence.artifactHints.join(', ')}`
+    : null;
+
+  return compactText(
+    [stepText, fileText, artifactText].filter(Boolean).join('; '),
+    220
+  );
+}
+
+function summarizeNextAction(taskStatus, facts = {}) {
+  if (taskStatus === 'waiting_approval') {
+    return 'Approve or reject deployment from the approval queue.';
+  }
+
+  if (taskStatus === 'blocked' || taskStatus === 'failed') {
+    return facts.blockedReason
+      ? `Inspect the failure context and logs next: ${facts.blockedReason}`
+      : 'Inspect the failure context and logs before retrying.';
+  }
+
+  if (taskStatus === 'needs_repair') {
+    return 'Review the repair proposal before approving another attempt.';
+  }
+
+  if (taskStatus === 'done') {
+    return facts.publishSucceeded
+      ? 'Review the published output and decide whether any follow-up work is needed.'
+      : 'Review the verified result and decide whether a publish or follow-up task is needed.';
+  }
+
+  return null;
+}
+
+function buildTelegramDraft({
+  task,
+  taskStatus,
+  narrative,
+  verification,
+  execution,
+  specialized,
+  publication,
+  nextAction,
+  evidenceLine,
+  settings,
+}) {
+  const heading =
+    taskStatus === 'done'
+      ? `Task finished: ${task.title}`
+      : taskStatus === 'waiting_approval'
+        ? `Ready for deploy approval: ${task.title}`
+        : taskStatus === 'needs_repair'
+          ? `Repair handoff: ${task.title}`
+          : `Task needs attention: ${task.title}`;
+
+  if (settings.channels.telegram.verbosity !== 'detailed') {
+    return compactText(
+      [heading, narrative, verification ? `Verification: ${compactText(verification, 140)}` : null]
+        .filter(Boolean)
+        .join('\n'),
+      900
+    );
+  }
+
+  return compactText(
+    [
+      heading,
+      narrative,
+      `Execution: ${execution}`,
+      `Verification: ${verification}`,
+      specialized ? `Specialized review: ${specialized}` : null,
+      publication,
+      nextAction ? `Next action: ${nextAction}` : null,
+      evidenceLine ? `Evidence: ${evidenceLine}` : null,
+    ]
+      .filter(Boolean)
+      .join('\n'),
+    900
+  );
+}
+
+function buildUiDraft({
+  narrative,
+  execution,
+  verification,
+  specialized,
+  publication,
+  nextAction,
+  evidenceLine,
+  facts,
+  settings,
+}) {
+  if (settings.channels.ui.verbosity !== 'detailed') {
+    return narrative;
+  }
+
+  const sections = [
+    narrative,
+    `Execution: ${execution}`,
+    `Verification: ${verification}`,
+    specialized ? `Specialized review: ${specialized}` : null,
+    publication,
+    settings.channels.ui.teachingDepth !== 'low' && facts.planSummary
+      ? `Plan context: ${compactText(facts.planSummary, 220)}`
+      : null,
+    nextAction ? `Next action: ${nextAction}` : null,
+    evidenceLine ? `Evidence: ${evidenceLine}` : null,
+  ].filter(Boolean);
+
+  return compactText(sections.join('\n\n'), 1400);
+}
+
+function buildGitHubDraft({
+  task,
+  taskStatus,
+  verification,
+  specialized,
+  nextAction,
+  evidenceLine,
+  facts,
+  settings,
+}) {
+  const statusLine =
+    taskStatus === 'done'
+      ? 'Status: implementation completed and verification passed.'
+      : taskStatus === 'waiting_approval'
+        ? 'Status: implementation completed and is waiting on deploy approval.'
+        : taskStatus === 'blocked'
+          ? 'Status: implementation progressed, but follow-up is still required before closure.'
+          : taskStatus === 'failed'
+            ? 'Status: the run did not close cleanly and needs operator follow-up.'
+            : 'Status: the task needs follow-up.';
+
+  const intro = settings.controls.githubVoiceEnabled
+    ? `LocalClaw review draft for "${task.title}".`
+    : `Automated review draft for "${task.title}".`;
+
+  const lines = [
+    intro,
+    statusLine,
+    `Verification: ${verification}`,
+    specialized ? `Specialized review: ${specialized}` : null,
+    settings.channels.github.teachingDepth === 'high' && facts.planSummary
+      ? `Plan context: ${compactText(facts.planSummary, 220)}`
+      : null,
+    nextAction ? `Recommended next action: ${nextAction}` : null,
+    evidenceLine ? `Evidence: ${evidenceLine}` : null,
+  ].filter(Boolean);
+
+  if (settings.channels.github.verbosity !== 'detailed') {
+    return compactText(lines.join(' '), 900);
+  }
+
+  return compactText(lines.join('\n\n'), 900);
+}
+
+function buildChannelDrafts({ task, result, taskStatus, narrative, settings, facts, evidence }) {
   const resolvedSettings = normalizePersonaSettings(settings);
-  const shortVerification = compactText(result?.verification?.review?.summary, 140);
   const execution = summarizeExecution(result);
   const verification = summarizeVerification(result);
   const specialized = summarizeSpecializedReview(result);
   const publication = summarizePublication(result.publication);
-  const telegramLines = resolvedSettings.channels.telegram.verbosity === 'detailed'
-    ? [
-        taskStatus === 'done'
-          ? `Task finished: ${task.title}`
-          : taskStatus === 'waiting_approval'
-            ? `Ready for deploy approval: ${task.title}`
-            : taskStatus === 'needs_repair'
-              ? `Repair handoff: ${task.title}`
-              : `Task needs attention: ${task.title}`,
-        narrative,
-        `Execution: ${execution}`,
-        `Verification: ${verification}`,
-        specialized ? `Specialized review: ${specialized}` : null,
-        publication,
-      ].filter(Boolean)
-    : [
-        taskStatus === 'done'
-          ? `Task finished: ${task.title}`
-          : taskStatus === 'waiting_approval'
-            ? `Ready for deploy approval: ${task.title}`
-            : taskStatus === 'needs_repair'
-              ? `Repair handoff: ${task.title}`
-              : `Task needs attention: ${task.title}`,
-        narrative,
-        shortVerification && shortVerification !== narrative ? `Verification: ${shortVerification}` : null,
-      ].filter(Boolean);
-
-  const uiDraft =
-    resolvedSettings.channels.ui.verbosity === 'detailed'
-      ? compactText(
-          [narrative, `Execution: ${execution}`, `Verification: ${verification}`, specialized, publication]
-            .filter(Boolean)
-            .join('\n\n'),
-          1400
-        )
-      : narrative;
+  const nextAction = summarizeNextAction(taskStatus, facts);
+  const evidenceLine = summarizeEvidenceLine(evidence);
 
   return {
-    telegram: compactText(telegramLines.join('\n'), 900),
-    ui: uiDraft,
+    telegram: buildTelegramDraft({
+      task,
+      taskStatus,
+      narrative,
+      verification,
+      execution,
+      specialized,
+      publication,
+      nextAction,
+      evidenceLine,
+      settings: resolvedSettings,
+    }),
+    ui: buildUiDraft({
+      narrative,
+      execution,
+      verification,
+      specialized,
+      publication,
+      nextAction,
+      evidenceLine,
+      facts,
+      settings: resolvedSettings,
+    }),
+    github: buildGitHubDraft({
+      task,
+      taskStatus,
+      verification,
+      specialized,
+      nextAction,
+      evidenceLine,
+      facts,
+      settings: resolvedSettings,
+    }),
   };
 }
 
-function buildReviewCommentDraft(task, result, taskStatus, settings = DEFAULT_PERSONA_SETTINGS) {
+function buildReviewCommentDraft(task, taskStatus, channelDrafts, settings = DEFAULT_PERSONA_SETTINGS) {
   const resolvedSettings = normalizePersonaSettings(settings);
-  const verification = result?.verification?.review?.summary ?? 'Verification summary unavailable.';
-  const specialized = result?.specializedReview?.summary ?? null;
-  const body = compactText(
-    resolvedSettings.controls.githubVoiceEnabled
-      ? [
-          `Hey! I ran LocalClaw on "${task.title}".`,
-          taskStatus === 'done'
-            ? 'The implementation path completed and verification passed.'
-            : taskStatus === 'waiting_approval'
-              ? 'The implementation path completed and is waiting on deploy approval.'
-              : 'The run did not fully close cleanly and needs follow-up.',
-          `Verification: ${verification}`,
-          specialized ? `Specialized review: ${specialized}` : null,
-        ]
-          .filter(Boolean)
-          .join(' ')
-      : [
-          `LocalClaw run summary for "${task.title}".`,
-          taskStatus === 'done' ? 'Verification passed.' : 'Follow-up is still required.',
-          `Verification: ${verification}`,
-        ]
-          .filter(Boolean)
-          .join(' '),
-    900
-  );
 
   return {
     artifactType: 'review_comment_draft_v1',
@@ -388,7 +522,7 @@ function buildReviewCommentDraft(task, result, taskStatus, settings = DEFAULT_PE
       publicationMode: resolvedSettings.channels.github.mode,
       githubVoiceEnabled: resolvedSettings.controls.githubVoiceEnabled,
       taskStatus,
-      body,
+      body: channelDrafts.github,
     },
   };
 }
@@ -513,6 +647,8 @@ export function buildPersonaArtifactsForExecution({ task, result, taskStatus, se
     taskStatus,
     narrative,
     settings: resolvedSettings,
+    facts,
+    evidence,
   });
 
   const artifacts = [
@@ -534,7 +670,7 @@ export function buildPersonaArtifactsForExecution({ task, result, taskStatus, se
         channelDrafts,
       },
     },
-    buildReviewCommentDraft(task, result, taskStatus, resolvedSettings),
+    buildReviewCommentDraft(task, taskStatus, channelDrafts, resolvedSettings),
     ...buildObservationArtifacts(task, result, resolvedSettings),
   ];
   const selfHealingDiagnostic = buildSelfHealingDiagnosticArtifact(task, result, taskStatus);
@@ -629,6 +765,28 @@ export function buildPersonaArtifactsForRepairApproval({ task, result, settings,
                   `I stopped after a failed step and drafted a repair path instead of improvising. ${repairProposal.reasoning ?? ''}`,
                   700
                 ),
+          github:
+            resolvedSettings.channels.github.verbosity === 'detailed'
+              ? compactText(
+                  [
+                    `LocalClaw repair draft for "${task.title}".`,
+                    `Status: a repair proposal is ready for approval after attempt ${repairState.attemptCount ?? 'n/a'} of ${repairState.maxAttempts ?? 'n/a'}.`,
+                    `Reasoning: ${repairProposal.reasoning ?? 'A repair proposal is ready for review.'}`,
+                    repairState.nextEligibleAt
+                      ? `Recommended next action: approve the repair if it is safe. Execution will resume after ${repairState.nextEligibleAt}.`
+                      : 'Recommended next action: approve the repair if it is safe, or inspect the logs for missing context.',
+                    `Evidence: repair proposal steps ${steps.length || 0}; artifacts repair_proposal`,
+                  ].join('\n\n'),
+                  900
+                )
+              : compactText(
+                  [
+                    `LocalClaw repair draft for "${task.title}".`,
+                    `Reasoning: ${repairProposal.reasoning ?? 'A repair proposal is ready for review.'}`,
+                    'Evidence: artifacts repair_proposal',
+                  ].join(' '),
+                  900
+                ),
         },
       },
     },
@@ -693,6 +851,26 @@ export function buildPersonaArtifactsForExecutionError({ task, error, settings, 
             resolvedSettings.channels.ui.verbosity === 'detailed'
               ? compactText(`I hit a failure while working on "${task.title}". ${message}\n\nInspect the latest logs before retrying.`, 900)
               : `I hit a failure while working on "${task.title}". ${message}`,
+          github:
+            resolvedSettings.channels.github.verbosity === 'detailed'
+              ? compactText(
+                  [
+                    `Automated review draft for "${task.title}".`,
+                    'Status: the run aborted before a complete execution summary could be assembled.',
+                    `Failure: ${message}`,
+                    'Recommended next action: inspect the latest system and execution logs before retrying.',
+                    'Evidence: artifacts system_error',
+                  ].join('\n\n'),
+                  900
+                )
+              : compactText(
+                  [
+                    `Automated review draft for "${task.title}".`,
+                    `Failure: ${message}`,
+                    'Evidence: artifacts system_error',
+                  ].join(' '),
+                  900
+                ),
         },
       },
     },

@@ -27,12 +27,13 @@ Phase 14 is now complete:
 Phase 15 groundwork is already present:
 
 - evidence-bound narrated summaries already exist in `src/persona/artifacts.js`
-- channel drafts already exist for Telegram and UI
+- dedicated channel adapters now exist for Telegram, UI, and GitHub, all rendering from the same evidence bundle with different policy
 - repair handoff narration already exists
 - review-comment drafts and proactive observation artifacts already exist
 - operator persona settings now persist in `agent_state` and are editable through the control API and browser UI
 - orchestrator persona generation now consumes those settings plus chat-session preferences when building task persona artifacts
 - GitHub review drafts can now be published through an explicit control API/UI action instead of remaining draft-only metadata
+- evidence-bound narration tests now pin channel draft behavior so future persona changes stay fact-traceable
 
 ## Fastest Closure Order
 
@@ -42,8 +43,6 @@ Most of the narration primitives already exist. What is left is integration and 
 
 Remaining work:
 
-- add channel adapters so Telegram, UI, and GitHub render from the same evidence bundle with different policies
-- add golden tests that verify narrated output stays evidence-bound
 - persist preference profiles separately from task artifacts when the controls outgrow the current global settings profile
 
 Exit criteria:
@@ -55,11 +54,11 @@ Exit criteria:
 ## Recommended Sequence
 
 1. Add approval-gated GitHub review publication using the existing persona artifacts.
-2. Add dedicated channel adapters for Telegram, UI, and GitHub policy differences.
-3. Add golden tests last so the behavior is locked before future expansion.
+2. Persist preference profiles separately if operator/team settings outgrow the current `agent_state` shape.
+3. Expand persona controls only after the evidence-bound adapter behavior remains stable.
 
 ## Suggested Next Concrete Tasks
 
 1. Add approval-gated GitHub review draft publication using existing persona artifacts.
-2. Add dedicated channel adapters and policy tests.
-3. Add golden evidence-bound narration tests across Telegram, UI, and GitHub drafts.
+2. Persist preference profiles separately from task artifacts when global settings become too coarse.
+3. Expand persona evaluation coverage only after new channels or preferences are introduced.

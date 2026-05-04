@@ -105,6 +105,7 @@ test('buildPersonaArtifactsForExecution creates narrated summary, handover, obse
   assert.deepEqual(persona.narratedSummary.evidence.changedFiles, ['README.md', 'ARCHITECTURE.md']);
   assert.equal(persona.handoverSummary.taskStatus, 'blocked');
   assert.equal(persona.reviewCommentDraft.mode, 'draft');
+  assert.equal(persona.reviewCommentDraft.body, persona.narratedSummary.channelDrafts.github);
   assert.equal(persona.observationNotes.length, 1);
   assert.match(persona.observationNotes[0].note, /By the way/i);
 });
@@ -175,9 +176,111 @@ test('buildPersonaArtifactsForExecution respects persona settings for channel dr
 
   assert.match(persona.narratedSummary.channelDrafts.telegram, /Execution:/);
   assert.equal(persona.narratedSummary.channelDrafts.ui, persona.narratedSummary.summary);
+  assert.match(persona.narratedSummary.channelDrafts.github, /Evidence:/);
   assert.equal(persona.observationNotes.length, 0);
   assert.equal(persona.reviewCommentDraft.githubVoiceEnabled, true);
+  assert.equal(persona.reviewCommentDraft.body, persona.narratedSummary.channelDrafts.github);
   assert.equal(persona.profile.preferenceSource, 'operator_settings');
+});
+
+test('buildPersonaArtifactsForExecution renders distinct channel policies from the same evidence bundle', () => {
+  const task = {
+    id: '26262626-2626-4262-8262-262626262626',
+    title: 'Refine operator handoff copy',
+  };
+  const result = {
+    plan: {
+      summary: 'Refresh operator-facing wording and keep the handoff audit-friendly.',
+    },
+    toolRuns: [
+      {
+        stepNumber: 2,
+        objective: 'Update handoff copy',
+        tool: 'write_file',
+        status: 'success',
+        summary: 'Updated handoff copy in the operator panel.',
+      },
+    ],
+    verification: {
+      review: {
+        status: 'passed',
+        summary: 'Verification passed and operator copy stays evidence-bound.',
+      },
+      workspaceFiles: ['web/src/main.jsx'],
+    },
+    specializedReview: {
+      status: 'needs_human_review',
+      summary: 'Docs Agent flagged nearby copy drift.',
+    },
+    publication: {
+      attempted: false,
+      published: false,
+    },
+  };
+
+  const artifacts = buildPersonaArtifactsForExecution({
+    task,
+    result,
+    taskStatus: 'done',
+    settings: {
+      channels: {
+        telegram: { verbosity: 'detailed' },
+        ui: { verbosity: 'detailed', teachingDepth: 'high' },
+        github: { verbosity: 'detailed', teachingDepth: 'high' },
+      },
+      controls: {
+        githubVoiceEnabled: true,
+      },
+    },
+  });
+  const persona = hydratePersonaArtifacts(
+    artifacts.map((artifact) => ({
+      artifact_type: artifact.artifactType,
+      artifact_path: artifact.artifactPath,
+      metadata: artifact.metadata,
+      created_at: '2026-04-19T00:00:00.000Z',
+    }))
+  );
+
+  assert.equal(
+    persona.narratedSummary.channelDrafts.telegram,
+    [
+      'Task finished: Refine operator handoff copy',
+      'I finished "Refine operator handoff copy". I completed the main implementation step: Updated handoff copy in the operator panel. Verification passed: Verification passed and operator copy stays evidence-bound. Specialized review flagged follow-up work: Docs Agent flagged nearby copy drift. Publish was not requested for this task.',
+      'Execution: I completed the main implementation step: Updated handoff copy in the operator panel.',
+      'Verification: Verification passed: Verification passed and operator copy stays evidence-bound.',
+      'Specialized review: Specialized review flagged follow-up work: Docs Agent flagged nearby copy drift.',
+      'Publish was not requested for this task.',
+      'Next action: Review the verified result and decide whether a publish or follow-up task is needed.',
+      'Evidence: steps 2; files main.jsx; artifacts workspace_files',
+    ].join(' ')
+  );
+  assert.equal(
+    persona.narratedSummary.channelDrafts.ui,
+    [
+      'I finished "Refine operator handoff copy". I completed the main implementation step: Updated handoff copy in the operator panel. Verification passed: Verification passed and operator copy stays evidence-bound. Specialized review flagged follow-up work: Docs Agent flagged nearby copy drift. Publish was not requested for this task.',
+      'Execution: I completed the main implementation step: Updated handoff copy in the operator panel.',
+      'Verification: Verification passed: Verification passed and operator copy stays evidence-bound.',
+      'Specialized review: Specialized review flagged follow-up work: Docs Agent flagged nearby copy drift.',
+      'Publish was not requested for this task.',
+      'Plan context: Refresh operator-facing wording and keep the handoff audit-friendly.',
+      'Next action: Review the verified result and decide whether a publish or follow-up task is needed.',
+      'Evidence: steps 2; files main.jsx; artifacts workspace_files',
+    ].join(' ')
+  );
+  assert.equal(
+    persona.narratedSummary.channelDrafts.github,
+    [
+      'LocalClaw review draft for "Refine operator handoff copy".',
+      'Status: implementation completed and verification passed.',
+      'Verification: Verification passed: Verification passed and operator copy stays evidence-bound.',
+      'Specialized review: Specialized review flagged follow-up work: Docs Agent flagged nearby copy drift.',
+      'Plan context: Refresh operator-facing wording and keep the handoff audit-friendly.',
+      'Recommended next action: Review the verified result and decide whether a publish or follow-up task is needed.',
+      'Evidence: steps 2; files main.jsx; artifacts workspace_files',
+    ].join(' ')
+  );
+  assert.equal(persona.reviewCommentDraft.body, persona.narratedSummary.channelDrafts.github);
 });
 
 test('buildPersonaArtifactsForRepairApproval creates narrated and handover summaries', () => {
@@ -223,6 +326,8 @@ test('buildPersonaArtifactsForRepairApproval creates narrated and handover summa
   assert.equal(persona.narratedSummary.taskStatus, 'needs_repair');
   assert.match(persona.handoverSummary.summary, /environment variable/i);
   assert.equal(persona.handoverSummary.proposedSteps.length, 1);
+  assert.match(persona.narratedSummary.channelDrafts.github, /repair draft/i);
+  assert.match(persona.narratedSummary.channelDrafts.github, /Evidence:/);
   assert.equal(persona.selfHealingDiagnostic.repairStatus, 'pending_approval');
   assert.equal(persona.selfHealingDiagnostic.attemptCount, 2);
   assert.equal(persona.selfHealingDiagnostic.failedStepNumber, 3);
