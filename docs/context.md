@@ -1,12 +1,12 @@
 # LocalClaw Context
 
-Version: 1.3  
-Date: 2026-04-19  
+Version: 1.4  
+Date: 2026-05-04  
 Purpose: end-to-end execution context and checkpoint guide for LocalClaw delivery
 
 ## 0. Current Phase Status
 
-As of 2026-04-19, the project status is:
+As of 2026-05-04, the project status is:
 
 | Phase | Status | Notes |
 |---|---|---|
@@ -25,7 +25,7 @@ As of 2026-04-19, the project status is:
 | Phase 10: Specialized Agents | complete | Documentation, Security, and Dependency agents now run before publish, refresh workspace docs, flag risky findings, and create dependency follow-up tasks. |
 | Phase 11: MCP Integration | complete | Filesystem, GitHub, task/runtime PostgreSQL access, RAG indexing/retrieval, reflection, chat, projects, and skills now run through internal MCP-style servers with verified runtime coverage. |
 | Phase 12: Cognitive Memory | complete | Knowledge graph storage now maps files, symbols, dependencies, document references, historical changes, and related learnings, and semantic impact analysis is injected into planning and approval previews alongside flat RAG. |
-| Phase 13: Self-Healing & Proactive Autonomy | in progress | Repair proposal generation, immediate repair resume, bounded retry budget, cooldown metadata, and exhausted-repair handoff are now implemented; learnings capture and proactive remediation remain open. |
+| Phase 13: Self-Healing & Proactive Autonomy | complete | Repair proposal generation, immediate repair resume, bounded retry budget, self-healing learnings, structured operator diagnostics, and allowlisted proactive remediations are now in place. |
 | Phase 14: Conversational Agent & Iterative Planning | planned | Persistent chat context and iterative contract drafting will turn LocalClaw into a dialogue-driven planning partner. |
 | Phase 15: Persona Layer & Humanized Presence | planned | A channel-aware narration and preference layer will make LocalClaw sound like a consistent teammate across Telegram, UI, and GitHub. |
 
@@ -381,7 +381,7 @@ Outputs:
 
 - "Senior Engineer" level awareness of codebase architectural debt and cross-cutting impacts
 
-### Phase 13: Self-Healing & Proactive Autonomy (In Progress)
+### Phase 13: Self-Healing & Proactive Autonomy (Complete)
 
 Inputs:
 
@@ -405,7 +405,9 @@ Current progress:
 - repair attempts now use bounded retry policy via `tasks.retry_count` and `tasks.max_retries`, with persisted `repairState` metadata in task results
 - repeated repair attempts now carry exponential cooldown metadata (`nextEligibleAt`, `backoffMs`) so the operator can see when a retry is eligible
 - exhausted repair budgets now fail cleanly with narrated handoff context instead of looping indefinitely or degrading into a generic task failure
-- remaining work is concentrated on feeding successful repairs into learnings/reflection, adding narrow proactive remediations, and improving operator diagnostics
+- repaired and exhausted runs now emit `self-healing` learnings, and reflection prompts now include repair-state context so recovery outcomes can influence later behavior
+- self-healing handoff now includes structured diagnostics for attempt counts, failed step/tool, cooldown, inspect targets, and recommended operator actions
+- proactive remediation is now explicit and allowlisted: low-disk `auto_prune` remains available behind `disk_auto_prune`, and `workspace_junk_cleanup` can proactively remove ignored workspace junk without broad shell autonomy
 
 Outputs:
 

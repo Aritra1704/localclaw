@@ -18,6 +18,7 @@ import {
   buildPersonaProfileArtifact,
   hydratePersonaArtifacts,
 } from './persona/artifacts.js';
+import { removeWorkspaceJunk } from './project/contract.js';
 import { ReflectionEngine } from './selfimprovement/reflectionEngine.js';
 import { RepairEngine } from './selfhealing/repairEngine.js';
 import { ChatHistoryManager } from './control/chatHistory.js';
@@ -27,6 +28,7 @@ const logger = pino({
   level: config.nodeEnv === 'development' ? 'debug' : 'info',
 });
 const RAG_SYNC_INTERVAL_MS = 10 * 60 * 1000;
+const WORKSPACE_JUNK_REMEDIATION_INTERVAL_MS = 6 * 60 * 60 * 1000;
 const REPAIR_BASE_BACKOFF_MS = 30 * 1000;
 const REPAIR_MAX_BACKOFF_MS = 15 * 60 * 1000;
 
@@ -504,7 +506,13 @@ export class Orchestrator {
     this.lastRagSyncAt = 0;
     this.ragSyncIntervalMs = options.ragSyncIntervalMs ?? RAG_SYNC_INTERVAL_MS;
     this.lastAutoPruneAt = 0;
+    this.lastWorkspaceJunkCleanupAt = 0;
     this.lastSpaceWarningAt = 0;
+    this.proactiveRemediations = new Set(
+      (options.proactiveRemediations ?? config.proactiveRemediations ?? [])
+        .map((value) => `${value}`.trim().toLowerCase())
+        .filter(Boolean)
+    );
     
     this.activeTasks = new Set();
     this.maxConcurrency = options.maxConcurrency ?? parseInt(process.env.MAX_CONCURRENT_TASKS || '3', 10);
@@ -614,6 +622,7 @@ export class Orchestrator {
 
       await this.processReadyDeployments();
       await this.processReadyRepairs();
+      await this.runProactiveRemediationsIfDue();
 
       if (this.activeTasks.size >= this.maxConcurrency) {
         return;
@@ -692,6 +701,48 @@ export class Orchestrator {
   }
 
   async checkSystemHealth() {
+    const runAutoPruneRemediation = async (label, freeGiB) => {
+      if (
+        !this.isProactiveRemediationEnabled('disk_auto_prune') ||
+        !this.skillManager ||
+        Date.now() - this.lastAutoPruneAt <= 6 * 60 * 60 * 1000
+      ) {
+        return;
+      }
+
+      this.logger.info({ freeGiB, label }, 'Triggering allowlisted disk_auto_prune remediation');
+      this.lastAutoPruneAt = Date.now();
+      await this.recordProactiveRemediation('disk_auto_prune', {
+        status: 'started',
+        detail: `Triggered due to low ${label} space (${freeGiB.toFixed(2)} GiB free).`,
+      });
+
+      this.skillManager.executeSkill({
+        name: 'auto_prune',
+        input: {},
+        workspaceRoot: process.cwd(),
+        toolRunner: async (name, args) => {
+          if (name === 'system_prune') {
+            const { createToolRegistry } = await import('./tools/registry.js');
+            const registry = createToolRegistry({ skillManager: this.skillManager });
+            return registry.runTool(name, args, { workspaceRoot: process.cwd() });
+          }
+          throw new Error(`Orchestrator skill runner does not support tool: ${name}`);
+        }
+      }).then(async () => {
+        await this.recordProactiveRemediation('disk_auto_prune', {
+          status: 'success',
+          detail: `Completed after low ${label} space warning.`,
+        });
+      }).catch(async (err) => {
+        this.logger.warn({ err }, 'Auto-prune skill execution failed');
+        await this.recordProactiveRemediation('disk_auto_prune', {
+          status: 'error',
+          detail: err.message,
+        });
+      });
+    };
+
     const checkPath = async (fsPath, label) => {
       const stats = await statfs(fsPath);
       const freeGiB = (stats.bavail * stats.bsize) / 1024 ** 3;
@@ -707,27 +758,8 @@ export class Orchestrator {
         throw new Error('SYSTEM_LOCKDOWN');
       }
 
-      if (freeGiB < 25 && this.skillManager && Date.now() - this.lastAutoPruneAt > 6 * 60 * 60 * 1000) {
-        this.logger.info({ freeGiB, label }, 'Triggering auto_prune due to low disk space');
-        this.lastAutoPruneAt = Date.now();
-        // Fire and forget the prune to not block the heartbeat
-        this.skillManager.executeSkill({
-          name: 'auto_prune',
-          input: {},
-          workspaceRoot: process.cwd(),
-          toolRunner: async (name, args) => {
-            // Orchestrator needs to be able to run tools directly for system maintenance
-            // For now, we use a minimal runner for builtin maintenance skills
-            if (name === 'system_prune') {
-              const { createToolRegistry } = await import('./tools/registry.js');
-              const registry = createToolRegistry({ skillManager: this.skillManager });
-              return registry.runTool(name, args, { workspaceRoot: process.cwd() });
-            }
-            throw new Error(`Orchestrator skill runner does not support tool: ${name}`);
-          }
-        }).catch(err => {
-          this.logger.warn({ err }, 'Auto-prune skill execution failed');
-        });
+      if (freeGiB < 25) {
+        await runAutoPruneRemediation(label, freeGiB);
       }
 
       if (freeGiB < 20) {
@@ -746,6 +778,75 @@ export class Orchestrator {
       if (err.message === 'SYSTEM_LOCKDOWN') throw err;
       this.logger.warn({ err }, 'Failed to check system health statfs');
     }
+  }
+
+  isProactiveRemediationEnabled(name) {
+    return this.proactiveRemediations.has(`${name}`.trim().toLowerCase());
+  }
+
+  async recordProactiveRemediation(name, patch = {}) {
+    const key = `proactive_remediation:${name}`;
+    const previous = await this.getAgentStateValue(key, {});
+    const next = {
+      name,
+      status: patch.status ?? previous?.status ?? 'unknown',
+      detail: patch.detail ?? previous?.detail ?? null,
+      touchedAt: new Date().toISOString(),
+      enabled: this.isProactiveRemediationEnabled(name),
+    };
+
+    await this.setAgentStateValue(key, next);
+    return next;
+  }
+
+  async runWorkspaceJunkCleanupIfDue(force = false) {
+    if (!this.isProactiveRemediationEnabled('workspace_junk_cleanup')) {
+      return null;
+    }
+
+    const now = Date.now();
+    if (!force && now - this.lastWorkspaceJunkCleanupAt < WORKSPACE_JUNK_REMEDIATION_INTERVAL_MS) {
+      return null;
+    }
+
+    const roots = [...new Set([
+      path.join(config.ssdBasePath, 'workspace'),
+      process.cwd(),
+    ])];
+    let removedCount = 0;
+
+    try {
+      for (const root of roots) {
+        const removed = await removeWorkspaceJunk(root);
+        removedCount += removed.length;
+      }
+
+      this.lastWorkspaceJunkCleanupAt = now;
+      if (removedCount > 0) {
+        this.logger.info({ removedCount, roots }, 'Allowlisted workspace_junk_cleanup remediation removed ignored junk');
+      }
+
+      await this.recordProactiveRemediation('workspace_junk_cleanup', {
+        status: 'success',
+        detail:
+          removedCount > 0
+            ? `Removed ${removedCount} ignored workspace path(s).`
+            : 'No ignored workspace junk was found.',
+      });
+
+      return removedCount;
+    } catch (error) {
+      this.logger.warn({ err: error }, 'Allowlisted workspace_junk_cleanup remediation failed');
+      await this.recordProactiveRemediation('workspace_junk_cleanup', {
+        status: 'error',
+        detail: error.message,
+      });
+      return null;
+    }
+  }
+
+  async runProactiveRemediationsIfDue(force = false) {
+    await this.runWorkspaceJunkCleanupIfDue(force);
   }
 
   async runSelfReflectionIfDue(force = false) {
@@ -3503,6 +3604,8 @@ export class Orchestrator {
       bootError,
       pollingActive,
       statusCounts,
+      diskAutoPruneState,
+      workspaceJunkCleanupState,
     ] =
       await Promise.all([
         this.getAgentStateValue('status', 'running'),
@@ -3549,6 +3652,8 @@ export class Orchestrator {
             };
           }
         ),
+        this.getAgentStateValue('proactive_remediation:disk_auto_prune', null),
+        this.getAgentStateValue('proactive_remediation:workspace_junk_cleanup', null),
       ]);
 
     const taskResult = currentTaskId
@@ -3588,6 +3693,11 @@ export class Orchestrator {
       currentTask: taskResult.rows[0] ?? null,
       instanceId: this.instanceId,
       pollIntervalMs: this.pollIntervalMs,
+      proactiveRemediations: {
+        enabled: [...this.proactiveRemediations].sort(),
+        diskAutoPrune: diskAutoPruneState,
+        workspaceJunkCleanup: workspaceJunkCleanupState,
+      },
     };
   }
 }

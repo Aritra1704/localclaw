@@ -76,6 +76,7 @@ const envSchema = z.object({
     .transform((value) => value === 'true'),
   UI_DIST_DIR: z.string().default('web/dist'),
   UI_DEV_ORIGIN: z.string().url().default('http://127.0.0.1:5173'),
+  PROACTIVE_REMEDIATIONS: z.string().default('disk_auto_prune,workspace_junk_cleanup'),
 });
 
 const parsedEnv = envSchema.safeParse(process.env);
@@ -136,6 +137,10 @@ export const config = {
   uiEnabled: env.UI_ENABLED,
   uiDistDir: env.UI_DIST_DIR,
   uiDevOrigin: env.UI_DEV_ORIGIN,
+  proactiveRemediations: env.PROACTIVE_REMEDIATIONS
+    .split(',')
+    .map((value) => value.trim().toLowerCase())
+    .filter(Boolean),
 };
 
 export function requireConfig(...keys) {

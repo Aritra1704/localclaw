@@ -1,8 +1,12 @@
 import assert from 'node:assert/strict';
+import fs from 'node:fs/promises';
+import os from 'node:os';
+import path from 'node:path';
 import test from 'node:test';
 
 import pino from 'pino';
 
+import { config } from '../src/config.js';
 import { Orchestrator } from '../src/orchestrator.js';
 
 const logger = pino({ level: 'fatal' });
@@ -618,4 +622,69 @@ test('persistLearnings emits deterministic self-healing learnings for repaired r
     calls.map((entry) => entry.toolName),
     ['insert_learning', 'insert_learning', 'insert_agent_log']
   );
+});
+
+test('workspace_junk_cleanup proactive remediation removes ignored workspace junk and records state', async () => {
+  const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'localclaw-remediation-'));
+  const originalSsdBasePath = config.ssdBasePath;
+  config.ssdBasePath = tempRoot;
+  const workspaceRoot = path.join(tempRoot, 'workspace', 'demo');
+  const junkFile = path.join(workspaceRoot, '.DS_Store');
+  await fs.mkdir(workspaceRoot, { recursive: true });
+  await fs.writeFile(junkFile, 'junk', 'utf8');
+
+  const state = new Map();
+  const orchestrator = new Orchestrator({
+    logger,
+    proactiveRemediations: ['workspace_junk_cleanup'],
+    pool: {
+      async query() {
+        throw new Error('Direct pool.query should not be used in this test');
+      },
+    },
+    mcpRegistry: {
+      getServer(name) {
+        if (name !== 'postgres') {
+          return null;
+        }
+
+        return {
+          async callTool(toolName, args) {
+            switch (toolName) {
+              case 'get_agent_state':
+                return {
+                  rows: state.has(args.key) ? [{ value: state.get(args.key) }] : [],
+                };
+              case 'upsert_agent_state':
+                state.set(args.key, args.value);
+                return {
+                  rows: [{ state_key: args.key, value: args.value }],
+                };
+              default:
+                throw new Error(`Unexpected MCP tool: ${toolName}`);
+            }
+          },
+        };
+      },
+      listAllTools() {
+        return [];
+      },
+    },
+  });
+
+  try {
+    const removedCount = await orchestrator.runWorkspaceJunkCleanupIfDue(true);
+    const remediationState = await orchestrator.getAgentStateValue(
+      'proactive_remediation:workspace_junk_cleanup',
+      null
+    );
+
+    assert.equal(removedCount >= 1, true);
+    await assert.rejects(fs.access(junkFile));
+    assert.equal(remediationState.status, 'success');
+    assert.match(remediationState.detail, /Removed \d+ ignored workspace path/);
+  } finally {
+    config.ssdBasePath = originalSsdBasePath;
+    await fs.rm(tempRoot, { recursive: true, force: true });
+  }
 });

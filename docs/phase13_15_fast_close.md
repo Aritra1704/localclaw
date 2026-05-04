@@ -4,12 +4,14 @@ Purpose: close the remaining roadmap with the smallest set of high-leverage impl
 
 ## What Already Exists
 
-Phase 13 groundwork is already present:
+Phase 13 is now complete:
 
 - repair proposal generation exists in `src/selfhealing/repairEngine.js`
 - failed execution can enter `needs_repair`
 - repair approvals exist in Telegram and the orchestrator
 - approved repairs can now resume immediately through the orchestrator instead of waiting only for the next poll cycle
+- repair retries are bounded with persisted cooldown metadata and self-healing learnings
+- structured operator diagnostics and allowlisted proactive remediations are now part of the runtime loop
 
 Phase 14 groundwork is already present:
 
@@ -26,25 +28,7 @@ Phase 15 groundwork is already present:
 
 ## Fastest Closure Order
 
-### 1. Finish Phase 13 as the shared execution substrate
-
-This phase should be closed first because Phase 14 and 15 both benefit from a more reliable execution loop.
-
-Remaining work:
-
-- add retry budget and exponential back-off around repair attempts
-- persist repair attempt count and last repair outcome on the task record
-- feed successful repairs into reflection and knowledge-graph learnings
-- add narrow proactive operational remediations behind explicit allowlists
-- add operator-facing diagnostics that explain why auto-repair stopped
-
-Exit criteria:
-
-- a failed task can attempt bounded self-repair without manual queue babysitting
-- every repair attempt is visible in task runtime and logs
-- exhausted repair loops produce a clean human handoff with next actions
-
-### 2. Finish Phase 14 with one compact conversational loop
+### 1. Finish Phase 14 with one compact conversational loop
 
 Do not build a general chat platform. Close only the missing planning loop.
 
@@ -62,7 +46,7 @@ Exit criteria:
 - long sessions stay compact because summaries replace raw history where appropriate
 - operator preferences become machine-readable state instead of prompt-only convention
 
-### 3. Finish Phase 15 by wiring persona outputs to controls and channels
+### 2. Finish Phase 15 by wiring persona outputs to controls and channels
 
 Most of the narration primitives already exist. What is left is integration and governance.
 
@@ -82,14 +66,12 @@ Exit criteria:
 
 ## Recommended Sequence
 
-1. Close the remaining Phase 13 executor/repair gaps.
-2. Add chat summaries plus preference extraction for Phase 14.
-3. Bind those preferences into Phase 15 channel controls.
-4. Add golden tests last so the behavior is locked before future expansion.
+1. Add chat summaries plus preference extraction for Phase 14.
+2. Bind those preferences into Phase 15 channel controls.
+3. Add golden tests last so the behavior is locked before future expansion.
 
 ## Suggested Next Concrete Tasks
 
-1. Add repair retry budget, attempt counters, and back-off metadata.
-2. Persist chat session summaries and preference extraction artifacts.
-3. Add persona/operator settings to the control API and browser UI.
-4. Add approval-gated GitHub review draft publication using existing persona artifacts.
+1. Persist chat session summaries and preference extraction artifacts.
+2. Add persona/operator settings to the control API and browser UI.
+3. Add approval-gated GitHub review draft publication using existing persona artifacts.

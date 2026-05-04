@@ -8,7 +8,7 @@
 - Phase 10: complete. Specialized Agent Expansion (Security, Docs, Deps) now gates finalization and creates dependency follow-up work.
 - Phase 11: complete. Internal MCP servers now standardize filesystem, PostgreSQL-backed runtime state, RAG indexing/retrieval, reflection, chat, projects, skills, and GitHub operations.
 - Phase 12: complete. Knowledge graph storage, graph-based retrieval, semantic impact analysis, and historical learnings are integrated into planning and approval previews.
-- Phase 13: in progress. Repair proposal generation, immediate repair resume, bounded retry budget, cooldown metadata, and exhausted-repair handoff are now in place; learnings capture and proactive remediation remain open.
+- Phase 13: complete. Repair proposal generation, immediate repair resume, bounded retry budget, self-healing learnings, structured operator diagnostics, and allowlisted proactive remediations are now in place.
 - Phase 14: planned. Conversational agent work will add persistent chat context, iterative task-contract planning, structured conversation summaries, and preference extraction.
 - Phase 15: planned. Persona Layer and Humanized Presence will stay post-execution and non-authoritative while adding evidence-bound narration, operator preference profiles, channel adapters, optional "by the way" observations, and approval-gated GitHub voice.
 
