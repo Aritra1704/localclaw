@@ -1,14 +1,14 @@
 <!-- localclaw:autodoc:readme:start -->
 ## Autodoc Summary
 
-Generated from the current workspace for task `cf7ac15f-169c-46b4-9daf-f7462594529e`.
+Generated from the current workspace for task `9576dcbb-a4df-4446-9427-235f67333b5d`.
 
 ### Scope
 
 [task_contract_v1]
 
 Objective
-can you create an agentic PR validator application for me?
+Create TEST_LOCALCLAW.md at repo root with heading "LocalClaw Test" and one bullet "CLI planning works." Do not publish. Do not deploy.
 
 Project
 - name: localclaw
@@ -37,7 +37,7 @@ Success Criteria
 - Operator approval is required before execution
 
 Notes
-Drafted from chat session 3ceef44e-7fd0-4e77-9162-4c7583776571
+Drafted from chat session a77f1da3-951c-4562-9c1f-ff63ba85b349
 
 ### Key Files
 

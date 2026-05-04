@@ -1,8 +1,8 @@
 {
   "version": 1,
   "generatedBy": "localclaw",
-  "projectTaskId": "cf7ac15f-169c-46b4-9daf-f7462594529e",
-  "projectTaskTitle": "localclaw: can you create an agentic PR validator application for me?",
+  "projectTaskId": "9576dcbb-a4df-4446-9427-235f67333b5d",
+  "projectTaskTitle": "localclaw: Create TEST_LOCALCLAW.md at repo root with heading \"LocalClaw Test\" a",
   "deploy": {
     "provider": "railway",
     "approvalRequired": true

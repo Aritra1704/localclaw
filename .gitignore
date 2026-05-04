@@ -4,12 +4,3 @@
 .Trashes
 .opskit/settings.local.json
 PROJECT_CONTEXT.local.md
-node_modules/
-web/node_modules/
-dist/
-web/dist/
-.env
-logs/
-*.log
-*.sqlite
-db/*.sqlite

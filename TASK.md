@@ -1,11 +1,11 @@
-# localclaw: can you create an agentic PR validator application for me?
+# localclaw: Create TEST_LOCALCLAW.md at repo root with heading "LocalClaw Test" a
 
 ## Task Description
 
 [task_contract_v1]
 
 ## Objective
-can you create an agentic PR validator application for me?
+Create TEST_LOCALCLAW.md at repo root with heading "LocalClaw Test" and one bullet "CLI planning works." Do not publish. Do not deploy.
 
 ## Project
 - name: localclaw
@@ -34,12 +34,12 @@ can you create an agentic PR validator application for me?
 - Operator approval is required before execution
 
 ## Notes
-Drafted from chat session 3ceef44e-7fd0-4e77-9162-4c7583776571
+Drafted from chat session a77f1da3-951c-4562-9c1f-ff63ba85b349
 
 ## Metadata
 
-- task_id: cf7ac15f-169c-46b4-9daf-f7462594529e
+- task_id: 9576dcbb-a4df-4446-9427-235f67333b5d
 - priority: medium
 - source: chat
-- created_at: Sat Apr 18 2026 23:12:49 GMT+0530 (India Standard Time)
+- created_at: Mon May 04 2026 15:48:21 GMT+0530 (India Standard Time)
   
