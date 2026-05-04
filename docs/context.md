@@ -1,6 +1,6 @@
 # LocalClaw Context
 
-Version: 1.5
+Version: 1.6
 Date: 2026-05-04  
 Purpose: end-to-end execution context and checkpoint guide for LocalClaw delivery
 
@@ -26,7 +26,7 @@ As of 2026-05-04, the project status is:
 | Phase 11: MCP Integration | complete | Filesystem, GitHub, task/runtime PostgreSQL access, RAG indexing/retrieval, reflection, chat, projects, and skills now run through internal MCP-style servers with verified runtime coverage. |
 | Phase 12: Cognitive Memory | complete | Knowledge graph storage now maps files, symbols, dependencies, document references, historical changes, and related learnings, and semantic impact analysis is injected into planning and approval previews alongside flat RAG. |
 | Phase 13: Self-Healing & Proactive Autonomy | complete | Repair proposal generation, immediate repair resume, bounded retry budget, self-healing learnings, structured operator diagnostics, and allowlisted proactive remediations are now in place. |
-| Phase 14: Conversational Agent & Iterative Planning | in progress | Persistent chat context is live, `chat_summary_v1` persists summaries and preferences, chat can refine vague execution requests through a clarification loop before auto-planning, and the browser UI now surfaces summary/preference/draft state; deeper contract evolution remains open. |
+| Phase 14: Conversational Agent & Iterative Planning | complete | Persistent chat context, structured summaries/preferences, clarification-driven draft refinement, structural contract evolution, approval-gated planning, and browser visibility are now all in place. |
 | Phase 15: Persona Layer & Humanized Presence | planned | A channel-aware narration and preference layer will make LocalClaw sound like a consistent teammate across Telegram, UI, and GitHub. |
 
 ## 1. Mission
@@ -415,7 +415,7 @@ Outputs:
 - Reduced operator intervention for routine errors.
 - Enhanced platform resilience and operational stability.
 
-### Phase 14: Conversational Agent & Iterative Planning (In Progress)
+### Phase 14: Conversational Agent & Iterative Planning (Complete)
 
 Inputs:
 
@@ -441,6 +441,7 @@ Current progress:
 - chat summary state now captures explicit and inferred operator preferences such as verbosity, explanation depth, planning style, and interaction mode, with confidence and evidence stored in PostgreSQL
 - chat prompts now inject captured preference state back into the conversation loop so later turns can adapt without replaying the full raw history
 - chat now keeps a rolling draft contract inside session state, asks clarification questions when an execution request is too vague to plan safely, and auto-plans once follow-up detail makes the draft concrete enough
+- draft contracts now evolve structurally across turns: follow-up chat can refine in-scope work, out-of-scope exclusions, constraints, success criteria, priority, and deploy/publish intent before the task is planned
 - the browser chat workspace now shows session summary, inferred preferences, draft-contract readiness, clarification gaps, and allows planning the current ready draft directly from stored session state
 - actor-based chat now selects the actor model role instead of forcing the fast chat path, so `architect` discussions use planner-oriented model selection
 - chat and CLI plan output now render explicit numbered plan steps instead of only brief summaries when the operator asks for steps
@@ -451,7 +452,7 @@ Current progress:
 - natural-language approval now works conservatively inside chat when there is exactly one task in `waiting_approval`; replies such as "yes, start it" approve that task and start execution tracking
 - CLI chat now distinguishes a planned-but-not-started task from a running task: it shows the task id, waiting-approval status, and plan steps immediately, but only starts live progress watching after execution approval succeeds
 - execution remains approval-gated; open-ended discussion stays conversational, while clear execution requests create a pending task that still needs explicit operator approval before any code runs
-- the remaining work is concentrated on richer contract evolution across longer chats and more deliberate scope/constraint editing instead of only deterministic draft merging
+- explicit operator instructions now override earlier inferred session defaults because refinement walks recent user turns first, and stale preference signals decay naturally as the rolling summary window advances
 
 Outputs:
 

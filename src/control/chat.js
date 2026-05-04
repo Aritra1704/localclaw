@@ -73,6 +73,7 @@ const TARGET_HINT_PATTERN =
   /(?:\.[a-z0-9]{1,8}\b|\/[a-z0-9_.-]+|\b(?:readme|package\.json|dockerfile|ui|api|page|component|route|endpoint|schema|table|migration|query|test|frontend|backend|database|react|node|typescript|python|markdown)\b)/i;
 const VAGUE_OBJECTIVE_PATTERN =
   /\b(?:fix it|update it|make it better|do it|handle it|something|stuff|thing|this|that)\b/i;
+const LIST_SPLIT_PATTERN = /\s*(?:\||\n)\s*/;
 
 function compact(value, limit = 4000) {
   const text = `${value ?? ''}`.trim();
@@ -81,6 +82,33 @@ function compact(value, limit = 4000) {
 
 function buildMessageExcerpt(content, limit = 220) {
   return compact(`${content ?? ''}`.replace(/\s+/g, ' '), limit);
+}
+
+function normalizeListItem(item) {
+  return `${item ?? ''}`
+    .replace(/^[\-\*\d\.\)\s]+/, '')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function dedupeList(items) {
+  const seen = new Set();
+  const result = [];
+
+  for (const item of items) {
+    const normalized = normalizeListItem(item);
+    if (!normalized) {
+      continue;
+    }
+    const key = normalized.toLowerCase();
+    if (seen.has(key)) {
+      continue;
+    }
+    seen.add(key);
+    result.push(normalized);
+  }
+
+  return result;
 }
 
 function matchPreferencePattern(content, patternGroups) {
@@ -249,6 +277,135 @@ function buildDraftObjective(messages, previousDraft = null, explicitObjective =
   return null;
 }
 
+function getRelevantDraftMessages(messages) {
+  const userMessages = messages
+    .filter((message) => message.role === 'user')
+    .map((message) => `${message.content ?? ''}`.trim())
+    .filter(Boolean);
+  const latestExecutionIndex = findLatestExecutionRequestIndex(
+    userMessages.map((content) => ({ content }))
+  );
+  if (latestExecutionIndex >= 0) {
+    return userMessages.slice(latestExecutionIndex);
+  }
+  return userMessages;
+}
+
+function splitDirectiveSegments(content) {
+  return `${content ?? ''}`
+    .split(/\s*(?:;|\n)\s*/)
+    .map((item) => item.trim())
+    .filter(Boolean);
+}
+
+function parseListDirective(content, cuePattern) {
+  const match = `${content ?? ''}`.trim().match(cuePattern);
+  if (!match?.[1]) {
+    return [];
+  }
+
+  return dedupeList(match[1].split(LIST_SPLIT_PATTERN));
+}
+
+function inferPriority(messages, previousPriority = 'medium') {
+  for (const content of [...messages].reverse()) {
+    if (/\b(?:critical|sev1|p0)\b/i.test(content)) {
+      return 'critical';
+    }
+    if (/\b(?:urgent|high priority|p1)\b/i.test(content)) {
+      return 'high';
+    }
+    if (/\b(?:low priority|whenever|not urgent|p3)\b/i.test(content)) {
+      return 'low';
+    }
+    if (/\b(?:medium priority|normal priority|p2)\b/i.test(content)) {
+      return 'medium';
+    }
+  }
+
+  return previousPriority;
+}
+
+function inferRepoIntent(messages, previousIntent = { publish: false, deploy: false }) {
+  const intent = { ...previousIntent };
+
+  for (const content of messages) {
+    if (/\b(?:deploy it|ship it|push to prod|release it)\b/i.test(content)) {
+      intent.deploy = true;
+    }
+    if (/\b(?:do not deploy|don't deploy|without deploy|no deploy)\b/i.test(content)) {
+      intent.deploy = false;
+    }
+    if (/\b(?:publish it|open a pr|create a pr|push it|commit it)\b/i.test(content)) {
+      intent.publish = true;
+    }
+    if (/\b(?:do not publish|don't publish|without publish|no pr|no publish)\b/i.test(content)) {
+      intent.publish = false;
+    }
+  }
+
+  return intent;
+}
+
+function buildContractRefinements(messages, previousDraft = null) {
+  const relevantMessages = getRelevantDraftMessages(messages);
+  const directiveSegments = relevantMessages.flatMap((content) => splitDirectiveSegments(content));
+  const previousContract = previousDraft?.contract ?? null;
+
+  const inScope = [
+    ...(previousContract?.inScope ?? []),
+    ...directiveSegments.flatMap((content) =>
+      parseListDirective(
+        content,
+        /\b(?:include|also include|in scope|scope includes|add scope)\s*:?\s*(.+)$/i
+      )
+    ),
+  ];
+  const outOfScope = [
+    ...(previousContract?.outOfScope ?? []),
+    ...directiveSegments.flatMap((content) =>
+      parseListDirective(
+        content,
+        /\b(?:out of scope|do not touch|don't touch|exclude|skip)\s*:?\s*(.+)$/i
+      )
+    ),
+  ];
+  const constraints = [
+    ...(previousContract?.constraints ?? []),
+    ...directiveSegments.flatMap((content) =>
+      parseListDirective(
+        content,
+        /\b(?:constraints?|must|need to|use|keep|without)\s*:?\s*(.+)$/i
+      )
+    ),
+  ];
+  const successCriteria = [
+    ...(previousContract?.successCriteria ?? []),
+    ...directiveSegments.flatMap((content) =>
+      parseListDirective(
+        content,
+        /\b(?:success means|done when|acceptance criteria|success criteria|make sure|ensure)\s*:?\s*(.+)$/i
+      )
+    ),
+  ];
+  const skillHints = [
+    ...(previousContract?.skillHints ?? []),
+    ...directiveSegments.flatMap((content) =>
+      parseListDirective(content, /\b(?:skill hint|skill hints|use skill)\s*:?\s*(.+)$/i)
+    ),
+  ];
+
+  return {
+    inScope: dedupeList(inScope),
+    outOfScope: dedupeList(outOfScope),
+    constraints: dedupeList(constraints),
+    successCriteria: dedupeList(successCriteria),
+    skillHints: dedupeList(skillHints),
+    priority: inferPriority(relevantMessages, previousContract?.priority ?? 'medium'),
+    repoIntent: inferRepoIntent(relevantMessages, previousContract?.repoIntent ?? undefined),
+  };
+}
+
 function assessDraftReadiness(session, objective) {
   const missingContext = [];
   const wordCount = countWords(objective);
@@ -310,12 +467,14 @@ function buildContractDraftState({ session, messages, previousSummaryState = nul
     return null;
   }
   const readiness = assessDraftReadiness(session, objective);
+  const refinements = buildContractRefinements(messages, previousDraft);
   const contract =
     objective.trim().length >= 10
       ? buildDraftContract({
           session,
           messages,
           objective,
+          refinements,
         })
       : null;
 
@@ -458,7 +617,7 @@ function buildPlannedTaskChatResponse({ task, plan, autoPlannedFromChat = false 
   return lines.join('\n');
 }
 
-function buildDraftContract({ session, messages, objective }) {
+function buildDraftContract({ session, messages, objective, refinements = {} }) {
   const latestUserMessage =
     objective ||
     [...messages]
@@ -478,25 +637,33 @@ function buildDraftContract({ session, messages, objective }) {
         .slice(0, 48) ||
       'localclaw-task',
     objective: latestUserMessage,
-    inScope: [
+    inScope: dedupeList([
       'Analyze the requested work',
       'Prepare a safe implementation plan',
       'Make only changes required by the approved task',
-    ],
-    outOfScope: ['Unrelated refactors', 'Unapproved deployment', 'Bypassing approval gates'],
-    constraints: [
+      ...(refinements.inScope ?? []),
+    ]).slice(0, 20),
+    outOfScope: dedupeList([
+      'Unrelated refactors',
+      'Unapproved deployment',
+      'Bypassing approval gates',
+      ...(refinements.outOfScope ?? []),
+    ]).slice(0, 20),
+    constraints: dedupeList([
       'Use the selected project path only',
       'Keep changes reviewable',
       'Ask for approval before execution',
-    ],
-    successCriteria: [
+      ...(refinements.constraints ?? []),
+    ]).slice(0, 20),
+    successCriteria: dedupeList([
       'Plan is explicit and executable',
       'Tests or verification steps are identified',
       'Operator approval is required before execution',
-    ],
-    priority: 'medium',
-    skillHints: [],
-    repoIntent: {
+      ...(refinements.successCriteria ?? []),
+    ]).slice(0, 20),
+    priority: refinements.priority ?? 'medium',
+    skillHints: dedupeList(refinements.skillHints ?? []).slice(0, 12),
+    repoIntent: refinements.repoIntent ?? {
       publish: false,
       deploy: false,
     },

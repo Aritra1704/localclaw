@@ -13,7 +13,7 @@ Phase 13 is now complete:
 - repair retries are bounded with persisted cooldown metadata and self-healing learnings
 - structured operator diagnostics and allowlisted proactive remediations are now part of the runtime loop
 
-Phase 14 is now in progress:
+Phase 14 is now complete:
 
 - persistent chat messages already exist in `chat_sessions` and `chat_messages`
 - structured `chat_summary_v1` state now persists on chat sessions and summary history rows
@@ -21,6 +21,7 @@ Phase 14 is now in progress:
 - chat can auto-draft approval-gated tasks from imperative requests
 - chat can now keep a rolling draft contract, request clarification for vague execution asks, and auto-plan after the follow-up fills the gap
 - the browser chat workspace now exposes session summary, preferences, draft readiness, clarification gaps, and direct planning from the current ready draft
+- follow-up turns can now refine structured contract fields such as scope, constraints, success criteria, priority, and deploy intent before planning
 - chat can approve the single pending task from natural language
 
 Phase 15 groundwork is already present:
@@ -32,21 +33,7 @@ Phase 15 groundwork is already present:
 
 ## Fastest Closure Order
 
-### 1. Finish Phase 14 with one compact conversational loop
-
-Do not build a general chat platform. Close only the missing planning loop.
-
-Remaining work:
-
-- deepen contract refinement beyond the current deterministic draft loop so longer chats can reshape scope, constraints, and success criteria more deliberately
-
-Exit criteria:
-
-- chat can refine a task over multiple turns without losing context
-- long sessions stay compact because summaries replace raw history where appropriate
-- operator preferences become machine-readable state instead of prompt-only convention
-
-### 2. Finish Phase 15 by wiring persona outputs to controls and channels
+### 1. Finish Phase 15 by wiring persona outputs to controls and channels
 
 Most of the narration primitives already exist. What is left is integration and governance.
 
@@ -66,12 +53,12 @@ Exit criteria:
 
 ## Recommended Sequence
 
-1. Add iterative contract refinement and clarification handling for Phase 14.
-2. Bind persisted chat preferences into Phase 15 channel controls and UI surfacing.
+1. Bind persisted chat preferences into Phase 15 channel controls and UI surfacing.
+2. Add approval-gated GitHub review publication using the existing persona artifacts.
 3. Add golden tests last so the behavior is locked before future expansion.
 
 ## Suggested Next Concrete Tasks
 
-1. Surface chat summary, preference, and draft-contract state in the operator UI and control views.
-2. Add persona/operator settings to the control API and browser UI.
-3. Add approval-gated GitHub review draft publication using existing persona artifacts.
+1. Add persona/operator settings to the control API and browser UI.
+2. Add approval-gated GitHub review draft publication using existing persona artifacts.
+3. Add golden evidence-bound narration tests across Telegram, UI, and GitHub drafts.

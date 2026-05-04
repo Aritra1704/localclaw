@@ -797,6 +797,126 @@ test('chat service auto-plans after clarification makes the draft contract concr
   assert.match(response.assistant.content, /approval-gated task/i);
 });
 
+test('chat service refines structured contract fields across follow-up turns', async () => {
+  const sessionId = '91919191-9191-4919-8919-919191919191';
+  const plannedContracts = [];
+  const sessionRow = {
+    id: sessionId,
+    title: 'Structured refine chat',
+    actor: 'architect',
+    project_target_id: null,
+    project_path: '/tmp/demo-project',
+    summary: '',
+    summary_state: {},
+    status: 'active',
+    created_at: '2026-04-16T00:00:00.000Z',
+    updated_at: '2026-04-16T00:00:00.000Z',
+    project_name: null,
+  };
+  const messages = [];
+
+  const chatService = createChatService({
+    pool: {
+      async query(sql, params) {
+        if (sql.includes('INSERT INTO chat_sessions')) {
+          return { rows: [sessionRow] };
+        }
+
+        if (sql.includes('FROM chat_sessions')) {
+          return { rows: [sessionRow] };
+        }
+
+        if (sql.includes('FROM chat_messages')) {
+          return { rows: [...messages].reverse() };
+        }
+
+        if (sql.includes('WHERE chat_session_id =')) {
+          return { rows: [] };
+        }
+
+        if (sql.includes('INSERT INTO chat_messages')) {
+          const row = {
+            id: `structured-msg-${messages.length + 1}`,
+            session_id: sessionId,
+            role: params[1],
+            actor: params[2],
+            content: params[3],
+            metadata: JSON.parse(params[4]),
+            created_at: `2026-04-16T00:00:0${messages.length + 1}.000Z`,
+          };
+          messages.push(row);
+          return { rows: [row] };
+        }
+
+        if (sql.includes('UPDATE chat_sessions SET updated_at')) {
+          return { rowCount: 1, rows: [] };
+        }
+
+        if (sql.includes('SET summary =')) {
+          sessionRow.summary = params[1];
+          sessionRow.summary_state = JSON.parse(params[2]);
+          return { rowCount: 1, rows: [] };
+        }
+
+        if (sql.includes('INSERT INTO chat_summaries')) {
+          return { rowCount: 1, rows: [] };
+        }
+
+        throw new Error(`Unexpected query: ${sql.slice(0, 120)}`);
+      },
+    },
+    projectService: {
+      async ensureProjectTarget() {
+        return null;
+      },
+    },
+    orchestrator: {
+      async createPlannedTask(contract, options) {
+        plannedContracts.push({ contract, options });
+        return {
+          task: {
+            id: 'structured-plan',
+            status: 'waiting_approval',
+          },
+          plan: {
+            summary: 'Refine contract fields before execution.',
+            steps: [],
+          },
+        };
+      },
+    },
+  });
+
+  await chatService.createSession({
+    title: 'Structured refine chat',
+    actor: 'architect',
+    projectPath: '/tmp/demo-project',
+  });
+
+  await chatService.appendMessage(sessionId, {
+    content: 'fix it',
+  });
+
+  const response = await chatService.appendMessage(sessionId, {
+    content:
+      'for the billing API invoice rounding path, in scope: update the rounding helper | add regression coverage; out of scope: frontend changes; constraints: use the existing billing API | keep the patch small; success criteria: all invoice rounding tests pass | add a regression test; high priority; do not deploy',
+  });
+
+  assert.equal(plannedContracts.length, 1);
+  const contract = plannedContracts[0].contract;
+  assert.equal(contract.priority, 'high');
+  assert.equal(contract.repoIntent.deploy, false);
+  assert.match(contract.objective, /billing API/i);
+  assert(contract.inScope.includes('update the rounding helper'));
+  assert(contract.inScope.includes('add regression coverage'));
+  assert(contract.outOfScope.includes('frontend changes'));
+  assert(contract.constraints.includes('use the existing billing API'));
+  assert(contract.constraints.includes('keep the patch small'));
+  assert(contract.successCriteria.includes('all invoice rounding tests pass'));
+  assert(contract.successCriteria.includes('add a regression test'));
+  assert.equal(response.assistant.metadata.taskId, 'structured-plan');
+});
+
 test('chat service extracts structured preferences into summary state', async () => {
   const sessionId = '12121212-1212-4212-8212-121212121212';
   const sessionRow = {
