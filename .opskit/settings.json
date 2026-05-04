@@ -1,0 +1,14 @@
+{
+  "version": 1,
+  "generatedBy": "localclaw",
+  "projectTaskId": "109e3400-ea0b-4114-86a5-fd2cc64698a7",
+  "projectTaskTitle": "localclaw: draft a plan how do i achieve creating the above app",
+  "deploy": {
+    "provider": "railway",
+    "approvalRequired": true
+  },
+  "hygiene": {
+    "ignoreOsJunk": true,
+    "enforceRepoContract": true
+  }
+}
