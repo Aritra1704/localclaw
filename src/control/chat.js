@@ -635,6 +635,50 @@ function buildPlannedTaskChatResponse({
   return lines.join('\n');
 }
 
+async function reconcileAutoStartedPlan(orchestrator, planned) {
+  if (!planned?.task?.id) {
+    return planned;
+  }
+
+  if (planned.executionApproval?.status === 'approved') {
+    return planned;
+  }
+
+  if (planned.execution?.executionClass !== 'local_only' || planned.execution?.approvalRequired === true) {
+    return planned;
+  }
+
+  if (!orchestrator?.getTaskDetails) {
+    return planned;
+  }
+
+  const detail = await orchestrator.getTaskDetails(planned.task.id, { logLimit: 5 });
+  const liveTask = detail?.task ?? null;
+  const liveApprovalStatus = liveTask?.result?.preExecutionPlan?.status ?? null;
+  const autoStarted =
+    liveApprovalStatus === 'approved' || (liveTask?.status && liveTask.status !== 'waiting_approval');
+
+  if (!liveTask || !autoStarted) {
+    return planned;
+  }
+
+  return {
+    ...planned,
+    task: {
+      ...planned.task,
+      ...liveTask,
+      status: liveTask.status ?? planned.task.status,
+    },
+    executionApproval: {
+      ...(planned.executionApproval ?? {}),
+      task_id: planned.task.id,
+      status: 'approved',
+      approvalRequired: false,
+      autoStarted: true,
+    },
+  };
+}
+
 function buildDraftContract({ session, messages, objective, refinements = {} }) {
   const latestUserMessage =
     objective ||
@@ -909,7 +953,9 @@ export function createChatService({
         objective,
       });
     const execution = deriveExecutionControl(contract);
-    const planned = await orchestrator.createPlannedTask(contract, {
+    const planned = await reconcileAutoStartedPlan(
+      orchestrator,
+      await orchestrator.createPlannedTask(contract, {
       source: autoPlannedFromChat ? 'chat_auto_plan' : 'chat',
       chatSessionId: sessionId,
       projectPath: session.project_path,
@@ -917,7 +963,8 @@ export function createChatService({
       autoApproveExecution: execution.autoStartAllowed,
       approvalSource: 'chat',
       approvalNote: `Auto-started local-only task from chat session ${sessionId}`,
-    });
+      })
+    );
     const assistant = await insertMessage({
       sessionId,
       role: 'assistant',
@@ -1297,7 +1344,9 @@ export function createChatService({
       if (input.contract) {
         const messages = await listMessages(sessionId);
         const contract = normalizeTaskContract(input.contract);
-        const planned = await orchestrator.createPlannedTask(contract, {
+        const planned = await reconcileAutoStartedPlan(
+          orchestrator,
+          await orchestrator.createPlannedTask(contract, {
           source: 'chat',
           chatSessionId: sessionId,
           projectPath: session.project_path,
@@ -1305,7 +1354,8 @@ export function createChatService({
           autoApproveExecution: deriveExecutionControl(contract).autoStartAllowed,
           approvalSource: 'chat',
           approvalNote: `Auto-started local-only task from chat session ${sessionId}`,
-        });
+          })
+        );
 
         const assistant = await insertMessage({
           sessionId,

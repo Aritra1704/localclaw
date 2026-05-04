@@ -316,6 +316,59 @@ function shouldStopWatchingTask(taskDetail) {
   return false;
 }
 
+async function reconcileLocalAutoStartPlan({
+  plan,
+  fetchImpl,
+  baseUrl,
+  waitMs,
+  sleepImpl,
+}) {
+  if (!plan?.task?.id) {
+    return plan;
+  }
+
+  if (plan.executionApproval?.status === 'approved') {
+    return plan;
+  }
+
+  if (plan.execution?.executionClass !== 'local_only' || plan.execution?.approvalRequired === true) {
+    return plan;
+  }
+
+  const detail = await requestJson({
+    fetchImpl,
+    baseUrl,
+    pathName: `/v1/tasks/${plan.task.id}`,
+    waitMs,
+    sleepImpl,
+  });
+
+  const liveTask = detail?.task ?? null;
+  const liveApprovalStatus = liveTask?.result?.preExecutionPlan?.status ?? null;
+  const autoStarted =
+    liveApprovalStatus === 'approved' || (liveTask?.status && liveTask.status !== 'waiting_approval');
+
+  if (!liveTask || !autoStarted) {
+    return plan;
+  }
+
+  return {
+    ...plan,
+    task: {
+      ...plan.task,
+      ...liveTask,
+      status: liveTask.status ?? plan.task.status,
+    },
+    executionApproval: {
+      ...(plan.executionApproval ?? {}),
+      task_id: plan.task.id,
+      status: 'approved',
+      approvalRequired: false,
+      autoStarted: true,
+    },
+  };
+}
+
 async function watchTaskProgress({
   taskId,
   logger,
@@ -820,13 +873,20 @@ export async function runCli(argv, io = {}, deps = {}) {
 
           if (line.startsWith('/plan')) {
             const objective = line.slice('/plan'.length).trim();
-            const plan = await requestJson({
+            let plan = await requestJson({
               fetchImpl,
               baseUrl,
               pathName: `/v1/chat/sessions/${session.id}/plan-task`,
               method: 'POST',
               token,
               body: objective ? { objective } : {},
+              waitMs,
+              sleepImpl,
+            });
+            plan = await reconcileLocalAutoStartPlan({
+              plan,
+              fetchImpl,
+              baseUrl,
               waitMs,
               sleepImpl,
             });

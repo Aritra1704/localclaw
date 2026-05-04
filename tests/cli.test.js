@@ -539,6 +539,160 @@ test('cli chat shows pending plan details for auto-planned requests without star
   assert.doesNotMatch(output, /Watching task progress/);
 });
 
+test('cli chat /plan reconciles local-only auto-start tasks before printing approval-gated messaging', async () => {
+  const capture = createIO();
+  const calls = [];
+  const input = new PassThrough();
+  let taskPollCount = 0;
+
+  const fetchImpl = async (url, options = {}) => {
+    calls.push({ url, options });
+
+    if (url.endsWith('/health')) {
+      return {
+        ok: true,
+        status: 200,
+        async json() {
+          return { ok: true };
+        },
+      };
+    }
+
+    if (url.endsWith('/v1/chat/sessions')) {
+      return {
+        ok: true,
+        status: 201,
+        async json() {
+          return {
+            data: {
+              id: 'chat-session-local',
+              actor: 'architect',
+              project_path: '/tmp/demo-project',
+            },
+          };
+        },
+      };
+    }
+
+    if (url.endsWith('/v1/chat/sessions/chat-session-local/plan-task')) {
+      return {
+        ok: true,
+        status: 201,
+        async json() {
+          return {
+            data: {
+              task: {
+                id: '77777777-7777-4777-8777-777777777777',
+                status: 'waiting_approval',
+              },
+              plan: {
+                summary: 'Create the local markdown file.',
+                steps: [
+                  {
+                    stepNumber: 1,
+                    objective: 'Create TEST_LOCALCLAW.md with the requested content',
+                    tool: 'write_file',
+                  },
+                ],
+              },
+              execution: {
+                executionClass: 'local_only',
+                executionPolicy: 'auto_local',
+                approvalRequired: false,
+              },
+              executionApproval: {
+                status: 'pending',
+                approvalRequired: false,
+                autoStarted: false,
+              },
+            },
+          };
+        },
+      };
+    }
+
+    if (url.endsWith('/v1/tasks/77777777-7777-4777-8777-777777777777')) {
+      taskPollCount += 1;
+
+      if (taskPollCount === 1) {
+        return {
+          ok: true,
+          status: 200,
+          async json() {
+            return {
+              data: {
+                task: {
+                  id: '77777777-7777-4777-8777-777777777777',
+                  status: 'in_progress',
+                  result: {
+                    preExecutionPlan: {
+                      status: 'approved',
+                    },
+                  },
+                },
+                runtime: {
+                  phase: 'planning',
+                  phaseLabel: 'Planning task',
+                  detail: 'Planner model is generating the execution checklist.',
+                },
+              },
+            };
+          },
+        };
+      }
+
+      return {
+        ok: true,
+        status: 200,
+        async json() {
+          return {
+            data: {
+              task: {
+                id: '77777777-7777-4777-8777-777777777777',
+                status: 'done',
+                result: {
+                  preExecutionPlan: {
+                    status: 'approved',
+                  },
+                },
+              },
+              runtime: {
+                phase: 'complete',
+                phaseLabel: 'Done',
+                detail: 'Task finished successfully.',
+              },
+            },
+          };
+        },
+      };
+    }
+
+    throw new Error(`unexpected url ${url}`);
+  };
+
+  queueMicrotask(() => {
+    input.write('/plan Local-only test: create TEST_LOCALCLAW.md at repo root. No publish. No deploy.\n');
+    input.write('/exit\n');
+    input.end();
+  });
+
+  const exitCode = await runCli(['chat', '--project', '/tmp/demo-project', '--token', 'abc123'], capture.io, {
+    fetchImpl,
+    input,
+    sleepImpl: async () => {},
+  });
+
+  assert.equal(exitCode, 0);
+
+  const output = capture.out.join('');
+  assert.match(output, /Task: 77777777-7777-4777-8777-777777777777/);
+  assert.match(output, /Status: in_progress/);
+  assert.match(output, /Execution started automatically\./);
+  assert.match(output, /Watching task progress/);
+  assert.match(output, /\[task 77777777-7777-4777-8777-777777777777\] done \| Done/);
+  assert.doesNotMatch(output, /Execution is still approval-gated/);
+});
+
 test('cli chat prints heartbeat updates while an approved task stays active', async () => {
   const capture = createIO();
   const calls = [];
