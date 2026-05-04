@@ -37,6 +37,7 @@ const draftTaskSchema = z
   .strict();
 
 const CHAT_MODEL_TIMEOUT_MS = 20000;
+const CHAT_SUMMARY_STATE_VERSION = 'chat_summary_v1';
 const EXECUTION_APPROVAL_PHRASES = new Set([
   'yes',
   'yes start it',
@@ -72,6 +73,165 @@ const EXECUTION_REQUEST_PATTERNS = [
 function compact(value, limit = 4000) {
   const text = `${value ?? ''}`.trim();
   return text.length > limit ? `${text.slice(0, limit - 3)}...` : text;
+}
+
+function buildMessageExcerpt(content, limit = 220) {
+  return compact(`${content ?? ''}`.replace(/\s+/g, ' '), limit);
+}
+
+function matchPreferencePattern(content, patternGroups) {
+  for (const group of patternGroups) {
+    if (group.pattern.test(content)) {
+      return {
+        value: group.value,
+        source: group.source ?? 'explicit',
+        confidence: group.confidence ?? 0.95,
+      };
+    }
+  }
+
+  return null;
+}
+
+function extractChatPreferences(messages) {
+  const userMessages = messages
+    .filter((message) => message.role === 'user')
+    .slice(-20)
+    .reverse();
+  const preferences = {};
+
+  const explicitPreferenceMatchers = {
+    verbosity: [
+      {
+        pattern: /\b(concise|brief|short|quick summary|quick answer|tldr|just the answer)\b/i,
+        value: 'concise',
+        confidence: 0.98,
+      },
+      {
+        pattern: /\b(detailed|detail|thorough|comprehensive|deep dive|in depth|more detail)\b/i,
+        value: 'detailed',
+        confidence: 0.98,
+      },
+    ],
+    explanationDepth: [
+      {
+        pattern: /\b(no explanation|don't explain|do not explain|just the code|code only)\b/i,
+        value: 'low',
+        confidence: 0.98,
+      },
+      {
+        pattern: /\b(explain why|teach me|walk me through|show me why|show your reasoning|explain the reasoning)\b/i,
+        value: 'high',
+        confidence: 0.98,
+      },
+    ],
+    planningStyle: [
+      {
+        pattern: /\b(step by step|steps|numbered steps|checklist|plan steps|give me the steps)\b/i,
+        value: 'stepwise',
+        confidence: 0.96,
+      },
+      {
+        pattern: /\b(brainstorm|talk it through|discuss first|think with me|explore options)\b/i,
+        value: 'conversational',
+        confidence: 0.96,
+      },
+    ],
+  };
+
+  for (const message of userMessages) {
+    const content = `${message.content ?? ''}`;
+
+    for (const [dimension, patterns] of Object.entries(explicitPreferenceMatchers)) {
+      if (preferences[dimension]) {
+        continue;
+      }
+
+      const match = matchPreferencePattern(content, patterns);
+      if (match) {
+        preferences[dimension] = {
+          ...match,
+          evidence: buildMessageExcerpt(content, 160),
+        };
+      }
+    }
+  }
+
+  if (!preferences.interactionMode) {
+    const latestExecutionRequest = userMessages.find((message) =>
+      isExecutionTaskRequest(message.content)
+    );
+    if (latestExecutionRequest) {
+      preferences.interactionMode = {
+        value: 'execution_oriented',
+        source: 'inferred',
+        confidence: 0.72,
+        evidence: buildMessageExcerpt(latestExecutionRequest.content, 160),
+      };
+    }
+  }
+
+  if (!preferences.interactionMode) {
+    const latestDiscussionRequest = userMessages.find((message) =>
+      /\b(brainstorm|discuss|talk through|explore options|what do you think)\b/i.test(
+        `${message.content ?? ''}`
+      )
+    );
+    if (latestDiscussionRequest) {
+      preferences.interactionMode = {
+        value: 'discussion_oriented',
+        source: 'inferred',
+        confidence: 0.68,
+        evidence: buildMessageExcerpt(latestDiscussionRequest.content, 160),
+      };
+    }
+  }
+
+  return preferences;
+}
+
+function buildChatSummaryState(messages) {
+  const userMessages = messages.filter((message) => message.role === 'user');
+  const latestUserMessages = userMessages.slice(-4);
+  const latestRequest = latestUserMessages.at(-1)?.content ?? '';
+  const previousContext = latestUserMessages
+    .slice(0, -1)
+    .map((message) => buildMessageExcerpt(message.content, 180));
+  const summary = compact(
+    latestRequest
+      ? [
+          `Latest request: ${buildMessageExcerpt(latestRequest, 320)}`,
+          previousContext.length > 0 ? `Recent context: ${previousContext.join(' | ')}` : '',
+        ]
+          .filter(Boolean)
+          .join('\n')
+      : '',
+    1200
+  );
+
+  return {
+    version: CHAT_SUMMARY_STATE_VERSION,
+    summary,
+    highlights: latestUserMessages.map((message) => buildMessageExcerpt(message.content, 180)),
+    preferences: extractChatPreferences(messages),
+    messageCount: messages.length,
+    updatedAt: new Date().toISOString(),
+  };
+}
+
+function formatChatPreferencePrompt(summaryState) {
+  const preferences = summaryState?.preferences;
+  if (!preferences || Object.keys(preferences).length === 0) {
+    return 'Operator preferences: none captured yet';
+  }
+
+  const entries = Object.entries(preferences).map(([name, value]) => {
+    const confidence =
+      typeof value?.confidence === 'number' ? `${Math.round(value.confidence * 100)}%` : 'n/a';
+    return `${name}=${value?.value ?? 'unknown'} (${value?.source ?? 'unknown'}, ${confidence})`;
+  });
+
+  return `Operator preferences: ${entries.join('; ')}`;
 }
 
 function buildFallbackChatResponse({ actor, userMessage, projectPath }) {
@@ -221,6 +381,7 @@ async function buildChatPrompt({ session, messages, userMessage }) {
     `Actor: ${session.actor}`,
     session.project_path ? `Project path: ${session.project_path}` : 'Project path: none selected',
     session.summary ? `Session summary: ${session.summary}` : 'Session summary: none yet',
+    formatChatPreferencePrompt(session.summary_state),
     '',
     'Project snapshot:',
     projectSnapshot,
@@ -310,6 +471,7 @@ export function createChatService({
              chat_sessions.project_target_id,
              chat_sessions.project_path,
              chat_sessions.summary,
+             chat_sessions.summary_state,
              chat_sessions.status,
              chat_sessions.created_at,
              chat_sessions.updated_at,
@@ -347,27 +509,22 @@ export function createChatService({
   }
 
   async function updateSummary(session, messages) {
-    const userMessages = messages.filter((message) => message.role === 'user');
-    const summary = compact(
-      userMessages
-        .slice(-4)
-        .map((message) => message.content)
-        .join('\n'),
-      1200
-    );
+    const summaryState = buildChatSummaryState(messages);
+    const summary = summaryState.summary;
 
     await callPostgresTool(
       'update_chat_summary',
       {
         sessionId: session.id,
         summary,
+        summaryState,
       },
       () =>
         pool.query(
           `UPDATE chat_sessions
-           SET summary = $2, updated_at = NOW()
+           SET summary = $2, summary_state = $3::jsonb, updated_at = NOW()
            WHERE id = $1`,
-          [session.id, summary]
+          [session.id, summary, JSON.stringify(summaryState)]
         )
     );
 
@@ -376,13 +533,14 @@ export function createChatService({
       {
         sessionId: session.id,
         summary,
+        summaryState,
         messageCount: messages.length,
       },
       () =>
         pool.query(
-          `INSERT INTO chat_summaries (session_id, summary, message_count)
-           VALUES ($1, $2, $3)`,
-          [session.id, summary, messages.length]
+          `INSERT INTO chat_summaries (session_id, summary, summary_state, message_count)
+           VALUES ($1, $2, $3::jsonb, $4)`,
+          [session.id, summary, JSON.stringify(summaryState), messages.length]
         )
     );
 
@@ -508,7 +666,7 @@ export function createChatService({
           pool.query(
             `INSERT INTO chat_sessions (title, actor, project_target_id, project_path)
              VALUES ($1, $2, $3, $4)
-             RETURNING id, title, actor, project_target_id, project_path, summary, status, created_at, updated_at`,
+             RETURNING id, title, actor, project_target_id, project_path, summary, summary_state, status, created_at, updated_at`,
             [title, actor, project?.id ?? null, project?.root_path ?? null]
           )
       );
@@ -530,6 +688,7 @@ export function createChatService({
                chat_sessions.actor,
                chat_sessions.project_path,
                chat_sessions.summary,
+               chat_sessions.summary_state,
                chat_sessions.status,
                chat_sessions.created_at,
                chat_sessions.updated_at,

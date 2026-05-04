@@ -1381,10 +1381,11 @@ export function createPostgresMcpServer({ pool }) {
                chat_sessions.id,
                chat_sessions.title,
                chat_sessions.actor,
-               chat_sessions.project_target_id,
-               chat_sessions.project_path,
-               chat_sessions.summary,
-               chat_sessions.status,
+             chat_sessions.project_target_id,
+             chat_sessions.project_path,
+             chat_sessions.summary,
+             chat_sessions.summary_state,
+             chat_sessions.status,
                chat_sessions.created_at,
                chat_sessions.updated_at,
                project_targets.name AS project_name
@@ -1400,7 +1401,7 @@ export function createPostgresMcpServer({ pool }) {
           const result = await pool.query(
             `INSERT INTO chat_sessions (title, actor, project_target_id, project_path)
              VALUES ($1, $2, $3, $4)
-             RETURNING id, title, actor, project_target_id, project_path, summary, status, created_at, updated_at`,
+             RETURNING id, title, actor, project_target_id, project_path, summary, summary_state, status, created_at, updated_at`,
             [args.title, args.actor, args.projectTargetId ?? null, args.projectPath ?? null]
           );
           return { rows: result.rows };
@@ -1414,6 +1415,7 @@ export function createPostgresMcpServer({ pool }) {
                chat_sessions.actor,
                chat_sessions.project_path,
                chat_sessions.summary,
+               chat_sessions.summary_state,
                chat_sessions.status,
                chat_sessions.created_at,
                chat_sessions.updated_at,
@@ -1448,20 +1450,25 @@ export function createPostgresMcpServer({ pool }) {
         case 'update_chat_summary': {
           const result = await pool.query(
             `UPDATE chat_sessions
-             SET summary = $2, updated_at = NOW()
+             SET summary = $2, summary_state = COALESCE($3::jsonb, '{}'::jsonb), updated_at = NOW()
              WHERE id = $1
              RETURNING id`,
-            [args.sessionId, args.summary]
+            [args.sessionId, args.summary, JSON.stringify(args.summaryState ?? {})]
           );
           return { rows: result.rows };
         }
 
         case 'insert_chat_summary': {
           const result = await pool.query(
-            `INSERT INTO chat_summaries (session_id, summary, message_count)
-             VALUES ($1, $2, $3)
+            `INSERT INTO chat_summaries (session_id, summary, summary_state, message_count)
+             VALUES ($1, $2, $3::jsonb, $4)
              RETURNING id`,
-            [args.sessionId, args.summary, args.messageCount ?? 0]
+            [
+              args.sessionId,
+              args.summary,
+              JSON.stringify(args.summaryState ?? {}),
+              args.messageCount ?? 0,
+            ]
           );
           return { rows: result.rows };
         }

@@ -13,9 +13,11 @@ Phase 13 is now complete:
 - repair retries are bounded with persisted cooldown metadata and self-healing learnings
 - structured operator diagnostics and allowlisted proactive remediations are now part of the runtime loop
 
-Phase 14 groundwork is already present:
+Phase 14 is now in progress:
 
 - persistent chat messages already exist in `chat_sessions` and `chat_messages`
+- structured `chat_summary_v1` state now persists on chat sessions and summary history rows
+- explicit and inferred operator preferences now persist with confidence and evidence metadata
 - chat can auto-draft approval-gated tasks from imperative requests
 - chat can approve the single pending task from natural language
 
@@ -34,10 +36,8 @@ Do not build a general chat platform. Close only the missing planning loop.
 
 Remaining work:
 
-- store rolling session summaries so long chats stay bounded
 - add iterative contract refinement instead of one-shot task drafting
 - distinguish clarification questions from execution-ready requests
-- extract operator preferences from chat into structured metadata
 - expose chat summary and preference state in the control API and UI
 
 Exit criteria:
@@ -66,12 +66,12 @@ Exit criteria:
 
 ## Recommended Sequence
 
-1. Add chat summaries plus preference extraction for Phase 14.
-2. Bind those preferences into Phase 15 channel controls.
+1. Add iterative contract refinement and clarification handling for Phase 14.
+2. Bind persisted chat preferences into Phase 15 channel controls.
 3. Add golden tests last so the behavior is locked before future expansion.
 
 ## Suggested Next Concrete Tasks
 
-1. Persist chat session summaries and preference extraction artifacts.
+1. Add clarification-aware contract refinement in chat.
 2. Add persona/operator settings to the control API and browser UI.
 3. Add approval-gated GitHub review draft publication using existing persona artifacts.

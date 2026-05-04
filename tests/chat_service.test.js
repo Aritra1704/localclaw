@@ -21,6 +21,7 @@ test('chat service uses postgres MCP server for session and message persistence'
                 project_target_id: null,
                 project_path: args.projectPath ?? null,
                 summary: '',
+                summary_state: {},
                 status: 'active',
                 created_at: '2026-04-16T00:00:00.000Z',
                 updated_at: '2026-04-16T00:00:00.000Z',
@@ -36,6 +37,7 @@ test('chat service uses postgres MCP server for session and message persistence'
                 actor: 'architect',
                 project_path: null,
                 summary: '',
+                summary_state: {},
                 status: 'active',
                 created_at: '2026-04-16T00:00:00.000Z',
                 updated_at: '2026-04-16T00:00:00.000Z',
@@ -53,6 +55,7 @@ test('chat service uses postgres MCP server for session and message persistence'
                 project_target_id: null,
                 project_path: null,
                 summary: '',
+                summary_state: {},
                 status: 'active',
                 created_at: '2026-04-16T00:00:00.000Z',
                 updated_at: '2026-04-16T00:00:00.000Z',
@@ -153,6 +156,10 @@ test('chat service uses postgres MCP server for session and message persistence'
       'insert_chat_summary',
     ]
   );
+  const updateSummaryCall = calls.find((entry) => entry.toolName === 'update_chat_summary');
+  assert.equal(updateSummaryCall.args.summaryState.version, 'chat_summary_v1');
+  assert.equal(updateSummaryCall.args.summaryState.summary, 'Latest request: hello');
+  assert.equal(updateSummaryCall.args.summaryState.messageCount, 2);
 });
 
 test('chat service selects the actor model role instead of forcing fast chat mode', async () => {
@@ -173,6 +180,7 @@ test('chat service selects the actor model role instead of forcing fast chat mod
                 project_target_id: null,
                 project_path: null,
                 summary: '',
+                summary_state: {},
                 status: 'active',
                 created_at: '2026-04-16T00:00:00.000Z',
                 updated_at: '2026-04-16T00:00:00.000Z',
@@ -191,6 +199,15 @@ test('chat service selects the actor model role instead of forcing fast chat mod
                 project_target_id: null,
                 project_path: null,
                 summary: '',
+                summary_state: {
+                  preferences: {
+                    verbosity: {
+                      value: 'concise',
+                      source: 'explicit',
+                      confidence: 0.98,
+                    },
+                  },
+                },
                 status: 'active',
                 created_at: '2026-04-16T00:00:00.000Z',
                 updated_at: '2026-04-16T00:00:00.000Z',
@@ -292,6 +309,7 @@ test('chat service can approve the only pending planned task from natural langua
                 project_target_id: null,
                 project_path: null,
                 summary: '',
+                summary_state: {},
                 status: 'active',
                 created_at: '2026-04-16T00:00:00.000Z',
                 updated_at: '2026-04-16T00:00:00.000Z',
@@ -310,6 +328,7 @@ test('chat service can approve the only pending planned task from natural langua
                 project_target_id: null,
                 project_path: null,
                 summary: '',
+                summary_state: {},
                 status: 'active',
                 created_at: '2026-04-16T00:00:00.000Z',
                 updated_at: '2026-04-16T00:00:00.000Z',
@@ -417,6 +436,7 @@ test('chat service turns a clear execution request into an approval-gated planne
                 project_target_id: null,
                 project_path: '/tmp/demo-project',
                 summary: '',
+                summary_state: {},
                 status: 'active',
                 created_at: '2026-04-16T00:00:00.000Z',
                 updated_at: '2026-04-16T00:00:00.000Z',
@@ -435,6 +455,7 @@ test('chat service turns a clear execution request into an approval-gated planne
                 project_target_id: null,
                 project_path: '/tmp/demo-project',
                 summary: '',
+                summary_state: {},
                 status: 'active',
                 created_at: '2026-04-16T00:00:00.000Z',
                 updated_at: '2026-04-16T00:00:00.000Z',
@@ -546,4 +567,96 @@ test('chat service turns a clear execution request into an approval-gated planne
   assert.equal(response.assistant.metadata.autoPlannedFromChat, true);
   assert.match(response.assistant.content, /approval-gated task/i);
   assert.match(response.assistant.content, /Execution has not started yet/i);
+});
+
+test('chat service extracts structured preferences into summary state', async () => {
+  const sessionId = '12121212-1212-4212-8212-121212121212';
+  const sessionRow = {
+    id: sessionId,
+    title: 'Preference chat',
+    actor: 'architect',
+    project_target_id: null,
+    project_path: null,
+    summary: '',
+    summary_state: {},
+    status: 'active',
+    created_at: '2026-04-16T00:00:00.000Z',
+    updated_at: '2026-04-16T00:00:00.000Z',
+    project_name: null,
+  };
+  const messages = [];
+
+  const chatService = createChatService({
+    pool: {
+      async query(sql, params) {
+        if (sql.includes('INSERT INTO chat_sessions')) {
+          return { rows: [sessionRow] };
+        }
+
+        if (sql.includes('FROM chat_sessions')) {
+          return { rows: [sessionRow] };
+        }
+
+        if (sql.includes('FROM chat_messages')) {
+          return { rows: [...messages].reverse() };
+        }
+
+        if (sql.includes('WHERE chat_session_id =')) {
+          return { rows: [] };
+        }
+
+        if (sql.includes('INSERT INTO chat_messages')) {
+          const row = {
+            id: `msg-${messages.length + 1}`,
+            session_id: sessionId,
+            role: params[1],
+            actor: params[2],
+            content: params[3],
+            metadata: JSON.parse(params[4]),
+            created_at: `2026-04-16T00:00:0${messages.length + 1}.000Z`,
+          };
+          messages.push(row);
+          return { rows: [row] };
+        }
+
+        if (sql.includes('UPDATE chat_sessions SET updated_at')) {
+          return { rowCount: 1, rows: [] };
+        }
+
+        if (sql.includes('SET summary =')) {
+          sessionRow.summary = params[1];
+          sessionRow.summary_state = JSON.parse(params[2]);
+          return { rowCount: 1, rows: [] };
+        }
+
+        if (sql.includes('INSERT INTO chat_summaries')) {
+          return { rowCount: 1, rows: [] };
+        }
+
+        throw new Error(`Unexpected query: ${sql.slice(0, 120)}`);
+      },
+    },
+    projectService: {
+      async ensureProjectTarget() {
+        return null;
+      },
+    },
+    orchestrator: {},
+  });
+
+  await chatService.createSession({
+    title: 'Preference chat',
+    actor: 'architect',
+  });
+
+  await chatService.appendMessage(sessionId, {
+    content: 'keep it concise, explain why briefly, and give me the steps',
+  });
+
+  assert.equal(sessionRow.summary_state.version, 'chat_summary_v1');
+  assert.equal(sessionRow.summary_state.preferences.verbosity.value, 'concise');
+  assert.equal(sessionRow.summary_state.preferences.explanationDepth.value, 'high');
+  assert.equal(sessionRow.summary_state.preferences.planningStyle.value, 'stepwise');
+  assert.equal(sessionRow.summary_state.preferences.verbosity.source, 'explicit');
+  assert.match(sessionRow.summary, /Latest request:/);
 });
