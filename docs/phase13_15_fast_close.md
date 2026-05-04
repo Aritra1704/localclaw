@@ -19,6 +19,7 @@ Phase 14 is now in progress:
 - structured `chat_summary_v1` state now persists on chat sessions and summary history rows
 - explicit and inferred operator preferences now persist with confidence and evidence metadata
 - chat can auto-draft approval-gated tasks from imperative requests
+- chat can now keep a rolling draft contract, request clarification for vague execution asks, and auto-plan after the follow-up fills the gap
 - chat can approve the single pending task from natural language
 
 Phase 15 groundwork is already present:
@@ -36,9 +37,8 @@ Do not build a general chat platform. Close only the missing planning loop.
 
 Remaining work:
 
-- add iterative contract refinement instead of one-shot task drafting
-- distinguish clarification questions from execution-ready requests
 - expose chat summary and preference state in the control API and UI
+- deepen contract refinement beyond the current deterministic draft loop so longer chats can reshape scope, constraints, and success criteria more deliberately
 
 Exit criteria:
 
@@ -67,11 +67,11 @@ Exit criteria:
 ## Recommended Sequence
 
 1. Add iterative contract refinement and clarification handling for Phase 14.
-2. Bind persisted chat preferences into Phase 15 channel controls.
+2. Bind persisted chat preferences into Phase 15 channel controls and UI surfacing.
 3. Add golden tests last so the behavior is locked before future expansion.
 
 ## Suggested Next Concrete Tasks
 
-1. Add clarification-aware contract refinement in chat.
+1. Surface chat summary, preference, and draft-contract state in the operator UI and control views.
 2. Add persona/operator settings to the control API and browser UI.
 3. Add approval-gated GitHub review draft publication using existing persona artifacts.

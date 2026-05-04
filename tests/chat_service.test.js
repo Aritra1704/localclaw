@@ -569,6 +569,234 @@ test('chat service turns a clear execution request into an approval-gated planne
   assert.match(response.assistant.content, /Execution has not started yet/i);
 });
 
+test('chat service asks for clarification before auto-planning a vague execution request', async () => {
+  const sessionId = '77777777-7777-4777-8777-777777777777';
+  const plannedContracts = [];
+  const sessionRow = {
+    id: sessionId,
+    title: 'Clarify chat',
+    actor: 'architect',
+    project_target_id: null,
+    project_path: null,
+    summary: '',
+    summary_state: {},
+    status: 'active',
+    created_at: '2026-04-16T00:00:00.000Z',
+    updated_at: '2026-04-16T00:00:00.000Z',
+    project_name: null,
+  };
+  const messages = [];
+
+  const chatService = createChatService({
+    pool: {
+      async query(sql, params) {
+        if (sql.includes('INSERT INTO chat_sessions')) {
+          return { rows: [sessionRow] };
+        }
+
+        if (sql.includes('FROM chat_sessions')) {
+          return { rows: [sessionRow] };
+        }
+
+        if (sql.includes('FROM chat_messages')) {
+          return { rows: [...messages].reverse() };
+        }
+
+        if (sql.includes('WHERE chat_session_id =')) {
+          return { rows: [] };
+        }
+
+        if (sql.includes('INSERT INTO chat_messages')) {
+          const row = {
+            id: `clarify-msg-${messages.length + 1}`,
+            session_id: sessionId,
+            role: params[1],
+            actor: params[2],
+            content: params[3],
+            metadata: JSON.parse(params[4]),
+            created_at: `2026-04-16T00:00:0${messages.length + 1}.000Z`,
+          };
+          messages.push(row);
+          return { rows: [row] };
+        }
+
+        if (sql.includes('UPDATE chat_sessions SET updated_at')) {
+          return { rowCount: 1, rows: [] };
+        }
+
+        if (sql.includes('SET summary =')) {
+          sessionRow.summary = params[1];
+          sessionRow.summary_state = JSON.parse(params[2]);
+          return { rowCount: 1, rows: [] };
+        }
+
+        if (sql.includes('INSERT INTO chat_summaries')) {
+          return { rowCount: 1, rows: [] };
+        }
+
+        throw new Error(`Unexpected query: ${sql.slice(0, 120)}`);
+      },
+    },
+    projectService: {
+      async ensureProjectTarget() {
+        return null;
+      },
+    },
+    orchestrator: {
+      async createPlannedTask(contract, options) {
+        plannedContracts.push({ contract, options });
+        return {
+          task: {
+            id: 'never-planned',
+            status: 'waiting_approval',
+          },
+          plan: {
+            summary: 'should not be used',
+            steps: [],
+          },
+        };
+      },
+    },
+  });
+
+  await chatService.createSession({
+    title: 'Clarify chat',
+    actor: 'architect',
+  });
+
+  const response = await chatService.appendMessage(sessionId, {
+    content: 'fix it',
+  });
+
+  assert.equal(plannedContracts.length, 0);
+  assert.equal(response.assistant.metadata.clarificationRequested, true);
+  assert.deepEqual(response.assistant.metadata.missingContext, [
+    'requested_change',
+    'target_area',
+  ]);
+  assert.match(response.assistant.content, /need a bit more detail/i);
+  assert.equal(sessionRow.summary_state.contractDraft.pendingClarification, true);
+});
+
+test('chat service auto-plans after clarification makes the draft contract concrete', async () => {
+  const sessionId = '88888888-8888-4888-8888-888888888888';
+  const plannedContracts = [];
+  const sessionRow = {
+    id: sessionId,
+    title: 'Refine chat',
+    actor: 'architect',
+    project_target_id: null,
+    project_path: '/tmp/demo-project',
+    summary: '',
+    summary_state: {},
+    status: 'active',
+    created_at: '2026-04-16T00:00:00.000Z',
+    updated_at: '2026-04-16T00:00:00.000Z',
+    project_name: null,
+  };
+  const messages = [];
+
+  const chatService = createChatService({
+    pool: {
+      async query(sql, params) {
+        if (sql.includes('INSERT INTO chat_sessions')) {
+          return { rows: [sessionRow] };
+        }
+
+        if (sql.includes('FROM chat_sessions')) {
+          return { rows: [sessionRow] };
+        }
+
+        if (sql.includes('FROM chat_messages')) {
+          return { rows: [...messages].reverse() };
+        }
+
+        if (sql.includes('WHERE chat_session_id =')) {
+          return { rows: [] };
+        }
+
+        if (sql.includes('INSERT INTO chat_messages')) {
+          const row = {
+            id: `refine-msg-${messages.length + 1}`,
+            session_id: sessionId,
+            role: params[1],
+            actor: params[2],
+            content: params[3],
+            metadata: JSON.parse(params[4]),
+            created_at: `2026-04-16T00:00:0${messages.length + 1}.000Z`,
+          };
+          messages.push(row);
+          return { rows: [row] };
+        }
+
+        if (sql.includes('UPDATE chat_sessions SET updated_at')) {
+          return { rowCount: 1, rows: [] };
+        }
+
+        if (sql.includes('SET summary =')) {
+          sessionRow.summary = params[1];
+          sessionRow.summary_state = JSON.parse(params[2]);
+          return { rowCount: 1, rows: [] };
+        }
+
+        if (sql.includes('INSERT INTO chat_summaries')) {
+          return { rowCount: 1, rows: [] };
+        }
+
+        throw new Error(`Unexpected query: ${sql.slice(0, 120)}`);
+      },
+    },
+    projectService: {
+      async ensureProjectTarget() {
+        return null;
+      },
+    },
+    orchestrator: {
+      async createPlannedTask(contract, options) {
+        plannedContracts.push({ contract, options });
+        return {
+          task: {
+            id: 'planned-after-refine',
+            status: 'waiting_approval',
+          },
+          plan: {
+            summary: 'Fix the invoice rounding logic in the billing API.',
+            steps: [
+              {
+                stepNumber: 1,
+                objective: 'Inspect the billing logic',
+                tool: 'shell',
+              },
+            ],
+          },
+        };
+      },
+    },
+  });
+
+  await chatService.createSession({
+    title: 'Refine chat',
+    actor: 'architect',
+    projectPath: '/tmp/demo-project',
+  });
+
+  await chatService.appendMessage(sessionId, {
+    content: 'fix it',
+  });
+
+  const response = await chatService.appendMessage(sessionId, {
+    content: 'in the billing API, update invoice rounding and add a regression test',
+  });
+
+  assert.equal(plannedContracts.length, 1);
+  assert.equal(plannedContracts[0].options.source, 'chat_auto_plan');
+  assert.match(plannedContracts[0].contract.objective, /fix it/i);
+  assert.match(plannedContracts[0].contract.objective, /billing API/i);
+  assert.equal(response.assistant.metadata.executionPending, true);
+  assert.equal(response.assistant.metadata.taskId, 'planned-after-refine');
+  assert.match(response.assistant.content, /approval-gated task/i);
+});
+
 test('chat service extracts structured preferences into summary state', async () => {
   const sessionId = '12121212-1212-4212-8212-121212121212';
   const sessionRow = {

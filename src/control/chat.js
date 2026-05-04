@@ -69,6 +69,10 @@ const EXECUTION_REQUEST_PATTERNS = [
   /^(?:please\s+)?(?:can you\s+|could you\s+|would you\s+)?(?:create|build|implement|set up|setup|scaffold|generate|write|draft|fix|update|add|remove|refactor|rename|move|delete|start)\b/i,
   /^(?:please\s+)?(?:i need you to|need you to|help me)\s+(?:create|build|implement|set up|setup|scaffold|generate|write|draft|fix|update|add|remove|refactor|rename|move|delete|start)\b/i,
 ];
+const TARGET_HINT_PATTERN =
+  /(?:\.[a-z0-9]{1,8}\b|\/[a-z0-9_.-]+|\b(?:readme|package\.json|dockerfile|ui|api|page|component|route|endpoint|schema|table|migration|query|test|frontend|backend|database|react|node|typescript|python|markdown)\b)/i;
+const VAGUE_OBJECTIVE_PATTERN =
+  /\b(?:fix it|update it|make it better|do it|handle it|something|stuff|thing|this|that)\b/i;
 
 function compact(value, limit = 4000) {
   const text = `${value ?? ''}`.trim();
@@ -190,7 +194,149 @@ function extractChatPreferences(messages) {
   return preferences;
 }
 
-function buildChatSummaryState(messages) {
+function findLatestExecutionRequestIndex(messages) {
+  for (let index = messages.length - 1; index >= 0; index -= 1) {
+    if (isExecutionTaskRequest(messages[index]?.content)) {
+      return index;
+    }
+  }
+
+  return -1;
+}
+
+function countWords(text) {
+  return `${text ?? ''}`
+    .trim()
+    .split(/\s+/)
+    .filter(Boolean).length;
+}
+
+function buildDraftObjective(messages, previousDraft = null, explicitObjective = null) {
+  if (explicitObjective?.trim()) {
+    return explicitObjective.trim();
+  }
+
+  const userMessages = messages.filter((message) => message.role === 'user');
+  if (userMessages.length === 0) {
+    return previousDraft?.contract?.objective ?? previousDraft?.objective ?? null;
+  }
+
+  const latestExecutionIndex = findLatestExecutionRequestIndex(userMessages);
+  if (latestExecutionIndex >= 0) {
+    const baseObjective = `${userMessages[latestExecutionIndex]?.content ?? ''}`.trim();
+    const followUps = userMessages
+      .slice(latestExecutionIndex + 1)
+      .map((message) => `${message.content ?? ''}`.trim())
+      .filter((content) => content && !isExecutionApprovalIntent(content));
+
+    if (followUps.length > 0) {
+      return compact(`${baseObjective}\n\nAdditional context: ${followUps.join(' | ')}`, 1800);
+    }
+
+    return baseObjective;
+  }
+
+  if (previousDraft?.pendingClarification && (previousDraft?.contract?.objective || previousDraft?.objective)) {
+    const latestUserMessage = `${userMessages.at(-1)?.content ?? ''}`.trim();
+    if (latestUserMessage) {
+      return compact(
+        `${previousDraft.contract?.objective ?? previousDraft.objective}\n\nAdditional context: ${latestUserMessage}`,
+        1800
+      );
+    }
+  }
+
+  return null;
+}
+
+function assessDraftReadiness(session, objective) {
+  const missingContext = [];
+  const wordCount = countWords(objective);
+  const normalized = `${objective ?? ''}`.trim();
+
+  if (
+    wordCount < 8 ||
+    (wordCount < 14 && VAGUE_OBJECTIVE_PATTERN.test(normalized))
+  ) {
+    missingContext.push('requested_change');
+  }
+
+  if (!session.project_path && !TARGET_HINT_PATTERN.test(normalized)) {
+    missingContext.push('target_area');
+  }
+
+  return {
+    readyForPlanning: missingContext.length === 0,
+    missingContext,
+  };
+}
+
+function buildClarificationQuestion(session, draftState) {
+  const prompts = [];
+  for (const key of draftState?.missingContext ?? []) {
+    if (key === 'requested_change') {
+      prompts.push('What exactly should I change or create?');
+    }
+
+    if (key === 'target_area') {
+      prompts.push(
+        session.project_path
+          ? 'Which file, component, or subsystem should this apply to?'
+          : 'Which project, file, or component should this apply to?'
+      );
+    }
+  }
+
+  if (prompts.length === 0) {
+    prompts.push('What should success look like when this task is done?');
+  }
+
+  return [
+    'I can turn this into an approval-gated task, but I need a bit more detail before planning safely.',
+    '',
+    ...prompts.map((prompt, index) => `${index + 1}. ${prompt}`),
+    draftState?.contract?.objective || draftState?.objective
+      ? `\nCurrent draft objective: ${draftState.contract?.objective ?? draftState.objective}`
+      : '',
+  ]
+    .filter(Boolean)
+    .join('\n');
+}
+
+function buildContractDraftState({ session, messages, previousSummaryState = null, explicitObjective = null }) {
+  const previousDraft = previousSummaryState?.contractDraft ?? null;
+  const objective = buildDraftObjective(messages, previousDraft, explicitObjective);
+  if (!objective) {
+    return null;
+  }
+  const readiness = assessDraftReadiness(session, objective);
+  const contract =
+    objective.trim().length >= 10
+      ? buildDraftContract({
+          session,
+          messages,
+          objective,
+        })
+      : null;
+
+  return {
+    objective,
+    contract,
+    readyForPlanning: readiness.readyForPlanning,
+    pendingClarification: !readiness.readyForPlanning,
+    missingContext: readiness.missingContext,
+    clarificationQuestion: readiness.readyForPlanning
+      ? null
+      : buildClarificationQuestion(session, {
+          contract,
+          missingContext: readiness.missingContext,
+        }),
+    objectiveSource: explicitObjective ? 'explicit' : 'conversation',
+    lastRefinedAt: new Date().toISOString(),
+  };
+}
+
+function buildChatSummaryState({ session, messages, previousSummaryState = null, explicitObjective = null }) {
   const userMessages = messages.filter((message) => message.role === 'user');
   const latestUserMessages = userMessages.slice(-4);
   const latestRequest = latestUserMessages.at(-1)?.content ?? '';
@@ -214,6 +360,12 @@ function buildChatSummaryState(messages) {
     summary,
     highlights: latestUserMessages.map((message) => buildMessageExcerpt(message.content, 180)),
     preferences: extractChatPreferences(messages),
+    contractDraft: buildContractDraftState({
+      session,
+      messages,
+      previousSummaryState,
+      explicitObjective,
+    }),
     messageCount: messages.length,
     updatedAt: new Date().toISOString(),
   };
@@ -509,7 +661,11 @@ export function createChatService({
   }
 
   async function updateSummary(session, messages) {
-    const summaryState = buildChatSummaryState(messages);
+    const summaryState = buildChatSummaryState({
+      session,
+      messages,
+      previousSummaryState: session.summary_state,
+    });
     const summary = summaryState.summary;
 
     await callPostgresTool(
@@ -552,14 +708,17 @@ export function createChatService({
     sessionId,
     actor,
     objective,
+    contract: providedContract = null,
     autoPlannedFromChat = false,
   }) {
     const messages = await listMessages(sessionId);
-    const contract = buildDraftContract({
-      session,
-      messages,
-      objective,
-    });
+    const contract =
+      providedContract ??
+      buildDraftContract({
+        session,
+        messages,
+        objective,
+      });
     const planned = await orchestrator.createPlannedTask(contract, {
       source: autoPlannedFromChat ? 'chat_auto_plan' : 'chat',
       chatSessionId: sessionId,
@@ -578,6 +737,7 @@ export function createChatService({
         taskId: planned.task.id,
         taskStatus: planned.task.status,
         plan: planned.plan,
+        draftContract: contract,
         executionPending: true,
         autoPlannedFromChat,
       },
@@ -741,6 +901,15 @@ export function createChatService({
       const pendingExecutionTasks = sessionTasks.filter(
         (task) => task.status === 'waiting_approval'
       );
+      const conversationSummaryState = buildChatSummaryState({
+        session: {
+          ...session,
+          actor,
+        },
+        messages,
+        previousSummaryState: session.summary_state,
+      });
+      const activeDraft = conversationSummaryState.contractDraft ?? null;
 
       if (isExecutionApprovalIntent(parsed.content)) {
         if (pendingExecutionTasks.length === 1) {
@@ -795,17 +964,53 @@ export function createChatService({
         }
       }
 
-      if (pendingExecutionTasks.length === 0 && isExecutionTaskRequest(parsed.content)) {
-        const { assistant } = await createPlannedTaskMessage({
-          session: {
+      if (
+        pendingExecutionTasks.length === 0 &&
+        (isExecutionTaskRequest(parsed.content) || session.summary_state?.contractDraft?.pendingClarification)
+      ) {
+        if (activeDraft?.readyForPlanning && activeDraft.contract) {
+          const { assistant } = await createPlannedTaskMessage({
+            session: {
+              ...session,
+              actor,
+              summary_state: conversationSummaryState,
+            },
+            sessionId,
+            actor,
+            objective: activeDraft.contract.objective,
+            contract: activeDraft.contract,
+            autoPlannedFromChat: true,
+          });
+
+          return {
+            user,
+            assistant,
+          };
+        }
+
+        const assistant = await insertMessage({
+          sessionId,
+          role: 'assistant',
+          actor,
+          content:
+            activeDraft?.clarificationQuestion ??
+            'I need a bit more detail before I can turn this into an approval-gated task.',
+          metadata: {
+            conservativeExecution: true,
+            clarificationRequested: true,
+            draftContract: activeDraft?.contract ?? null,
+            missingContext: activeDraft?.missingContext ?? ['requested_change'],
+          },
+        });
+
+        await updateSummary(
+          {
             ...session,
             actor,
+            summary_state: conversationSummaryState,
           },
-          sessionId,
-          actor,
-          objective: parsed.content,
-          autoPlannedFromChat: true,
-        });
+          [...messages, assistant]
+        );
 
         return {
           user,
@@ -817,6 +1022,7 @@ export function createChatService({
         session: {
           ...session,
           actor,
+          summary_state: conversationSummaryState,
         },
         actor,
         messages,
@@ -832,7 +1038,14 @@ export function createChatService({
         },
       });
 
-      await updateSummary(session, [...messages, assistant]);
+      await updateSummary(
+        {
+          ...session,
+          actor,
+          summary_state: conversationSummaryState,
+        },
+        [...messages, assistant]
+      );
 
       return {
         user,
@@ -848,11 +1061,19 @@ export function createChatService({
       }
 
       const messages = await listMessages(sessionId);
-      const contract = buildDraftContract({
+      const draftState = buildContractDraftState({
         session,
         messages,
-        objective: parsed.objective,
+        previousSummaryState: session.summary_state,
+        explicitObjective: parsed.objective,
       });
+      const contract =
+        draftState?.contract ??
+        buildDraftContract({
+          session,
+          messages,
+          objective: parsed.objective,
+        });
 
       await insertMessage({
         sessionId,
@@ -861,6 +1082,8 @@ export function createChatService({
         content: `Drafted a task contract. It is not queued until you request a plan or approve execution.\n\nObjective: ${contract.objective}`,
         metadata: {
           draftContract: contract,
+          draftReadyForPlanning: draftState?.readyForPlanning ?? true,
+          missingContext: draftState?.missingContext ?? [],
         },
       });
 
@@ -901,11 +1124,20 @@ export function createChatService({
         return planned;
       }
 
+      const messages = await listMessages(sessionId);
+      const draftState = buildContractDraftState({
+        session,
+        messages,
+        previousSummaryState: session.summary_state,
+        explicitObjective: input.objective,
+      });
+
       const { planned } = await createPlannedTaskMessage({
         session,
         sessionId,
         actor: session.actor,
-        objective: input.objective,
+        objective: draftState?.contract?.objective ?? input.objective,
+        contract: draftState?.contract ?? null,
       });
 
       return planned;
