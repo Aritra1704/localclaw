@@ -2,5 +2,10 @@
 ._*
 .Spotlight-V100
 .Trashes
+.env
+node_modules/
+web/node_modules/
+logs/
+web/dist/
 .opskit/settings.local.json
 PROJECT_CONTEXT.local.md
