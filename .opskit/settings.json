@@ -1,0 +1,14 @@
+{
+  "version": 1,
+  "generatedBy": "localclaw",
+  "projectTaskId": "45e24c7a-54b6-4392-80ba-a33e731609cf",
+  "projectTaskTitle": "localclaw: Create TEST_LOCALCLAW.md at the repo root with heading \"LocalClaw Tes",
+  "deploy": {
+    "provider": "railway",
+    "approvalRequired": true
+  },
+  "hygiene": {
+    "ignoreOsJunk": true,
+    "enforceRepoContract": true
+  }
+}
