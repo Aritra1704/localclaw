@@ -78,6 +78,14 @@ const approveChatTaskSchema = z
   })
   .strict();
 
+const publishReviewDraftSchema = z
+  .object({
+    owner: z.string().trim().min(1).optional(),
+    repo: z.string().trim().min(1).optional(),
+    issueNumber: z.number().int().positive(),
+  })
+  .strict();
+
 const addProjectSchema = z
   .object({
     name: z.string().trim().min(1).max(120).optional(),
@@ -634,6 +642,29 @@ export function createControlApiServer({
         }
 
         sendJson(res, 200, { data: approved });
+        return;
+      }
+
+      const publishReviewDraftMatch = pathname.match(
+        /^\/v1\/tasks\/([0-9a-f-]{36})\/publish-review-draft$/i
+      );
+      if (publishReviewDraftMatch && req.method === 'POST') {
+        const body = await readJsonBody(req);
+        const parsed = publishReviewDraftSchema.parse(body);
+        const published = await orchestrator.publishTaskReviewDraft(
+          publishReviewDraftMatch[1],
+          parsed
+        );
+
+        if (!published) {
+          sendJson(res, 404, {
+            error: 'not_found',
+            message: 'Task not found',
+          });
+          return;
+        }
+
+        sendJson(res, 200, { data: published });
         return;
       }
 

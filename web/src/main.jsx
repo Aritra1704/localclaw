@@ -363,6 +363,13 @@ function Tasks({ tasks, selectedTask, onSelect }) {
 }
 
 function TaskDetail({ task, tokenReady, onApproveExecution }) {
+  const [reviewOwner, setReviewOwner] = useState('');
+  const [reviewRepo, setReviewRepo] = useState('');
+  const [reviewIssueNumber, setReviewIssueNumber] = useState('');
+  const [reviewBusy, setReviewBusy] = useState(false);
+  const [reviewError, setReviewError] = useState('');
+  const [reviewSuccess, setReviewSuccess] = useState('');
+
   if (!task) {
     return (
       <section className="panel detail-panel">
@@ -372,6 +379,37 @@ function TaskDetail({ task, tokenReady, onApproveExecution }) {
   }
 
   const plan = task.task.result?.preExecutionPlan?.plan;
+  const reviewDraft = task.persona?.reviewCommentDraft || null;
+
+  useEffect(() => {
+    const match = `${task?.task?.repo_url ?? ''}`.match(/github\.com\/([^/]+)\/([^/]+)/i);
+    setReviewOwner(match?.[1] ?? '');
+    setReviewRepo(match?.[2]?.replace(/\.git$/i, '') ?? '');
+    setReviewIssueNumber('');
+    setReviewError('');
+    setReviewSuccess('');
+  }, [task?.task?.id, task?.task?.repo_url]);
+
+  async function publishReviewDraft() {
+    try {
+      setReviewBusy(true);
+      setReviewError('');
+      setReviewSuccess('');
+      const published = await api(`/v1/tasks/${task.task.id}/publish-review-draft`, {
+        method: 'POST',
+        body: {
+          owner: reviewOwner || undefined,
+          repo: reviewRepo || undefined,
+          issueNumber: Number(reviewIssueNumber),
+        },
+      });
+      setReviewSuccess(published.commentUrl || 'GitHub review draft published.');
+    } catch (nextError) {
+      setReviewError(toErrorMessage(nextError));
+    } finally {
+      setReviewBusy(false);
+    }
+  }
 
   return (
     <section className="panel detail-panel">
@@ -382,6 +420,47 @@ function TaskDetail({ task, tokenReady, onApproveExecution }) {
         onApproveExecution={onApproveExecution}
       />
       <NarrativePanel taskDetail={task} />
+      {reviewDraft && (
+        <section className="review-draft-panel">
+          <div className="review-draft-header">
+            <strong>GitHub review draft</strong>
+            <span>{reviewDraft.publicationMode || 'draft_or_approval_gated'}</span>
+          </div>
+          <p className="review-draft-body">{reviewDraft.body}</p>
+          <div className="review-draft-form">
+            <input
+              value={reviewOwner}
+              placeholder="owner"
+              onChange={(event) => setReviewOwner(event.target.value)}
+            />
+            <input
+              value={reviewRepo}
+              placeholder="repo"
+              onChange={(event) => setReviewRepo(event.target.value)}
+            />
+            <input
+              value={reviewIssueNumber}
+              placeholder="PR number"
+              onChange={(event) => setReviewIssueNumber(event.target.value)}
+            />
+            <button
+              className="secondary"
+              disabled={
+                !tokenReady ||
+                reviewBusy ||
+                !reviewOwner.trim() ||
+                !reviewRepo.trim() ||
+                !reviewIssueNumber.trim()
+              }
+              onClick={publishReviewDraft}
+            >
+              {reviewBusy ? 'Publishing...' : 'Publish draft comment'}
+            </button>
+          </div>
+          {reviewError && <div className="error">{reviewError}</div>}
+          {reviewSuccess && <div className="success-note">{reviewSuccess}</div>}
+        </section>
+      )}
       {plan && (
         <div className="plan-box">
           <h3>{plan.summary}</h3>

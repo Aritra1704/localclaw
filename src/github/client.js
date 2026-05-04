@@ -82,5 +82,14 @@ export function createGitHubClient(options = {}) {
         throw error;
       }
     },
+
+    async createIssueComment(owner, repo, issueNumber, body) {
+      return request(`/repos/${owner}/${repo}/issues/${issueNumber}/comments`, {
+        method: 'POST',
+        body: {
+          body,
+        },
+      });
+    },
   };
 }

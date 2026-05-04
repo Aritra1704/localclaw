@@ -668,6 +668,56 @@ nav button.active {
   padding: 1rem 1.05rem;
 }
 
+.review-draft-panel {
+  background: rgba(248, 250, 252, 0.82);
+  border: 1px solid var(--line);
+  border-radius: 18px;
+  display: grid;
+  gap: 0.85rem;
+  padding: 1rem 1.05rem;
+}
+
+.review-draft-header {
+  align-items: center;
+  display: flex;
+  gap: 1rem;
+  justify-content: space-between;
+}
+
+.review-draft-header strong {
+  color: var(--accent);
+}
+
+.review-draft-header span {
+  color: var(--accent-strong);
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 0.76rem;
+  text-transform: lowercase;
+}
+
+.review-draft-body {
+  color: var(--muted);
+  line-height: 1.55;
+  margin: 0;
+  white-space: pre-wrap;
+}
+
+.review-draft-form {
+  display: grid;
+  gap: 0.75rem;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+}
+
+.success-note {
+  background: rgba(15, 118, 110, 0.08);
+  border: 1px solid rgba(15, 118, 110, 0.14);
+  border-radius: 16px;
+  color: var(--success);
+  padding: 0.85rem 1rem;
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+
 .runtime-header,
 .runtime-checklist-header,
 .runtime-current {
@@ -1116,6 +1166,10 @@ nav button.active {
   }
 
   .task-hints {
+    grid-template-columns: 1fr;
+  }
+
+  .review-draft-form {
     grid-template-columns: 1fr;
   }
 }

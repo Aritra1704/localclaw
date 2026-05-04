@@ -18,6 +18,22 @@ function deriveRepositoryName(task, context) {
   );
 }
 
+function parseRepositoryUrl(url) {
+  if (!url) {
+    return null;
+  }
+
+  const match = `${url}`.match(/github\.com\/([^/]+)\/([^/]+)/i);
+  if (!match) {
+    return null;
+  }
+
+  return {
+    owner: match[1],
+    repo: match[2].replace(/\.git$/i, ''),
+  };
+}
+
 export function createGitHubPublisher({ gitClient, githubClient, githubServer = null, logger }) {
   return {
     isEnabled() {
@@ -94,6 +110,53 @@ export function createGitHubPublisher({ gitClient, githubClient, githubServer = 
           sha: commitResult.commitSha,
           created: commitResult.createdCommit,
         },
+      };
+    },
+
+    async publishReviewDraft(task, input = {}) {
+      if (!this.isEnabled()) {
+        throw new Error('GitHub publishing is not enabled.');
+      }
+
+      const repository =
+        (input.owner && input.repo ? { owner: input.owner, repo: input.repo } : null) ??
+        parseRepositoryUrl(input.repoUrl);
+
+      if (!repository?.owner || !repository?.repo) {
+        throw new Error('A valid GitHub owner and repository are required to publish a review draft.');
+      }
+
+      if (!Number.isInteger(Number(input.issueNumber)) || Number(input.issueNumber) <= 0) {
+        throw new Error('A positive pull request number is required to publish a review draft.');
+      }
+
+      if (!`${input.body ?? ''}`.trim()) {
+        throw new Error('Review draft body is empty.');
+      }
+
+      const comment = await githubClient.createIssueComment(
+        repository.owner,
+        repository.repo,
+        Number(input.issueNumber),
+        input.body
+      );
+
+      logger?.info(
+        {
+          taskId: task.id,
+          repository: `${repository.owner}/${repository.repo}`,
+          issueNumber: Number(input.issueNumber),
+        },
+        'Published GitHub review draft comment'
+      );
+
+      return {
+        owner: repository.owner,
+        repo: repository.repo,
+        issueNumber: Number(input.issueNumber),
+        commentId: comment.id,
+        commentUrl: comment.html_url ?? null,
+        body: input.body,
       };
     },
   };

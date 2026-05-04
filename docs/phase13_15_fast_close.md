@@ -32,6 +32,7 @@ Phase 15 groundwork is already present:
 - review-comment drafts and proactive observation artifacts already exist
 - operator persona settings now persist in `agent_state` and are editable through the control API and browser UI
 - orchestrator persona generation now consumes those settings plus chat-session preferences when building task persona artifacts
+- GitHub review drafts can now be published through an explicit control API/UI action instead of remaining draft-only metadata
 
 ## Fastest Closure Order
 
@@ -42,7 +43,6 @@ Most of the narration primitives already exist. What is left is integration and 
 Remaining work:
 
 - add channel adapters so Telegram, UI, and GitHub render from the same evidence bundle with different policies
-- gate GitHub review-comment publication behind explicit approval or config
 - add golden tests that verify narrated output stays evidence-bound
 - persist preference profiles separately from task artifacts when the controls outgrow the current global settings profile
 

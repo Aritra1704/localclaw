@@ -244,6 +244,22 @@ function annotateResolvedRepairState(task, result, outcome = 'repair_recovered')
   };
 }
 
+function parseGitHubRepositoryUrl(url) {
+  if (!url) {
+    return null;
+  }
+
+  const match = `${url}`.match(/github\.com\/([^/]+)\/([^/]+)/i);
+  if (!match) {
+    return null;
+  }
+
+  return {
+    owner: match[1],
+    repo: match[2].replace(/\.git$/i, ''),
+  };
+}
+
 function buildRepairOutcomeLearnings(task, result) {
   const repairState = result?.repairState ?? {};
   const attemptCount = clampNonNegativeInteger(repairState.attemptCount, 0);
@@ -3648,6 +3664,51 @@ export class Orchestrator {
         derivePersistedRuntime(task, logsResult.rows),
         this.liveTaskRuntime.get(taskId) ?? null
       ),
+    };
+  }
+
+  async publishTaskReviewDraft(taskId, input = {}) {
+    if (!this.publisher?.publishReviewDraft) {
+      throw new Error('GitHub review draft publication is not enabled.');
+    }
+
+    const detail = await this.getTaskDetails(taskId, { logLimit: 20 });
+    if (!detail) {
+      return null;
+    }
+
+    const draft = detail.persona?.reviewCommentDraft;
+    if (!draft?.body) {
+      throw new Error('No GitHub review draft is available for this task.');
+    }
+
+    const inferredRepo = parseGitHubRepositoryUrl(
+      input.repoUrl ?? detail.task?.repo_url ?? detail.task?.result?.publication?.repo?.htmlUrl ?? null
+    );
+    const owner = input.owner ?? inferredRepo?.owner ?? null;
+    const repo = input.repo ?? inferredRepo?.repo ?? null;
+
+    const published = await this.publisher.publishReviewDraft(detail.task, {
+      owner,
+      repo,
+      repoUrl: detail.task?.repo_url ?? detail.task?.result?.publication?.repo?.htmlUrl ?? null,
+      issueNumber: input.issueNumber,
+      body: draft.body,
+    });
+
+    await this.logTaskStep(taskId, {
+      stepNumber: 950,
+      stepType: 'github_review',
+      status: 'success',
+      inputSummary: `${published.owner}/${published.repo}#${published.issueNumber}`,
+      outputSummary: published.commentUrl ?? 'GitHub review draft comment published',
+    });
+
+    return {
+      ...published,
+      taskId,
+      publicationMode: draft.publicationMode ?? 'draft_or_approval_gated',
+      approvalRequired: draft.approvalRequired === true,
     };
   }
 

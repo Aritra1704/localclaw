@@ -59,8 +59,19 @@ test('control API enforces token on mutating routes and returns deterministic re
     },
     async getTaskDetails(taskId) {
       return {
-        task: { id: taskId, status: 'waiting_approval' },
+        task: {
+          id: taskId,
+          status: 'waiting_approval',
+          repo_url: 'https://github.com/example/demo-repo',
+        },
         logs: [],
+        persona: {
+          reviewCommentDraft: {
+            body: 'LocalClaw review draft body',
+            publicationMode: 'draft_or_approval_gated',
+            approvalRequired: true,
+          },
+        },
       };
     },
     async createPlannedTask(contract) {
@@ -142,6 +153,16 @@ test('control API enforces token on mutating routes and returns deterministic re
     async updatePersonaSettings(settings) {
       return settings;
     },
+    async publishTaskReviewDraft(taskId, input) {
+      callLog.push({ fn: 'publishTaskReviewDraft', taskId, input });
+      return {
+        taskId,
+        owner: input.owner ?? 'example',
+        repo: input.repo ?? 'demo-repo',
+        issueNumber: input.issueNumber,
+        commentUrl: 'https://github.com/example/demo-repo/pull/12#issuecomment-1',
+      };
+    },
   };
 
   const api = createControlApiServer({
@@ -213,11 +234,31 @@ test('control API enforces token on mutating routes and returns deterministic re
     const runPayload = await runResponse.json();
     assert.equal(runPayload.data.executionApproval.status, 'approved');
 
+    const publishReviewResponse = await fetch(
+      `${baseUrl}/v1/tasks/11111111-1111-4111-8111-111111111111/publish-review-draft`,
+      {
+        method: 'POST',
+        headers: {
+          authorization: 'Bearer test-token',
+          'content-type': 'application/json',
+        },
+        body: JSON.stringify({
+          owner: 'example',
+          repo: 'demo-repo',
+          issueNumber: 12,
+        }),
+      }
+    );
+    assert.equal(publishReviewResponse.status, 200);
+    const publishReviewPayload = await publishReviewResponse.json();
+    assert.equal(publishReviewPayload.data.issueNumber, 12);
+
     const callSummary = callLog.map((entry) => entry.fn);
     assert.deepEqual(callSummary, [
       'createPlannedTask',
       'createPlannedTask',
       'approveTaskExecution',
+      'publishTaskReviewDraft',
     ]);
   } finally {
     await api.stop();
@@ -264,6 +305,15 @@ test('control API exposes project and chat operator endpoints', async () => {
     },
     async updatePersonaSettings(settings) {
       return settings;
+    },
+    async publishTaskReviewDraft(taskId, input) {
+      return {
+        taskId,
+        owner: input.owner ?? 'example',
+        repo: input.repo ?? 'demo-repo',
+        issueNumber: input.issueNumber,
+        commentUrl: 'https://github.com/example/demo-repo/pull/12#issuecomment-1',
+      };
     },
   };
   const projectService = {

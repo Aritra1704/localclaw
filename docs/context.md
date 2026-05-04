@@ -497,6 +497,7 @@ Current progress:
 - operator persona settings now persist through `agent_state`, are exposed through the control API, and can be edited in the browser UI as channel-specific controls for Telegram, UI, and GitHub draft behavior
 - persona artifact generation now consumes those settings in the orchestrator, so Telegram/UI verbosity, proactive observation notes, and GitHub draft voice are no longer hard-coded defaults only
 - chat-session preferences from Phase 14 now flow into persona context resolution, letting explicit concise/detailed chat preferences influence later UI and GitHub narration for that task
+- GitHub review-comment drafts can now be published through an explicit control API and browser task-detail action, keeping public posting approval-gated instead of automatic
 - persona output remains post-execution and non-authoritative; it does not choose tools, bypass approval gates, or alter verification results
 
 Outputs:
