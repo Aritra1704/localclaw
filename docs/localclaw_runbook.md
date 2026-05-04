@@ -11,6 +11,7 @@
 - Phase 13: complete. Repair proposal generation, immediate repair resume, bounded retry budget, self-healing learnings, structured operator diagnostics, and allowlisted proactive remediations are now in place.
 - Phase 14: complete. Persistent chat context, structured `chat_summary_v1` summaries, preference extraction, clarification-driven contract refinement, and browser chat visibility are now in place.
 - Phase 15: complete. Persona settings and a dedicated preference profile now persist separately, chat-derived preference signals are recorded with explicit-over-inferred resolution and expiry, dedicated Telegram/UI/GitHub channel adapters shape draft output from the same evidence bundle, GitHub review drafts can be explicitly published from the operator surface, and evidence-bound narration tests lock the behavior.
+- Phase 16: complete. Local-first execution policy, local-only auto-run, per-project repo/deploy/browser metadata, safer publish/deploy routing, structured execution artifacts, and isolated browser automation scaffolding are now in place.
 
 ## Start LocalClaw
 
@@ -85,6 +86,15 @@ The CLI discovers `CONTROL_API_TOKEN` from `.env`, so normal usage should not re
 until curl -sf http://127.0.0.1:4173/health >/dev/null; do sleep 1; done
 ```
 
+After pulling Phase 16 changes, run:
+
+```bash
+npm install
+npm run migrate
+pm2 restart localclaw --update-env
+until curl -sf http://127.0.0.1:4173/health >/dev/null; do sleep 1; done
+```
+
 Telegram remains focused on alerts and deploy approvals.
 
 ## Browser Operator UI
@@ -139,10 +149,17 @@ In the browser chat:
 
 Current execution approval behavior:
 
-- Auto-created chat tasks still stop in `waiting_approval`; they do not execute until you approve them.
+- Local-only tasks can now auto-start immediately after planning when the task contract resolves to safe local execution only.
+- Tasks that request publish, deploy, public comments, or mixed external effects still stop in `waiting_approval` and require operator approval.
 - If a task is in `waiting_approval`, you can approve it directly from the chat runtime card or the task detail view.
 - CLI and API approval paths still work and are useful for manual or scripted operation.
 - After approval, CLI chat prints the current phase immediately and then emits short heartbeat lines if the task is still queued, planning, working, or verifying for a while.
+
+If chat still prints the old approval-gated wording for a local-only task, assume the process or session is stale first:
+
+- restart PM2 with `pm2 restart localclaw --update-env`
+- start a fresh `localclaw chat --project ...` session
+- rerun the local-only `/plan ... No publish. No deploy.` request
 
 Approve a task from CLI:
 
@@ -170,7 +187,7 @@ npm run cli -- task reject <task-id> "Rejected by operator"
 
 Common task states in the UI:
 
-- `waiting_approval`: plan preview exists and execution has not started yet
+- `waiting_approval`: plan preview exists and execution has not started yet because the task still needs external-action approval
 - `pending`: approved and queued for execution
 - `in_progress`: workspace preparation, planning, tool steps, or verification are running
 - `blocked`: execution stopped and needs operator attention

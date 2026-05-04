@@ -1,6 +1,6 @@
 # LocalClaw Context
 
-Version: 1.8
+Version: 1.9
 Date: 2026-05-04  
 Purpose: end-to-end execution context and checkpoint guide for LocalClaw delivery
 
@@ -28,6 +28,7 @@ As of 2026-05-04, the project status is:
 | Phase 13: Self-Healing & Proactive Autonomy | complete | Repair proposal generation, immediate repair resume, bounded retry budget, self-healing learnings, structured operator diagnostics, and allowlisted proactive remediations are now in place. |
 | Phase 14: Conversational Agent & Iterative Planning | complete | Persistent chat context, structured summaries/preferences, clarification-driven draft refinement, structural contract evolution, approval-gated planning, and browser visibility are now all in place. |
 | Phase 15: Persona Layer & Humanized Presence | complete | Operator persona settings and a dedicated `persona_preference_profile_v1` now persist separately, chat-derived preference signals are recorded with explicit-over-inferred resolution and expiry, Telegram/UI/GitHub drafts render through dedicated channel adapters, and evidence-bound narration tests are in place. |
+| Phase 16: Local-First Coding Agent Core | complete | Explicit execution policy, local-only auto-run, per-project repository and deploy target metadata, safer publish/deploy routing, structured plan/execution/verification artifacts, and isolated browser automation scaffolding are now implemented. |
 
 ## 1. Mission
 
@@ -460,7 +461,7 @@ Outputs:
 - Operators can define and refine tasks through natural language dialogue.
 - Reduced friction in task initiation and planning.
 
-### Phase 15: Persona Layer & Humanized Presence (In Progress)
+### Phase 15: Persona Layer & Humanized Presence (Complete)
 
 Inputs:
 
@@ -519,6 +520,50 @@ First implementation slice:
 - emit narrated output to Telegram and the Browser UI before expanding to GitHub review/comment workflows
 - show raw facts alongside narrated summaries in the Browser UI so operators can compare evidence and wording directly
 - keep raw logs, narrated summaries, and preference inputs stored separately so the persona layer stays debuggable and reversible
+
+### Phase 16: Local-First Coding Agent Core (Complete)
+
+Inputs:
+
+- All prior phases (0-15) completed, with chat planning, task orchestration, persona narration, and deployment controls already present.
+- Operator requirement that LocalClaw behave like a practical repo-local coding agent instead of a universal approval gate for every safe local action.
+- Existing tool stack for filesystem changes, terminal commands, verification, publishing, deployment, and browser/operator surfaces.
+
+Actions:
+
+- Introduce an explicit execution-policy layer for task contracts so approval behavior is deterministic instead of inferred only from prompt wording.
+- Classify tasks into local-only versus external/public execution paths and auto-start safe local work after planning.
+- Preserve manual approval for publish, deploy, public comment, and mixed external actions.
+- Move repository and deploy target resolution to per-project metadata instead of relying on one global Railway service mapping.
+- Tighten execution so file edits, terminal commands, tests, verification, and documentation generation are the default coding loop.
+- Persist structured artifacts for plans, execution summaries, verification summaries, and documentation outputs.
+- Add a controlled browser automation surface that runs in an isolated LocalClaw-owned profile and respects project-level origin allowlists.
+
+Current progress:
+
+- `task_contract_v1` now supports explicit execution semantics through `executionPolicy`, and execution class/approval requirements are derived from the contract itself
+- chat planning and file-based task runs now auto-approve local-only work instead of always stopping in `waiting_approval`
+- publish and deploy remain approval-gated, and local-only tasks no longer fall through the older auto-publish path just because prompt wording was imperfect
+- project records now support GitHub repository mapping, Railway project/environment/service mapping, and browser-origin allowlists
+- publish and deploy routing now resolve from project metadata, preventing one repo from inheriting another repo's external target configuration
+- local-only tasks are allowed to run without repository or deploy mappings, while publish/deploy tasks block safely if those mappings are missing
+- execution now records structured `plan_v1`, `execution_summary_v1`, and `verification_summary_v1` artifacts, along with documentation-oriented artifacts such as `phase_plan_v1`, `implementation_note_v1`, and `task_handoff_v1`
+- browser automation is now scaffolded as a first-class tool surface with page actions, screenshot capture, and isolated profile storage under the LocalClaw workspace
+- the current known rollout caveat is operator-surface drift: if a long-running CLI or PM2 process was not restarted after the Phase 16 code landed, chat may still print the old `waiting_approval` wording even when the task executes and finishes in the background
+
+Outputs:
+
+- LocalClaw now behaves as a local-first coding agent for safe repo-local work while still enforcing approval for external side effects.
+- Coding, testing, verification, and documentation generation are first-class execution paths instead of being secondary to publish/deploy orchestration.
+- Multi-project operation is safer because repository and Railway targets are resolved per project.
+- Browser automation is now in scope without granting direct access to the operator's normal browser storage or session state.
+
+Rollout requirements:
+
+- run `npm install` so the browser automation dependency is present
+- run `npm run migrate` to apply the Phase 16 schema changes
+- restart the orchestrator with `pm2 restart localclaw --update-env`
+- start a fresh CLI chat session after restart so the operator surface picks up the new plan/execute behavior
 
 ## 5. Phase 4 Checkpoint
 
@@ -598,20 +643,18 @@ Project completion means all of the following are true:
 
 ## 9. Backlog
 
-### 9.1 Per-Project Deploy Targets
+### 9.1 Operator-Surface Drift
 
-After the fixed-service Phase 4 checkpoint is crossed, move Railway deploy targeting out of global `.env` state and into the database.
+Phase 16 changed execution semantics so local-only tasks can auto-run, but older CLI chats or long-lived PM2 processes may still present the legacy "execution is still approval-gated" wording if they were not restarted after the rollout.
 
 Backlog intent:
 
-- keep only account-level provider credentials in `.env`
-- store GitHub repo and Railway target mapping per generated project
-- allow LocalClaw to manage multiple projects without changing runtime env vars
-- preserve approval-gated deploys even when a project has its own repo and service
+- remove stale wording paths from every operator surface so plan output matches the task's effective execution policy
+- expose execution class and auto-start status consistently in CLI chat, browser chat, and task detail views
+- add regression coverage for the exact case where a local-only `/plan` request should start immediately
 
 Expected implementation shape:
 
-- add project-level records for repository and deploy target mapping
-- persist `railway_project_id`, `railway_environment_id`, and `railway_service_id` per project
-- make tasks resolve their deploy target from DB, not a single global service
-- keep dynamic repo and service creation out of the current MVP until the fixed-target path is proven stable
+- make all chat plan responses consume the same execution summary payload returned by the control API
+- add tests that assert local-only tasks do not render `waiting_approval` messaging after a fresh restart
+- make stale-process detection more obvious in operator diagnostics
