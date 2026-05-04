@@ -262,7 +262,28 @@ test('control API exposes project and chat operator endpoints', async () => {
     },
     async getSession(id) {
       return {
-        session: { id, title: 'Operator', actor: 'architect' },
+        session: {
+          id,
+          title: 'Operator',
+          actor: 'architect',
+          summary: 'Latest request: review the billing API',
+          summary_state: {
+            version: 'chat_summary_v1',
+            preferences: {
+              verbosity: {
+                value: 'concise',
+                source: 'explicit',
+                confidence: 0.98,
+              },
+            },
+            contractDraft: {
+              objective: 'Review the billing API and flag risky changes',
+              readyForPlanning: false,
+              pendingClarification: true,
+              missingContext: ['target_area'],
+            },
+          },
+        },
         messages: [],
         tasks: [],
       };
@@ -381,6 +402,17 @@ test('control API exposes project and chat operator endpoints', async () => {
       }
     );
     assert.equal(message.status, 201);
+
+    const sessionDetail = await fetch(
+      `${baseUrl}/v1/chat/sessions/${sessionPayload.data.id}`
+    );
+    assert.equal(sessionDetail.status, 200);
+    const sessionDetailPayload = await sessionDetail.json();
+    assert.equal(sessionDetailPayload.data.session.summary_state.version, 'chat_summary_v1');
+    assert.equal(
+      sessionDetailPayload.data.session.summary_state.contractDraft.pendingClarification,
+      true
+    );
   } finally {
     await api.stop();
   }

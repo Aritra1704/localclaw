@@ -399,6 +399,13 @@ nav button.active {
   padding: 0.88rem 1rem;
 }
 
+.session {
+  align-items: start;
+  display: grid;
+  gap: 0.25rem;
+  justify-content: start;
+}
+
 .row:hover:not(:disabled),
 .session:hover:not(:disabled) {
   background: rgba(255, 255, 255, 0.94);
@@ -536,6 +543,87 @@ nav button.active {
   display: grid;
   gap: 1rem;
   min-height: 650px;
+}
+
+.chat-state-panel {
+  display: grid;
+  gap: 0.9rem;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+.chat-state-card {
+  background: rgba(248, 250, 252, 0.82);
+  border: 1px solid var(--line);
+  border-radius: 18px;
+  display: grid;
+  gap: 0.75rem;
+  padding: 0.95rem 1rem;
+}
+
+.chat-state-header,
+.chat-preference-item {
+  align-items: start;
+  display: flex;
+  gap: 0.75rem;
+  justify-content: space-between;
+}
+
+.chat-state-header span,
+.chat-preference-item span,
+.session-summary-badge,
+.chat-state-note strong {
+  color: var(--accent-strong);
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 0.76rem;
+  text-transform: lowercase;
+}
+
+.chat-state-card strong,
+.chat-preference-item strong {
+  color: var(--accent);
+}
+
+.chat-state-card p,
+.chat-preference-item p {
+  color: var(--muted);
+  line-height: 1.55;
+  margin: 0;
+  white-space: pre-wrap;
+}
+
+.chat-pill-row,
+.chat-preference-list {
+  display: grid;
+  gap: 0.6rem;
+}
+
+.chat-pill-row {
+  grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
+}
+
+.chat-pill {
+  background: rgba(255, 255, 255, 0.72);
+  border: 1px solid rgba(39, 74, 117, 0.08);
+  border-radius: 999px;
+  color: var(--accent);
+  display: inline-flex;
+  font-size: 0.82rem;
+  font-weight: 700;
+  line-height: 1.35;
+  padding: 0.5rem 0.75rem;
+}
+
+.chat-preference-item,
+.chat-state-note {
+  background: rgba(255, 255, 255, 0.72);
+  border: 1px solid rgba(39, 74, 117, 0.08);
+  border-radius: 16px;
+  padding: 0.8rem 0.9rem;
+}
+
+.chat-state-note {
+  display: grid;
+  gap: 0.35rem;
 }
 
 .chat-header {
@@ -825,6 +913,15 @@ nav button.active {
   gap: 0.8rem;
 }
 
+.session-summary-snippet {
+  color: var(--muted);
+  line-height: 1.45;
+}
+
+.session-summary-badge {
+  display: inline-block;
+}
+
 .session-task-header {
   align-items: center;
   display: flex;
@@ -975,6 +1072,7 @@ nav button.active {
 
   .split-view,
   .persona-panel,
+  .chat-state-panel,
   .chat-workspace,
   .token-card {
     grid-template-columns: 1fr;

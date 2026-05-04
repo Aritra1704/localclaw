@@ -108,6 +108,41 @@ function formatDateTime(value) {
   return date.toLocaleString();
 }
 
+function humanizeKey(value) {
+  return `${value ?? ''}`
+    .replace(/([a-z])([A-Z])/g, '$1 $2')
+    .replace(/[_-]+/g, ' ')
+    .replace(/\b\w/g, (char) => char.toUpperCase());
+}
+
+function buildChatPreferenceEntries(summaryState) {
+  return Object.entries(summaryState?.preferences || {}).map(([key, value]) => ({
+    key,
+    label: humanizeKey(key),
+    value: value?.value || 'unknown',
+    source: value?.source || 'unknown',
+    confidence:
+      typeof value?.confidence === 'number' ? `${Math.round(value.confidence * 100)}%` : 'n/a',
+    evidence: value?.evidence || '',
+  }));
+}
+
+function buildDraftStatus(draftState) {
+  if (!draftState) {
+    return 'none';
+  }
+
+  if (draftState.pendingClarification) {
+    return 'needs clarification';
+  }
+
+  if (draftState.readyForPlanning) {
+    return 'ready to plan';
+  }
+
+  return 'drafting';
+}
+
 function buildRawFactRows(taskDetail) {
   const task = taskDetail?.task || {};
   const result = task.result || {};
@@ -574,8 +609,13 @@ function Chat({ sessions, actors, projects, tokenReady, onRefresh, onSelectTask 
     }
   }
 
+  const activeProject = projects.find((project) => project.root_path === projectPath);
+  const summaryState = sessionDetail?.session?.summary_state || null;
+  const draftState = summaryState?.contractDraft || null;
+  const preferenceEntries = useMemo(() => buildChatPreferenceEntries(summaryState), [summaryState]);
+
   async function planTask() {
-    if (!message.trim() || busy) return;
+    if (busy || (!message.trim() && !draftState?.readyForPlanning)) return;
     setBusy(true);
     setError('');
 
@@ -583,7 +623,7 @@ function Chat({ sessions, actors, projects, tokenReady, onRefresh, onSelectTask 
       const sessionId = activeSession || (await createSession()).id;
       await api(`/v1/chat/sessions/${sessionId}/plan-task`, {
         method: 'POST',
-        body: { objective: message },
+        body: message.trim() ? { objective: message } : {},
       });
       setMessage('');
       await loadSession(sessionId);
@@ -595,7 +635,6 @@ function Chat({ sessions, actors, projects, tokenReady, onRefresh, onSelectTask 
     }
   }
 
-  const activeProject = projects.find((project) => project.root_path === projectPath);
   const sessionTasks = sessionDetail?.tasks || [];
   const activeRuntimeTask = useMemo(
     () => sessionTasks.find((task) => liveTaskStatuses.has(task.status)) || sessionTasks[0] || null,
@@ -690,6 +729,12 @@ function Chat({ sessions, actors, projects, tokenReady, onRefresh, onSelectTask 
             >
               <span>{session.title}</span>
               <small>{session.actor}</small>
+              {session.summary && <small className="session-summary-snippet">{session.summary}</small>}
+              {session.summary_state?.contractDraft && (
+                <small className="session-summary-badge">
+                  {buildDraftStatus(session.summary_state.contractDraft)}
+                </small>
+              )}
             </button>
           ))}
         </div>
@@ -722,6 +767,86 @@ function Chat({ sessions, actors, projects, tokenReady, onRefresh, onSelectTask 
             </div>
           )}
         </div>
+        {sessionDetail?.session && (
+          <section className="chat-state-panel">
+            <div className="chat-state-card">
+              <div className="chat-state-header">
+                <strong>Session summary</strong>
+                <span>{summaryState?.version || 'none'}</span>
+              </div>
+              <p>
+                {summaryState?.summary ||
+                  'No rolling summary yet. Send a message to start building bounded chat state.'}
+              </p>
+              {summaryState?.highlights?.length > 0 && (
+                <div className="chat-pill-row">
+                  {summaryState.highlights.map((item, index) => (
+                    <span className="chat-pill" key={`${item}-${index}`}>
+                      {item}
+                    </span>
+                  ))}
+                </div>
+              )}
+            </div>
+            <div className="chat-state-card">
+              <div className="chat-state-header">
+                <strong>Operator preferences</strong>
+                <span>{preferenceEntries.length > 0 ? `${preferenceEntries.length} captured` : 'none yet'}</span>
+              </div>
+              {preferenceEntries.length === 0 && (
+                <p>No structured preferences have been inferred or stated in this session yet.</p>
+              )}
+              {preferenceEntries.length > 0 && (
+                <div className="chat-preference-list">
+                  {preferenceEntries.map((entry) => (
+                    <div className="chat-preference-item" key={entry.key}>
+                      <div>
+                        <strong>{entry.label}</strong>
+                        <p>{humanizeKey(entry.value)}</p>
+                      </div>
+                      <span>{entry.source} / {entry.confidence}</span>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+            <div className="chat-state-card">
+              <div className="chat-state-header">
+                <strong>Draft contract</strong>
+                <span>{buildDraftStatus(draftState)}</span>
+              </div>
+              {!draftState && (
+                <p>No draft contract has been assembled from this conversation yet.</p>
+              )}
+              {draftState && (
+                <>
+                  <p>{draftState.contract?.objective || draftState.objective}</p>
+                  {draftState.missingContext?.length > 0 && (
+                    <div className="chat-state-note">
+                      <strong>Waiting on</strong>
+                      <p>{draftState.missingContext.map((item) => humanizeKey(item)).join(', ')}</p>
+                    </div>
+                  )}
+                  {draftState.clarificationQuestion && (
+                    <div className="chat-state-note">
+                      <strong>Clarification prompt</strong>
+                      <p>{draftState.clarificationQuestion}</p>
+                    </div>
+                  )}
+                  <div className="actions compact">
+                    <button
+                      className="secondary"
+                      disabled={!tokenReady || busy || !draftState.readyForPlanning}
+                      onClick={planTask}
+                    >
+                      Plan current draft
+                    </button>
+                  </div>
+                </>
+              )}
+            </div>
+          </section>
+        )}
         <section className="task-hints">
           <div className="task-hint-card">
             <strong>What chat expects</strong>
@@ -780,7 +905,13 @@ function Chat({ sessions, actors, projects, tokenReady, onRefresh, onSelectTask 
         />
         <div className="actions">
           <button disabled={!tokenReady || busy || !message.trim()} onClick={sendMessage}>{busy ? 'Working...' : 'Send'}</button>
-          <button disabled={!tokenReady || busy || !message.trim()} className="secondary" onClick={planTask}>Plan task</button>
+          <button
+            disabled={!tokenReady || busy || (!message.trim() && !draftState?.readyForPlanning)}
+            className="secondary"
+            onClick={planTask}
+          >
+            {message.trim() ? 'Plan task' : 'Plan current draft'}
+          </button>
           <span className="hint">Cmd/Ctrl + Enter sends</span>
         </div>
       </main>

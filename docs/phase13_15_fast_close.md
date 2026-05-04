@@ -20,6 +20,7 @@ Phase 14 is now in progress:
 - explicit and inferred operator preferences now persist with confidence and evidence metadata
 - chat can auto-draft approval-gated tasks from imperative requests
 - chat can now keep a rolling draft contract, request clarification for vague execution asks, and auto-plan after the follow-up fills the gap
+- the browser chat workspace now exposes session summary, preferences, draft readiness, clarification gaps, and direct planning from the current ready draft
 - chat can approve the single pending task from natural language
 
 Phase 15 groundwork is already present:
@@ -37,7 +38,6 @@ Do not build a general chat platform. Close only the missing planning loop.
 
 Remaining work:
 
-- expose chat summary and preference state in the control API and UI
 - deepen contract refinement beyond the current deterministic draft loop so longer chats can reshape scope, constraints, and success criteria more deliberately
 
 Exit criteria:

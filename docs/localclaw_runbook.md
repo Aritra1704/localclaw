@@ -9,7 +9,7 @@
 - Phase 11: complete. Internal MCP servers now standardize filesystem, PostgreSQL-backed runtime state, RAG indexing/retrieval, reflection, chat, projects, skills, and GitHub operations.
 - Phase 12: complete. Knowledge graph storage, graph-based retrieval, semantic impact analysis, and historical learnings are integrated into planning and approval previews.
 - Phase 13: complete. Repair proposal generation, immediate repair resume, bounded retry budget, self-healing learnings, structured operator diagnostics, and allowlisted proactive remediations are now in place.
-- Phase 14: in progress. Persistent chat context is live, structured `chat_summary_v1` summaries plus preference extraction now persist in PostgreSQL, and vague execution requests can now enter a clarification loop before auto-planning; broader contract evolution and surfacing are still open.
+- Phase 14: in progress. Persistent chat context is live, structured `chat_summary_v1` summaries plus preference extraction now persist in PostgreSQL, vague execution requests can enter a clarification loop before auto-planning, and the browser chat view now exposes summary/preference/draft state; broader contract evolution is still open.
 - Phase 15: planned. Persona Layer and Humanized Presence will stay post-execution and non-authoritative while adding evidence-bound narration, operator preference profiles, channel adapters, optional "by the way" observations, and approval-gated GitHub voice.
 
 ## Start LocalClaw
