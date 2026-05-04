@@ -549,7 +549,8 @@ Current progress:
 - local-only tasks are allowed to run without repository or deploy mappings, while publish/deploy tasks block safely if those mappings are missing
 - execution now records structured `plan_v1`, `execution_summary_v1`, and `verification_summary_v1` artifacts, along with documentation-oriented artifacts such as `phase_plan_v1`, `implementation_note_v1`, and `task_handoff_v1`
 - browser automation is now scaffolded as a first-class tool surface with page actions, screenshot capture, and isolated profile storage under the LocalClaw workspace
-- the current known rollout caveat is operator-surface drift: if a long-running CLI or PM2 process was not restarted after the Phase 16 code landed, chat may still print the old `waiting_approval` wording even when the task executes and finishes in the background
+- chat and CLI now reconcile local-only auto-start tasks against live task state before rendering plan status, so fresh operator sessions no longer keep the stale `waiting_approval` wording after a local-only `/plan`
+- long-running CLI or PM2 processes still need a restart after the Phase 16 rollout before they pick up the new operator-surface behavior
 
 Outputs:
 
@@ -645,16 +646,12 @@ Project completion means all of the following are true:
 
 ### 9.1 Operator-Surface Drift
 
-Phase 16 changed execution semantics so local-only tasks can auto-run, but older CLI chats or long-lived PM2 processes may still present the legacy "execution is still approval-gated" wording if they were not restarted after the rollout.
+Status:
 
-Backlog intent:
+- fixed for chat and CLI local-only `/plan` flows by reconciling the immediate plan response against live task state before rendering approval guidance
+- covered by a focused CLI regression that asserts local-only auto-start does not print `Execution is still approval-gated`
 
-- remove stale wording paths from every operator surface so plan output matches the task's effective execution policy
-- expose execution class and auto-start status consistently in CLI chat, browser chat, and task detail views
-- add regression coverage for the exact case where a local-only `/plan` request should start immediately
+Remaining follow-up:
 
-Expected implementation shape:
-
-- make all chat plan responses consume the same execution summary payload returned by the control API
-- add tests that assert local-only tasks do not render `waiting_approval` messaging after a fresh restart
+- expose execution class and auto-start status consistently in browser chat and task detail views
 - make stale-process detection more obvious in operator diagnostics

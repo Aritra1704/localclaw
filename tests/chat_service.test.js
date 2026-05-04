@@ -569,6 +569,155 @@ test('chat service turns a clear execution request into an approval-gated planne
   assert.match(response.assistant.content, /Execution has not started yet/i);
 });
 
+test('chat service planTask reconciles local-only auto-start tasks before rendering approval guidance', async () => {
+  const sessionId = '56565656-5656-4565-8565-565656565656';
+  const sessionRow = {
+    id: sessionId,
+    title: 'Plan reconcile chat',
+    actor: 'architect',
+    project_target_id: null,
+    project_path: '/tmp/demo-project',
+    summary: '',
+    summary_state: {},
+    status: 'active',
+    created_at: '2026-04-16T00:00:00.000Z',
+    updated_at: '2026-04-16T00:00:00.000Z',
+    project_name: null,
+  };
+  const messages = [];
+
+  const chatService = createChatService({
+    pool: {
+      async query(sql, params) {
+        if (sql.includes('INSERT INTO chat_sessions')) {
+          return { rows: [sessionRow] };
+        }
+
+        if (sql.includes('FROM chat_sessions')) {
+          return { rows: [sessionRow] };
+        }
+
+        if (sql.includes('FROM chat_messages')) {
+          return { rows: [...messages].reverse() };
+        }
+
+        if (sql.includes('WHERE chat_session_id =')) {
+          return { rows: [] };
+        }
+
+        if (sql.includes('INSERT INTO chat_messages')) {
+          const row = {
+            id: `plan-reconcile-msg-${messages.length + 1}`,
+            session_id: sessionId,
+            role: params[1],
+            actor: params[2],
+            content: params[3],
+            metadata: JSON.parse(params[4]),
+            created_at: `2026-04-16T00:00:0${messages.length + 1}.000Z`,
+          };
+          messages.push(row);
+          return { rows: [row] };
+        }
+
+        if (sql.includes('UPDATE chat_sessions SET updated_at')) {
+          return { rowCount: 1, rows: [] };
+        }
+
+        if (sql.includes('SET summary =')) {
+          sessionRow.summary = params[1];
+          sessionRow.summary_state = JSON.parse(params[2]);
+          return { rowCount: 1, rows: [] };
+        }
+
+        if (sql.includes('INSERT INTO chat_summaries')) {
+          return { rowCount: 1, rows: [] };
+        }
+
+        throw new Error(`Unexpected query: ${sql.slice(0, 120)}`);
+      },
+    },
+    projectService: {
+      async ensureProjectTarget() {
+        return null;
+      },
+    },
+    orchestrator: {
+      async createPlannedTask() {
+        return {
+          task: {
+            id: '67676767-6767-4676-8676-676767676767',
+            status: 'waiting_approval',
+          },
+          plan: {
+            summary: 'Create the requested local markdown file.',
+            steps: [
+              {
+                stepNumber: 1,
+                objective: 'Write TEST_LOCALCLAW.md in the project root',
+                tool: 'write_file',
+              },
+            ],
+          },
+          execution: {
+            executionClass: 'local_only',
+            executionPolicy: 'auto_local',
+            approvalRequired: false,
+          },
+          executionApproval: {
+            status: 'pending',
+            approvalRequired: false,
+            autoStarted: false,
+          },
+        };
+      },
+      async getTaskDetails(taskId) {
+        return {
+          task: {
+            id: taskId,
+            status: 'in_progress',
+            result: {
+              preExecutionPlan: {
+                status: 'approved',
+              },
+            },
+          },
+        };
+      },
+    },
+  });
+
+  await chatService.createSession({
+    title: 'Plan reconcile chat',
+    actor: 'architect',
+    projectPath: '/tmp/demo-project',
+  });
+
+  const planned = await chatService.planTask(sessionId, {
+    contract: {
+      version: 'task_contract_v1',
+      projectName: 'demo-project',
+      objective: 'Create TEST_LOCALCLAW.md at the repo root. No publish. No deploy.',
+      inScope: ['Create TEST_LOCALCLAW.md in the repo root'],
+      outOfScope: ['Publish changes', 'Deploy anything'],
+      constraints: ['Do not publish', 'Do not deploy'],
+      successCriteria: ['TEST_LOCALCLAW.md exists with the requested content'],
+      priority: 'medium',
+      repoIntent: {
+        publish: false,
+        deploy: false,
+      },
+      notes: 'chat service local-only plan reconciliation test',
+    },
+  });
+
+  assert.equal(planned.task.status, 'in_progress');
+  assert.equal(planned.executionApproval.status, 'approved');
+  assert.equal(messages.length, 1);
+  assert.match(messages[0].content, /Plan created and execution started\./);
+  assert.match(messages[0].content, /Execution is in progress\./);
+  assert.doesNotMatch(messages[0].content, /Execution has not started yet/i);
+});
+
 test('chat service asks for clarification before auto-planning a vague execution request', async () => {
   const sessionId = '77777777-7777-4777-8777-777777777777';
   const plannedContracts = [];

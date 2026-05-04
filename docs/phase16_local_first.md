@@ -49,12 +49,15 @@ Then start a fresh chat session:
 localclaw chat --project .
 ```
 
-## Known Caveat
+## Operator Surface Status
 
-If a long-running CLI session or PM2 process was started before the Phase 16 rollout, chat may still print legacy approval-gated wording even when the task actually runs in the background. In that case:
+Fresh chat and CLI sessions now reconcile local-only auto-start tasks against live task state before printing approval-gated messaging. That closes the stale `/plan` wording path where a local-only task could already be running while the operator still saw `waiting_approval`.
 
-- restart PM2
-- start a fresh chat session
-- check the task with `localclaw status` or `/status <task-id>`
+Two rollout constraints still matter:
 
-This is an operator-surface consistency issue, not the intended execution policy.
+- restart PM2 after shipping Phase 16 changes
+- start a fresh CLI or chat session after restart so the new operator-surface code is loaded
+
+Verification:
+
+- focused CLI regression: `node --test tests/cli.test.js --test-name-pattern="cli chat /plan reconciles local-only auto-start tasks before printing approval-gated messaging"`
