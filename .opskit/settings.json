@@ -1,0 +1,14 @@
+{
+  "version": 1,
+  "generatedBy": "localclaw",
+  "projectTaskId": "e9a21a08-af35-4b78-b615-2ffa1b65be7a",
+  "projectTaskTitle": "localclaw: build a detailed architecture stating all the steps how do i build a ",
+  "deploy": {
+    "provider": "railway",
+    "approvalRequired": true
+  },
+  "hygiene": {
+    "ignoreOsJunk": true,
+    "enforceRepoContract": true
+  }
+}
