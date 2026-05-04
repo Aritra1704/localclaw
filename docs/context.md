@@ -1,6 +1,6 @@
 # LocalClaw Context
 
-Version: 1.7
+Version: 1.8
 Date: 2026-05-04  
 Purpose: end-to-end execution context and checkpoint guide for LocalClaw delivery
 
@@ -27,7 +27,7 @@ As of 2026-05-04, the project status is:
 | Phase 12: Cognitive Memory | complete | Knowledge graph storage now maps files, symbols, dependencies, document references, historical changes, and related learnings, and semantic impact analysis is injected into planning and approval previews alongside flat RAG. |
 | Phase 13: Self-Healing & Proactive Autonomy | complete | Repair proposal generation, immediate repair resume, bounded retry budget, self-healing learnings, structured operator diagnostics, and allowlisted proactive remediations are now in place. |
 | Phase 14: Conversational Agent & Iterative Planning | complete | Persistent chat context, structured summaries/preferences, clarification-driven draft refinement, structural contract evolution, approval-gated planning, and browser visibility are now all in place. |
-| Phase 15: Persona Layer & Humanized Presence | in progress | Operator persona settings now persist in `agent_state`, the browser UI can edit channel controls, Telegram/UI/GitHub drafts now render from dedicated channel adapters, and evidence-bound narration tests are in place; preference-profile persistence remains the main open item. |
+| Phase 15: Persona Layer & Humanized Presence | complete | Operator persona settings and a dedicated `persona_preference_profile_v1` now persist separately, chat-derived preference signals are recorded with explicit-over-inferred resolution and expiry, Telegram/UI/GitHub drafts render through dedicated channel adapters, and evidence-bound narration tests are in place. |
 
 ## 1. Mission
 
@@ -499,6 +499,9 @@ Current progress:
 - chat-session preferences from Phase 14 now flow into persona context resolution, letting explicit concise/detailed chat preferences influence later UI and GitHub narration for that task
 - GitHub review-comment drafts can now be published through an explicit control API and browser task-detail action, keeping public posting approval-gated instead of automatic
 - dedicated channel adapters now render Telegram, UI, and GitHub drafts from the same evidence bundle with intentionally different policy: Telegram stays operational, UI stays explanatory, and GitHub stays review-oriented
+- a dedicated `persona_preference_profile_v1` now persists separately from task artifacts and channel settings, with explicit and inferred preference buckets instead of a single global narration blob
+- chat summary updates now record preference signals into that profile, so explicit operator preferences persist durably and inferred preferences can expire unless renewed by later interaction
+- persona context resolution now applies explicit-over-inferred preference rules before rendering task narration, keeping chat-specific guidance and longer-lived operator defaults consistent
 - persona artifact tests now pin evidence-bound channel output so narration changes have to preserve factual grounding across Telegram, UI, and GitHub drafts
 - persona output remains post-execution and non-authoritative; it does not choose tools, bypass approval gates, or alter verification results
 

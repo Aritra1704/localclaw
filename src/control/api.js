@@ -134,6 +134,34 @@ const personaSettingsSchema = z
   .partial()
   .strict();
 
+const personaPreferenceProfileSchema = z
+  .object({
+    explicit: z
+      .object({
+        verbosity: z.object({ value: z.enum(['concise', 'detailed']), evidence: z.string().trim().max(160).optional() }).strict().nullable().optional(),
+        explanationDepth: z.object({ value: z.enum(['low', 'medium', 'high']), evidence: z.string().trim().max(160).optional() }).strict().nullable().optional(),
+        planningStyle: z.object({ value: z.enum(['stepwise', 'conversational']), evidence: z.string().trim().max(160).optional() }).strict().nullable().optional(),
+        interactionMode: z.object({ value: z.enum(['execution_oriented', 'discussion_oriented']), evidence: z.string().trim().max(160).optional() }).strict().nullable().optional(),
+        reviewTone: z.object({ value: z.enum(['direct', 'neutral', 'supportive']), evidence: z.string().trim().max(160).optional() }).strict().nullable().optional(),
+        commentNoise: z.object({ value: z.enum(['low', 'medium', 'high']), evidence: z.string().trim().max(160).optional() }).strict().nullable().optional(),
+      })
+      .partial()
+      .optional(),
+    inferred: z
+      .object({
+        verbosity: z.object({ value: z.enum(['concise', 'detailed']), confidence: z.number().min(0).max(1).optional(), evidence: z.string().trim().max(160).optional(), expiresAt: z.string().datetime().optional() }).strict().nullable().optional(),
+        explanationDepth: z.object({ value: z.enum(['low', 'medium', 'high']), confidence: z.number().min(0).max(1).optional(), evidence: z.string().trim().max(160).optional(), expiresAt: z.string().datetime().optional() }).strict().nullable().optional(),
+        planningStyle: z.object({ value: z.enum(['stepwise', 'conversational']), confidence: z.number().min(0).max(1).optional(), evidence: z.string().trim().max(160).optional(), expiresAt: z.string().datetime().optional() }).strict().nullable().optional(),
+        interactionMode: z.object({ value: z.enum(['execution_oriented', 'discussion_oriented']), confidence: z.number().min(0).max(1).optional(), evidence: z.string().trim().max(160).optional(), expiresAt: z.string().datetime().optional() }).strict().nullable().optional(),
+        reviewTone: z.object({ value: z.enum(['direct', 'neutral', 'supportive']), confidence: z.number().min(0).max(1).optional(), evidence: z.string().trim().max(160).optional(), expiresAt: z.string().datetime().optional() }).strict().nullable().optional(),
+        commentNoise: z.object({ value: z.enum(['low', 'medium', 'high']), confidence: z.number().min(0).max(1).optional(), evidence: z.string().trim().max(160).optional(), expiresAt: z.string().datetime().optional() }).strict().nullable().optional(),
+      })
+      .partial()
+      .optional(),
+  })
+  .partial()
+  .strict();
+
 const staticTypes = new Map([
   ['.html', 'text/html; charset=utf-8'],
   ['.js', 'text/javascript; charset=utf-8'],
@@ -343,6 +371,17 @@ export function createControlApiServer({
           },
         });
         sendJson(res, 200, { data: await orchestrator.updatePersonaSettings(next) });
+        return;
+      }
+
+      if (pathname === '/v1/persona/preference-profile' && req.method === 'GET') {
+        sendJson(res, 200, { data: await orchestrator.getPersonaPreferenceProfile() });
+        return;
+      }
+
+      if (pathname === '/v1/persona/preference-profile' && req.method === 'PUT') {
+        const parsed = personaPreferenceProfileSchema.parse(await readJsonBody(req));
+        sendJson(res, 200, { data: await orchestrator.updatePersonaPreferenceProfile(parsed) });
         return;
       }
 

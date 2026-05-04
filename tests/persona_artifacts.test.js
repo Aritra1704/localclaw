@@ -3,11 +3,15 @@ import test from 'node:test';
 
 import {
   DEFAULT_PERSONA_SETTINGS,
+  applyPersonaPreferencesToSettings,
   buildPersonaArtifactsForExecution,
   buildPersonaArtifactsForRepairApproval,
   buildPersonaProfileArtifact,
   hydratePersonaArtifacts,
+  mergePersonaPreferenceProfile,
   normalizePersonaSettings,
+  recordChatSummaryPreferences,
+  resolvePersonaPreferences,
 } from '../src/persona/artifacts.js';
 
 test('buildPersonaProfileArtifact creates a non-authoritative default profile', () => {
@@ -35,6 +39,71 @@ test('normalizePersonaSettings preserves defaults while applying overrides', () 
   assert.equal(settings.channels.telegram.verbosity, DEFAULT_PERSONA_SETTINGS.channels.telegram.verbosity);
   assert.equal(settings.channels.ui.verbosity, 'concise');
   assert.equal(settings.controls.githubVoiceEnabled, true);
+});
+
+test('persona preference profiles honor explicit overrides and expire stale inferred entries', () => {
+  const now = Date.parse('2026-05-04T00:00:00.000Z');
+  const profile = mergePersonaPreferenceProfile(
+    null,
+    {
+      explicit: {
+        verbosity: { value: 'concise', evidence: 'operator said keep it short' },
+      },
+      inferred: {
+        explanationDepth: {
+          value: 'high',
+          confidence: 0.78,
+          evidence: 'chat asked for why',
+          expiresAt: '2026-05-20T00:00:00.000Z',
+        },
+        commentNoise: {
+          value: 'high',
+          confidence: 0.61,
+          evidence: 'older session liked more commentary',
+          expiresAt: '2026-04-20T00:00:00.000Z',
+        },
+      },
+    },
+    '2026-05-01T00:00:00.000Z'
+  );
+  const resolved = resolvePersonaPreferences(profile, null, now);
+  const settings = applyPersonaPreferencesToSettings(DEFAULT_PERSONA_SETTINGS, resolved.active);
+
+  assert.equal(resolved.active.verbosity.value, 'concise');
+  assert.equal(resolved.active.explanationDepth.value, 'high');
+  assert.equal(resolved.active.commentNoise, undefined);
+  assert.equal(settings.channels.telegram.verbosity, 'concise');
+  assert.equal(settings.channels.ui.teachingDepth, 'high');
+});
+
+test('chat summary preferences persist into the persona preference profile with explicit and inferred buckets', () => {
+  const next = recordChatSummaryPreferences(
+    null,
+    {
+      updatedAt: '2026-05-04T10:00:00.000Z',
+      preferences: {
+        verbosity: {
+          value: 'concise',
+          source: 'explicit',
+          confidence: 0.98,
+          evidence: 'keep it concise',
+        },
+        interactionMode: {
+          value: 'execution_oriented',
+          source: 'inferred',
+          confidence: 0.72,
+          evidence: 'create the file',
+        },
+      },
+    },
+    '2026-05-04T10:00:00.000Z'
+  );
+
+  assert.equal(next.explicit.verbosity.value, 'concise');
+  assert.equal(next.explicit.verbosity.source, 'explicit');
+  assert.equal(next.inferred.interactionMode.value, 'execution_oriented');
+  assert.equal(next.inferred.interactionMode.source, 'inferred');
+  assert.match(next.inferred.interactionMode.expiresAt, /^2026-06-/);
 });
 
 test('buildPersonaArtifactsForExecution creates narrated summary, handover, observations, and review draft', () => {

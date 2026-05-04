@@ -867,6 +867,10 @@ export function createChatService({
         )
     );
 
+    if (orchestrator?.recordPersonaPreferenceSignals) {
+      await orchestrator.recordPersonaPreferenceSignals(summaryState);
+    }
+
     return summary;
   }
 

@@ -72,8 +72,23 @@ const dashboardLoaders = [
       nextState.personaSettings = data;
     },
   },
+  {
+    key: 'personaPreferenceProfile',
+    load: () => api('/v1/persona/preference-profile'),
+    apply: (nextState, data) => {
+      nextState.personaPreferenceProfile = data;
+    },
+  },
 ];
 const liveTaskStatuses = new Set(['pending', 'in_progress', 'verifying', 'waiting_approval']);
+const personaPreferenceOptions = {
+  verbosity: ['', 'concise', 'detailed'],
+  explanationDepth: ['', 'low', 'medium', 'high'],
+  planningStyle: ['', 'stepwise', 'conversational'],
+  interactionMode: ['', 'execution_oriented', 'discussion_oriented'],
+  reviewTone: ['', 'direct', 'neutral', 'supportive'],
+  commentNoise: ['', 'low', 'medium', 'high'],
+};
 
 function formatDuration(duration) {
   if (!duration || Number.isNaN(Number(duration))) {
@@ -1091,14 +1106,19 @@ function Diagnostics({ status, error }) {
   );
 }
 
-function PersonaSettings({ settings, mutate, tokenReady, onRefresh }) {
+function PersonaSettings({ settings, preferenceProfile, mutate, tokenReady, onRefresh }) {
   const [localSettings, setLocalSettings] = useState(settings);
+  const [localProfile, setLocalProfile] = useState(preferenceProfile);
   const [error, setError] = useState('');
   const [busy, setBusy] = useState(false);
 
   useEffect(() => {
     setLocalSettings(settings);
   }, [settings]);
+
+  useEffect(() => {
+    setLocalProfile(preferenceProfile);
+  }, [preferenceProfile]);
 
   function updateChannel(channel, field, value) {
     setLocalSettings((current) => ({
@@ -1123,11 +1143,28 @@ function PersonaSettings({ settings, mutate, tokenReady, onRefresh }) {
     }));
   }
 
+  function updateExplicitPreference(name, value) {
+    setLocalProfile((current) => ({
+      ...(current || {}),
+      explicit: {
+        ...(current?.explicit || {}),
+        [name]: value
+          ? {
+              ...(current?.explicit?.[name] || {}),
+              value,
+              evidence: current?.explicit?.[name]?.evidence || 'operator profile',
+            }
+          : null,
+      },
+    }));
+  }
+
   async function save() {
     try {
       setBusy(true);
       setError('');
       await mutate('/v1/persona/settings', localSettings, 'PUT');
+      await mutate('/v1/persona/preference-profile', localProfile || {}, 'PUT');
       await onRefresh();
     } catch (nextError) {
       setError(toErrorMessage(nextError));
@@ -1139,6 +1176,8 @@ function PersonaSettings({ settings, mutate, tokenReady, onRefresh }) {
   if (!localSettings) {
     return <section className="panel"><Empty text="Persona settings are unavailable." /></section>;
   }
+
+  const inferredEntries = Object.entries(localProfile?.inferred || {});
 
   return (
     <section className="panel detail-panel">
@@ -1204,6 +1243,48 @@ function PersonaSettings({ settings, mutate, tokenReady, onRefresh }) {
           <span>Enable GitHub review voice in draft comments</span>
         </label>
       </div>
+      <div className="persona-profile-grid">
+        {Object.entries(personaPreferenceOptions).map(([name, options]) => (
+          <label className="persona-settings-card" key={name}>
+            <strong>{humanizeKey(name)}</strong>
+            <select
+              value={localProfile?.explicit?.[name]?.value || ''}
+              onChange={(event) => updateExplicitPreference(name, event.target.value)}
+            >
+              <option value="">System default</option>
+              {options
+                .filter((option) => option)
+                .map((option) => (
+                  <option value={option} key={option}>
+                    {humanizeKey(option)}
+                  </option>
+                ))}
+            </select>
+            <small className="muted">
+              Explicit profile preferences override inferred chat preferences for this dimension.
+            </small>
+          </label>
+        ))}
+      </div>
+      <div className="persona-inferred-list">
+        <strong>Inferred from chat</strong>
+        {inferredEntries.length === 0 ? (
+          <p className="muted">No inferred chat preferences are stored yet.</p>
+        ) : (
+          inferredEntries.map(([name, value]) => (
+            <div className="persona-inferred-item" key={name}>
+              <b>{humanizeKey(name)}</b>
+              <span>
+                {humanizeKey(value?.value || 'unknown')} · {value?.source || 'inferred'} ·{' '}
+                {typeof value?.confidence === 'number'
+                  ? `${Math.round(value.confidence * 100)}%`
+                  : 'n/a'}
+              </span>
+              {value?.expiresAt && <small>Expires {formatDateTime(value.expiresAt)}</small>}
+            </div>
+          ))
+        )}
+      </div>
       {error && <div className="error">{error}</div>}
       <div className="actions">
         <button disabled={!tokenReady || busy} onClick={save}>
@@ -1241,6 +1322,7 @@ function App() {
     projects: [],
     allowedRoots: [],
     personaSettings: null,
+    personaPreferenceProfile: null,
   });
   const [activeView, setActiveView] = useState('chat');
   const [selectedTask, setSelectedTask] = useState(null);
@@ -1329,6 +1411,7 @@ function App() {
     persona: (
       <PersonaSettings
         settings={state.personaSettings}
+        preferenceProfile={state.personaPreferenceProfile}
         mutate={mutate}
         tokenReady={tokenReady}
         onRefresh={refresh}

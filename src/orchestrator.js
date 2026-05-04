@@ -12,13 +12,17 @@ import {
 } from './control/taskContract.js';
 import { getPool } from './db/client.js';
 import {
-  applyChatPreferencesToPersonaSettings,
+  applyPersonaPreferencesToSettings,
   buildPersonaArtifactsForExecution,
   buildPersonaArtifactsForExecutionError,
   buildPersonaArtifactsForRepairApproval,
   buildPersonaProfileArtifact,
   hydratePersonaArtifacts,
+  mergePersonaPreferenceProfile,
   normalizePersonaSettings,
+  normalizePersonaPreferenceProfile,
+  recordChatSummaryPreferences,
+  resolvePersonaPreferences,
 } from './persona/artifacts.js';
 import { removeWorkspaceJunk } from './project/contract.js';
 import { ReflectionEngine } from './selfimprovement/reflectionEngine.js';
@@ -34,6 +38,7 @@ const WORKSPACE_JUNK_REMEDIATION_INTERVAL_MS = 6 * 60 * 60 * 1000;
 const REPAIR_BASE_BACKOFF_MS = 30 * 1000;
 const REPAIR_MAX_BACKOFF_MS = 15 * 60 * 1000;
 const PERSONA_SETTINGS_STATE_KEY = 'persona_settings';
+const PERSONA_PREFERENCE_PROFILE_STATE_KEY = 'persona_preference_profile';
 
 const RETRIEVAL_STOP_WORDS = new Set([
   'about',
@@ -3053,6 +3058,30 @@ export class Orchestrator {
     return settings;
   }
 
+  async getPersonaPreferenceProfile() {
+    return normalizePersonaPreferenceProfile(
+      await this.getAgentStateValue(PERSONA_PREFERENCE_PROFILE_STATE_KEY, null)
+    );
+  }
+
+  async updatePersonaPreferenceProfile(input) {
+    const current = await this.getPersonaPreferenceProfile();
+    const next = mergePersonaPreferenceProfile(current, input);
+    await this.setAgentStateValue(PERSONA_PREFERENCE_PROFILE_STATE_KEY, next);
+    return next;
+  }
+
+  async recordPersonaPreferenceSignals(summaryState) {
+    if (!summaryState?.preferences || Object.keys(summaryState.preferences).length === 0) {
+      return this.getPersonaPreferenceProfile();
+    }
+
+    const current = await this.getPersonaPreferenceProfile();
+    const next = recordChatSummaryPreferences(current, summaryState);
+    await this.setAgentStateValue(PERSONA_PREFERENCE_PROFILE_STATE_KEY, next);
+    return next;
+  }
+
   async getChatSessionSummaryState(chatSessionId) {
     if (!chatSessionId) {
       return null;
@@ -3075,20 +3104,25 @@ export class Orchestrator {
 
   async resolvePersonaContext(task) {
     const baseSettings = await this.getPersonaSettings();
+    const preferenceProfile = await this.getPersonaPreferenceProfile();
     const chatSummaryState = task?.chat_session_id
       ? await this.getChatSessionSummaryState(task.chat_session_id)
       : null;
-    const hasChatPreferences =
-      chatSummaryState?.preferences &&
-      Object.keys(chatSummaryState.preferences).length > 0;
+    const resolvedPreferences = resolvePersonaPreferences(
+      preferenceProfile,
+      chatSummaryState
+    );
+    const hasResolvedPreferences = Object.keys(resolvedPreferences.active).length > 0;
 
     return {
-      settings: hasChatPreferences
-        ? applyChatPreferencesToPersonaSettings(baseSettings, chatSummaryState)
+      settings: hasResolvedPreferences
+        ? applyPersonaPreferencesToSettings(baseSettings, resolvedPreferences.active)
         : baseSettings,
-      preferenceSource: hasChatPreferences
-        ? 'operator_settings+chat_session_preferences'
+      preferenceSource: hasResolvedPreferences
+        ? ['operator_settings', ...resolvedPreferences.sources].join('+')
         : 'operator_settings',
+      preferenceProfile,
+      activePreferences: resolvedPreferences.active,
       chatSummaryState,
     };
   }

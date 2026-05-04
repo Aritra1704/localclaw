@@ -150,8 +150,42 @@ test('control API enforces token on mutating routes and returns deterministic re
         },
       };
     },
+    async getPersonaPreferenceProfile() {
+      return {
+        version: 'persona_preference_profile_v1',
+        explicit: {
+          reviewTone: {
+            value: 'direct',
+            source: 'explicit',
+            confidence: 1,
+            evidence: 'operator profile',
+            updatedAt: '2026-05-04T00:00:00.000Z',
+            expiresAt: null,
+          },
+        },
+        inferred: {},
+        updatedAt: '2026-05-04T00:00:00.000Z',
+      };
+    },
     async updatePersonaSettings(settings) {
       return settings;
+    },
+    async updatePersonaPreferenceProfile(profile) {
+      return {
+        version: 'persona_preference_profile_v1',
+        explicit: {
+          reviewTone: {
+            value: profile.explicit?.reviewTone?.value ?? 'direct',
+            source: 'explicit',
+            confidence: 1,
+            evidence: profile.explicit?.reviewTone?.evidence ?? 'operator profile',
+            updatedAt: '2026-05-04T00:00:00.000Z',
+            expiresAt: null,
+          },
+        },
+        inferred: {},
+        updatedAt: '2026-05-04T00:00:00.000Z',
+      };
     },
     async publishTaskReviewDraft(taskId, input) {
       callLog.push({ fn: 'publishTaskReviewDraft', taskId, input });
@@ -303,8 +337,44 @@ test('control API exposes project and chat operator endpoints', async () => {
         },
       };
     },
+    async getPersonaPreferenceProfile() {
+      return {
+        version: 'persona_preference_profile_v1',
+        explicit: {},
+        inferred: {
+          verbosity: {
+            value: 'concise',
+            source: 'inferred',
+            confidence: 0.72,
+            evidence: 'latest chat session',
+            updatedAt: '2026-05-04T00:00:00.000Z',
+            expiresAt: '2026-06-03T00:00:00.000Z',
+          },
+        },
+        updatedAt: '2026-05-04T00:00:00.000Z',
+      };
+    },
     async updatePersonaSettings(settings) {
       return settings;
+    },
+    async updatePersonaPreferenceProfile(profile) {
+      return {
+        version: 'persona_preference_profile_v1',
+        explicit: {
+          ...(profile.explicit ?? {}),
+        },
+        inferred: {
+          verbosity: {
+            value: 'concise',
+            source: 'inferred',
+            confidence: 0.72,
+            evidence: 'latest chat session',
+            updatedAt: '2026-05-04T00:00:00.000Z',
+            expiresAt: '2026-06-03T00:00:00.000Z',
+          },
+        },
+        updatedAt: '2026-05-04T00:00:00.000Z',
+      };
     },
     async publishTaskReviewDraft(taskId, input) {
       return {
@@ -532,6 +602,30 @@ test('control API exposes project and chat operator endpoints', async () => {
     const updatedPersonaPayload = await updatedPersonaSettings.json();
     assert.equal(updatedPersonaPayload.data.channels.ui.verbosity, 'concise');
     assert.equal(updatedPersonaPayload.data.controls.githubVoiceEnabled, true);
+
+    const preferenceProfile = await fetch(`${baseUrl}/v1/persona/preference-profile`);
+    assert.equal(preferenceProfile.status, 200);
+    const preferenceProfilePayload = await preferenceProfile.json();
+    assert.equal(preferenceProfilePayload.data.inferred.verbosity.value, 'concise');
+
+    const updatedPreferenceProfile = await fetch(`${baseUrl}/v1/persona/preference-profile`, {
+      method: 'PUT',
+      headers: {
+        authorization: 'Bearer test-token',
+        'content-type': 'application/json',
+      },
+      body: JSON.stringify({
+        explicit: {
+          reviewTone: {
+            value: 'supportive',
+            evidence: 'team prefers lighter review tone',
+          },
+        },
+      }),
+    });
+    assert.equal(updatedPreferenceProfile.status, 200);
+    const updatedPreferencePayload = await updatedPreferenceProfile.json();
+    assert.equal(updatedPreferencePayload.data.explicit.reviewTone.value, 'supportive');
   } finally {
     await api.stop();
   }

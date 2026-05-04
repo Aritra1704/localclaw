@@ -18,6 +18,22 @@ export const DEFAULT_PERSONA_SETTINGS = Object.freeze({
   },
 });
 
+export const DEFAULT_PERSONA_PREFERENCE_PROFILE = Object.freeze({
+  version: 'persona_preference_profile_v1',
+  explicit: {},
+  inferred: {},
+  updatedAt: null,
+});
+
+const PERSONA_PREFERENCE_DEFINITIONS = Object.freeze({
+  verbosity: new Set(['concise', 'detailed']),
+  explanationDepth: new Set(['low', 'medium', 'high']),
+  planningStyle: new Set(['stepwise', 'conversational']),
+  interactionMode: new Set(['execution_oriented', 'discussion_oriented']),
+  reviewTone: new Set(['direct', 'neutral', 'supportive']),
+  commentNoise: new Set(['low', 'medium', 'high']),
+});
+
 function unique(values = []) {
   return [...new Set(values.filter(Boolean))];
 }
@@ -28,6 +44,51 @@ function cloneDefaultPersonaSettings() {
 
 function normalizeEnum(value, allowed, fallback) {
   return allowed.has(value) ? value : fallback;
+}
+
+function normalizeIsoDate(value) {
+  if (!value) {
+    return null;
+  }
+
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) {
+    return null;
+  }
+
+  return date.toISOString();
+}
+
+function normalizePreferenceEntry(name, entry, source) {
+  if (!entry || typeof entry !== 'object') {
+    return null;
+  }
+
+  const allowed = PERSONA_PREFERENCE_DEFINITIONS[name];
+  if (!allowed) {
+    return null;
+  }
+
+  const value = normalizeEnum(entry.value, allowed, null);
+  if (!value) {
+    return null;
+  }
+
+  const confidence =
+    typeof entry.confidence === 'number' && Number.isFinite(entry.confidence)
+      ? Math.max(0, Math.min(1, entry.confidence))
+      : source === 'explicit'
+        ? 1
+        : null;
+
+  return {
+    value,
+    source,
+    confidence,
+    evidence: compactText(entry.evidence, 160) || null,
+    updatedAt: normalizeIsoDate(entry.updatedAt),
+    expiresAt: source === 'inferred' ? normalizeIsoDate(entry.expiresAt) : null,
+  };
 }
 
 export function normalizePersonaSettings(input = {}) {
@@ -93,29 +154,219 @@ export function normalizePersonaSettings(input = {}) {
   };
 }
 
-export function applyChatPreferencesToPersonaSettings(settings, summaryState = null) {
+export function normalizePersonaPreferenceProfile(input = {}) {
+  const profile = input && typeof input === 'object' ? input : {};
+  const normalized = {
+    version: DEFAULT_PERSONA_PREFERENCE_PROFILE.version,
+    explicit: {},
+    inferred: {},
+    updatedAt: normalizeIsoDate(profile.updatedAt),
+  };
+
+  for (const [name] of Object.entries(PERSONA_PREFERENCE_DEFINITIONS)) {
+    const explicitEntry = normalizePreferenceEntry(name, profile.explicit?.[name], 'explicit');
+    if (explicitEntry) {
+      normalized.explicit[name] = explicitEntry;
+    }
+
+    const inferredEntry = normalizePreferenceEntry(name, profile.inferred?.[name], 'inferred');
+    if (inferredEntry) {
+      normalized.inferred[name] = inferredEntry;
+    }
+  }
+
+  return normalized;
+}
+
+export function mergePersonaPreferenceProfile(current, patch = {}, now = new Date().toISOString()) {
+  const next = normalizePersonaPreferenceProfile(current);
+  const candidate = patch && typeof patch === 'object' ? patch : {};
+  const sourceByScope = {
+    explicit: 'explicit',
+    inferred: 'inferred',
+  };
+
+  for (const scope of ['explicit', 'inferred']) {
+    const scopePatch = candidate[scope];
+    if (!scopePatch || typeof scopePatch !== 'object') {
+      continue;
+    }
+
+    for (const [name] of Object.entries(PERSONA_PREFERENCE_DEFINITIONS)) {
+      if (!Object.prototype.hasOwnProperty.call(scopePatch, name)) {
+        continue;
+      }
+
+      const entryPatch = scopePatch[name];
+      if (entryPatch === null) {
+        delete next[scope][name];
+        continue;
+      }
+
+      const normalizedEntry = normalizePreferenceEntry(name, entryPatch, sourceByScope[scope]);
+      if (!normalizedEntry) {
+        continue;
+      }
+
+      next[scope][name] = {
+        ...normalizedEntry,
+        updatedAt: normalizedEntry.updatedAt ?? normalizeIsoDate(now),
+      };
+    }
+  }
+
+  next.updatedAt = normalizeIsoDate(now);
+  return next;
+}
+
+function buildPersonaPreferencePatchFromChatSummary(summaryState = null) {
+  if (!summaryState?.preferences || typeof summaryState.preferences !== 'object') {
+    return { explicit: {}, inferred: {} };
+  }
+
+  const updatedAt = normalizeIsoDate(summaryState.updatedAt) ?? new Date().toISOString();
+  const expiresAt = new Date(new Date(updatedAt).getTime() + 30 * 24 * 60 * 60 * 1000).toISOString();
+  const patch = { explicit: {}, inferred: {} };
+
+  for (const [name] of Object.entries(PERSONA_PREFERENCE_DEFINITIONS)) {
+    const entry = summaryState.preferences?.[name];
+    if (!entry) {
+      continue;
+    }
+
+    if (entry.source === 'explicit') {
+      patch.explicit[name] = {
+        ...entry,
+        updatedAt,
+      };
+    } else {
+      patch.inferred[name] = {
+        ...entry,
+        updatedAt,
+        expiresAt: entry.expiresAt ?? expiresAt,
+      };
+    }
+  }
+
+  return patch;
+}
+
+function isPreferenceActive(entry, now = Date.now()) {
+  if (!entry) {
+    return false;
+  }
+
+  if (entry.source !== 'inferred' || !entry.expiresAt) {
+    return true;
+  }
+
+  const expiresAt = new Date(entry.expiresAt);
+  if (Number.isNaN(expiresAt.getTime())) {
+    return false;
+  }
+
+  return expiresAt.getTime() > now;
+}
+
+export function resolvePersonaPreferences(profile, summaryState = null, now = Date.now()) {
+  const normalizedProfile = normalizePersonaPreferenceProfile(profile);
+  const sessionOverlay = normalizePersonaPreferenceProfile(
+    buildPersonaPreferencePatchFromChatSummary(summaryState)
+  );
+  const active = {};
+  const sources = [];
+
+  for (const [name] of Object.entries(PERSONA_PREFERENCE_DEFINITIONS)) {
+    const chatExplicit = sessionOverlay.explicit[name];
+    const profileExplicit = normalizedProfile.explicit[name];
+    const chatInferred = sessionOverlay.inferred[name];
+    const profileInferred = normalizedProfile.inferred[name];
+
+    const resolved =
+      (isPreferenceActive(chatExplicit, now) && chatExplicit) ||
+      (isPreferenceActive(profileExplicit, now) && profileExplicit) ||
+      (isPreferenceActive(chatInferred, now) && (!profileExplicit || chatInferred.source === 'explicit')
+        ? chatInferred
+        : null) ||
+      (isPreferenceActive(profileInferred, now) ? profileInferred : null);
+
+    if (resolved) {
+      active[name] = resolved;
+    }
+  }
+
+  if (Object.keys(normalizedProfile.explicit).length > 0) {
+    sources.push('preference_profile_explicit');
+  }
+  if (
+    Object.values(normalizedProfile.inferred).some((entry) => isPreferenceActive(entry, now))
+  ) {
+    sources.push('preference_profile_inferred');
+  }
+  if (Object.keys(sessionOverlay.explicit).length > 0) {
+    sources.push('chat_session_explicit');
+  }
+  if (
+    Object.values(sessionOverlay.inferred).some((entry) => isPreferenceActive(entry, now))
+  ) {
+    sources.push('chat_session_inferred');
+  }
+
+  return {
+    active,
+    sources,
+  };
+}
+
+export function applyPersonaPreferencesToSettings(settings, preferences = {}) {
   const next = normalizePersonaSettings(settings);
-  const preferences = summaryState?.preferences ?? {};
   const verbosity = preferences.verbosity?.value ?? null;
   const explanationDepth = preferences.explanationDepth?.value ?? null;
+  const reviewTone = preferences.reviewTone?.value ?? null;
+  const commentNoise = preferences.commentNoise?.value ?? null;
 
-  if (verbosity === 'concise') {
-    next.channels.ui.verbosity = 'concise';
+  if (verbosity === 'concise' || verbosity === 'detailed') {
+    next.channels.telegram.verbosity = verbosity;
+    next.channels.ui.verbosity = verbosity;
+    next.channels.github.verbosity = verbosity;
+  }
+
+  if (explanationDepth === 'low' || explanationDepth === 'medium' || explanationDepth === 'high') {
+    next.channels.telegram.teachingDepth = explanationDepth;
+    next.channels.ui.teachingDepth = explanationDepth;
+    next.channels.github.teachingDepth = explanationDepth;
+  }
+
+  if (reviewTone === 'supportive') {
+    next.controls.githubVoiceEnabled = true;
+  } else if (reviewTone === 'direct') {
+    next.controls.githubVoiceEnabled = false;
+  }
+
+  if (commentNoise === 'low') {
+    next.controls.proactiveObservations = false;
     next.channels.github.verbosity = 'concise';
-  } else if (verbosity === 'detailed') {
-    next.channels.ui.verbosity = 'detailed';
+  } else if (commentNoise === 'high') {
+    next.controls.proactiveObservations = true;
     next.channels.github.verbosity = 'detailed';
   }
 
-  if (explanationDepth === 'low') {
-    next.channels.ui.teachingDepth = 'low';
-    next.channels.github.teachingDepth = 'low';
-  } else if (explanationDepth === 'high') {
-    next.channels.ui.teachingDepth = 'high';
-    next.channels.github.teachingDepth = 'high';
-  }
-
   return next;
+}
+
+export function applyChatPreferencesToPersonaSettings(settings, summaryState = null) {
+  return applyPersonaPreferencesToSettings(
+    settings,
+    resolvePersonaPreferences(null, summaryState).active
+  );
+}
+
+export function recordChatSummaryPreferences(profile, summaryState = null, now = new Date().toISOString()) {
+  return mergePersonaPreferenceProfile(
+    profile,
+    buildPersonaPreferencePatchFromChatSummary(summaryState),
+    now
+  );
 }
 
 function compactText(value, maxLength = 600) {

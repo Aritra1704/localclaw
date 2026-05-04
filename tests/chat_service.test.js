@@ -933,6 +933,7 @@ test('chat service extracts structured preferences into summary state', async ()
     project_name: null,
   };
   const messages = [];
+  const recordedPreferenceStates = [];
 
   const chatService = createChatService({
     pool: {
@@ -989,7 +990,11 @@ test('chat service extracts structured preferences into summary state', async ()
         return null;
       },
     },
-    orchestrator: {},
+    orchestrator: {
+      async recordPersonaPreferenceSignals(summaryState) {
+        recordedPreferenceStates.push(summaryState);
+      },
+    },
   });
 
   await chatService.createSession({
@@ -1007,4 +1012,6 @@ test('chat service extracts structured preferences into summary state', async ()
   assert.equal(sessionRow.summary_state.preferences.planningStyle.value, 'stepwise');
   assert.equal(sessionRow.summary_state.preferences.verbosity.source, 'explicit');
   assert.match(sessionRow.summary, /Latest request:/);
+  assert.equal(recordedPreferenceStates.length, 1);
+  assert.equal(recordedPreferenceStates[0].preferences.verbosity.value, 'concise');
 });

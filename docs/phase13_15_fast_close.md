@@ -24,41 +24,31 @@ Phase 14 is now complete:
 - follow-up turns can now refine structured contract fields such as scope, constraints, success criteria, priority, and deploy intent before planning
 - chat can approve the single pending task from natural language
 
-Phase 15 groundwork is already present:
+Phase 15 is now complete:
 
 - evidence-bound narrated summaries already exist in `src/persona/artifacts.js`
 - dedicated channel adapters now exist for Telegram, UI, and GitHub, all rendering from the same evidence bundle with different policy
 - repair handoff narration already exists
 - review-comment drafts and proactive observation artifacts already exist
 - operator persona settings now persist in `agent_state` and are editable through the control API and browser UI
+- a dedicated `persona_preference_profile_v1` now persists explicit and inferred operator preferences separately from task artifacts and per-channel settings
 - orchestrator persona generation now consumes those settings plus chat-session preferences when building task persona artifacts
+- chat summary updates now record preference signals into that profile, and inferred entries can expire unless newer interactions renew them
 - GitHub review drafts can now be published through an explicit control API/UI action instead of remaining draft-only metadata
 - evidence-bound narration tests now pin channel draft behavior so future persona changes stay fact-traceable
 
-## Fastest Closure Order
+## Closure Result
 
-### 1. Finish Phase 15 by wiring persona outputs to controls and channels
+Phases 13, 14, and 15 are all complete.
 
-Most of the narration primitives already exist. What is left is integration and governance.
-
-Remaining work:
-
-- persist preference profiles separately from task artifacts when the controls outgrow the current global settings profile
-
-Exit criteria:
+What closed the final Phase 15 gap:
 
 - persona output is configurable per operator and channel
 - GitHub feedback is generated from the same evidence model as Telegram and UI summaries
 - narration remains non-authoritative and testable
-
-## Recommended Sequence
-
-1. Add approval-gated GitHub review publication using the existing persona artifacts.
-2. Persist preference profiles separately if operator/team settings outgrow the current `agent_state` shape.
-3. Expand persona controls only after the evidence-bound adapter behavior remains stable.
+- preference memory now exists separately from task artifacts, with explicit-over-inferred resolution and expiring inferred signals
 
 ## Suggested Next Concrete Tasks
 
-1. Add approval-gated GitHub review draft publication using existing persona artifacts.
-2. Persist preference profiles separately from task artifacts when global settings become too coarse.
-3. Expand persona evaluation coverage only after new channels or preferences are introduced.
+1. Shift roadmap focus to post-Phase-15 backlog such as multi-project deploy targeting and broader operational polish.
+2. Expand persona evaluation coverage only when new channels or preference dimensions are introduced.
