@@ -3,6 +3,7 @@ import path from 'node:path';
 
 import { z } from 'zod';
 import { config } from '../config.js';
+import { createBrowserAutomation } from '../browser/automation.js';
 import {
   collectWorkspaceSnapshot as collectFilesystemSnapshot,
   createFilesystemMcpServer,
@@ -85,6 +86,32 @@ export const TOOL_DEFINITIONS = [
     }),
   },
   {
+    name: 'browser_automate',
+    description:
+      'Drive an isolated browser profile for local UI testing with navigation, click/fill actions, screenshots, console capture, and DOM assertions.',
+    plannerArgs:
+      '{"url":"http://127.0.0.1:3000","actions":[{"type":"wait_for","selector":"body"},{"type":"assert_text","selector":"body","value":"Hello"}],"captureScreenshot":true}',
+    argsSchema: z.object({
+      url: z.string().url(),
+      actions: z
+        .array(
+          z.object({
+            type: z.enum(['click', 'fill', 'press', 'wait_for', 'assert_text']),
+            selector: z.string().min(1),
+            value: z.string().optional(),
+            timeoutMs: z.number().int().positive().max(120000).optional(),
+          })
+        )
+        .max(50)
+        .default([]),
+      screenshotPath: z.string().min(1).optional(),
+      captureScreenshot: z.boolean().default(true),
+      headless: z.boolean().default(true),
+      waitUntil: z.enum(['load', 'domcontentloaded', 'networkidle', 'commit']).optional(),
+      timeoutMs: z.number().int().positive().max(120000).optional(),
+    }),
+  },
+  {
     name: 'bootstrap_model',
     description: 'Safely download massive external neural network weights (Civitai/HF) to the secure external SSD.',
     plannerArgs: '{"url":"https://civitai.com/api/...", "filename":"AnimeArt.safetensors"}',
@@ -120,6 +147,7 @@ export async function collectWorkspaceSnapshot(workspaceRoot, options = {}) {
 
 export function createToolRegistry(options = {}) {
   const skillManager = options.skillManager ?? null;
+  const browserAutomation = options.browserAutomation ?? createBrowserAutomation();
   const filesystemServer =
     options.filesystemServer ??
     options.mcpRegistry?.getServer?.('filesystem') ??
@@ -174,6 +202,14 @@ export function createToolRegistry(options = {}) {
           output: result.output.length > 8000 ? result.output.slice(0, 8000) + '... (truncated)' : result.output,
           artifacts: [],
         };
+      }
+
+      case 'browser_automate': {
+        return browserAutomation.runScenario(args, {
+          workspaceRoot,
+          projectTarget: context.projectTarget ?? null,
+          taskId: context.taskId ?? null,
+        });
       }
 
       case 'bootstrap_model': {

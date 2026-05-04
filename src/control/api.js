@@ -6,7 +6,7 @@ import { fileURLToPath } from 'node:url';
 import { z } from 'zod';
 
 import { listActors } from './actors.js';
-import { normalizeTaskContract } from './taskContract.js';
+import { deriveExecutionControl, normalizeTaskContract } from './taskContract.js';
 import { normalizePersonaSettings } from '../persona/artifacts.js';
 
 const jsonHeaders = {
@@ -90,6 +90,13 @@ const addProjectSchema = z
   .object({
     name: z.string().trim().min(1).max(120).optional(),
     rootPath: z.string().trim().min(1),
+    githubRepoOwner: z.string().trim().min(1).max(120).optional(),
+    githubRepoName: z.string().trim().min(1).max(120).optional(),
+    railwayProjectId: z.string().trim().min(1).max(120).optional(),
+    railwayEnvironmentId: z.string().trim().min(1).max(120).optional(),
+    railwayServiceId: z.string().trim().min(1).max(120).optional(),
+    railwayServiceName: z.string().trim().min(1).max(120).optional(),
+    browserAllowedOrigins: z.array(z.string().trim().min(1).max(200)).max(30).optional(),
   })
   .strict();
 
@@ -436,7 +443,19 @@ export function createControlApiServer({
         }
 
         const parsed = addProjectSchema.parse(await readJsonBody(req));
-        const project = await projectService.addProject(parsed);
+        const project = await projectService.addProject({
+          name: parsed.name,
+          rootPath: parsed.rootPath,
+          metadata: {
+            githubRepoOwner: parsed.githubRepoOwner,
+            githubRepoName: parsed.githubRepoName,
+            railwayProjectId: parsed.railwayProjectId,
+            railwayEnvironmentId: parsed.railwayEnvironmentId,
+            railwayServiceId: parsed.railwayServiceId,
+            railwayServiceName: parsed.railwayServiceName,
+            browserAllowedOrigins: parsed.browserAllowedOrigins,
+          },
+        });
         sendJson(res, 201, { data: project });
         return;
       }
@@ -608,12 +627,16 @@ export function createControlApiServer({
       if (pathname === '/v1/tasks/plan' && req.method === 'POST') {
         const body = await readJsonBody(req);
         const contract = normalizeContractPayload(body);
+        const execution = deriveExecutionControl(contract);
         const plannedTask = await orchestrator.createPlannedTask(contract, {
           source: 'control_api',
         });
 
         sendJson(res, 201, {
-          data: plannedTask,
+          data: {
+            ...plannedTask,
+            execution,
+          },
         });
         return;
       }
@@ -626,38 +649,45 @@ export function createControlApiServer({
         });
 
         const contract = normalizeTaskContract(parsed.contract);
+        const execution = deriveExecutionControl(contract);
         const plannedTask = await orchestrator.createPlannedTask(contract, {
           source: 'control_api',
+          autoApproveExecution:
+            parsed.approveExecution === true || execution.autoStartAllowed === true,
         });
 
-        let executionApproval = {
+        let executionApproval = plannedTask.executionApproval ?? {
           status: 'pending',
           taskId: plannedTask.task.id,
+          approvalRequired: execution.approvalRequired,
+          autoStarted: false,
         };
 
-        if (parsed.approveExecution) {
+        if (
+          executionApproval.status !== 'approved' &&
+          (parsed.approveExecution === true || execution.autoStartAllowed === true)
+        ) {
           const approved = await orchestrator.approveTaskExecution(plannedTask.task.id, {
             respondedVia: 'control_api',
-            note: 'Approved immediately by /v1/tasks/run',
+            note:
+              parsed.approveExecution === true
+                ? 'Approved immediately by /v1/tasks/run'
+                : 'Auto-started local-only execution by /v1/tasks/run',
           });
 
-          if (!approved) {
-            sendJson(res, 409, {
-              error: 'conflict',
-              message: 'Task execution approval could not be applied',
-            });
-            return;
+          if (approved) {
+            executionApproval = {
+              ...approved,
+              approvalRequired: false,
+              autoStarted: true,
+            };
           }
-
-          executionApproval = {
-            status: 'approved',
-            taskId: approved.task_id,
-          };
         }
 
         sendJson(res, 201, {
           data: {
             ...plannedTask,
+            execution: plannedTask.execution ?? execution,
             executionApproval,
           },
         });

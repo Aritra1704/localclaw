@@ -4,6 +4,7 @@ import test from 'node:test';
 import {
   buildTaskDescriptionFromContract,
   buildTaskTitleFromContract,
+  deriveExecutionControl,
   normalizeTaskContract,
 } from '../src/control/taskContract.js';
 
@@ -69,4 +70,33 @@ test('contract helpers build title and markdown description', () => {
   assert.match(description, /\[task_contract_v1\]/);
   assert.match(description, /## Success Criteria/);
   assert.match(description, /Parse input payloads/);
+});
+
+test('deriveExecutionControl auto-starts local-only work and gates external work', () => {
+  const localOnly = deriveExecutionControl(
+    normalizeTaskContract({
+      ...validContract,
+      executionPolicy: 'external_only',
+      repoIntent: {
+        publish: false,
+        deploy: false,
+      },
+    })
+  );
+  assert.equal(localOnly.executionClass, 'local_only');
+  assert.equal(localOnly.autoStartAllowed, true);
+  assert.equal(localOnly.approvalRequired, false);
+
+  const deploy = deriveExecutionControl(
+    normalizeTaskContract({
+      ...validContract,
+      repoIntent: {
+        publish: true,
+        deploy: true,
+      },
+    })
+  );
+  assert.equal(deploy.executionClass, 'deploy');
+  assert.equal(deploy.autoStartAllowed, false);
+  assert.equal(deploy.approvalRequired, true);
 });

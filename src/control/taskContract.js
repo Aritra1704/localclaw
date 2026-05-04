@@ -3,6 +3,9 @@ import { z } from 'zod';
 const nonEmptyLine = z.string().trim().min(1);
 
 const nonEmptyList = z.array(nonEmptyLine).min(1).max(20);
+const executionPolicySchema = z
+  .enum(['auto_local', 'require_approval', 'external_only'])
+  .default('external_only');
 
 const repoIntentSchema = z
   .object({
@@ -26,6 +29,7 @@ export const taskContractSchema = z
     successCriteria: nonEmptyList,
     priority: z.enum(['critical', 'high', 'medium', 'low']).default('medium'),
     skillHints: z.array(nonEmptyLine).max(12).default([]),
+    executionPolicy: executionPolicySchema,
     repoIntent: repoIntentSchema.default({ publish: false, deploy: false }),
     notes: z.string().trim().max(2000).optional(),
   })
@@ -46,6 +50,7 @@ export function buildTaskTitleFromContract(contract) {
 }
 
 export function buildTaskDescriptionFromContract(contract) {
+  const executionControl = deriveExecutionControl(contract);
   const lines = [
     '[task_contract_v1]',
     '',
@@ -55,6 +60,9 @@ export function buildTaskDescriptionFromContract(contract) {
     '## Project',
     `- name: ${contract.projectName}`,
     `- priority: ${contract.priority}`,
+    `- execution_policy: ${executionControl.executionPolicy}`,
+    `- execution_class: ${executionControl.executionClass}`,
+    `- approval_required: ${executionControl.approvalRequired ? 'yes' : 'no'}`,
     `- publish: ${contract.repoIntent.publish ? 'yes' : 'no'}`,
     `- deploy: ${contract.repoIntent.deploy ? 'yes' : 'no'}`,
   ];
@@ -87,4 +95,35 @@ export function buildTaskDescriptionFromContract(contract) {
   }
 
   return lines.join('\n').trim();
+}
+
+export function deriveExecutionClass(contract) {
+  if (contract?.repoIntent?.deploy === true) {
+    return 'deploy';
+  }
+
+  if (contract?.repoIntent?.publish === true) {
+    return 'publish';
+  }
+
+  return 'local_only';
+}
+
+export function deriveExecutionControl(contract) {
+  const normalized = normalizeTaskContract(contract);
+  const executionClass = deriveExecutionClass(normalized);
+  const executionPolicy = normalized.executionPolicy ?? 'external_only';
+
+  return {
+    executionClass,
+    executionPolicy,
+    approvalRequired:
+      executionPolicy === 'require_approval' ? true : executionClass !== 'local_only',
+    autoStartAllowed:
+      executionPolicy !== 'require_approval' && executionClass === 'local_only',
+  };
+}
+
+export function extractTaskContractFromTask(task) {
+  return task?.result?.taskContract ?? null;
 }

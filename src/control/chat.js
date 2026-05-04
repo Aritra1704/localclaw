@@ -6,7 +6,7 @@ import {
   actorSystemPrompt,
   listActors,
 } from './actors.js';
-import { normalizeTaskContract } from './taskContract.js';
+import { deriveExecutionControl, normalizeTaskContract } from './taskContract.js';
 import { collectWorkspaceSnapshot } from '../tools/registry.js';
 
 const sessionTitleSchema = z.string().trim().min(1).max(160);
@@ -602,18 +602,36 @@ function formatPlanForChat(plan) {
   return lines.join('\n');
 }
 
-function buildPlannedTaskChatResponse({ task, plan, autoPlannedFromChat = false }) {
-  const header = autoPlannedFromChat
-    ? 'I turned that request into an approval-gated task.'
-    : 'Plan created and waiting for execution approval.';
+function buildPlannedTaskChatResponse({
+  task,
+  plan,
+  execution = null,
+  executionApproval = null,
+  autoPlannedFromChat = false,
+}) {
+  const autoStarted = executionApproval?.status === 'approved';
+  const header = autoStarted
+    ? autoPlannedFromChat
+      ? 'I turned that request into a local task and started execution.'
+      : 'Plan created and execution started.'
+    : autoPlannedFromChat
+      ? 'I turned that request into an approval-gated task.'
+      : 'Plan created and waiting for execution approval.';
   const lines = [header, '', `Task: ${task.id}`];
   const formattedPlan = formatPlanForChat(plan);
   if (formattedPlan) {
     lines.push(formattedPlan);
   }
-  lines.push(
-    'Execution has not started yet. Use /approve, the chat approval control, or reply "yes, start it" to begin.'
-  );
+  if (execution?.executionClass) {
+    lines.push(`Execution class: ${execution.executionClass}`);
+  }
+  if (autoStarted) {
+    lines.push('Execution is in progress. Use /status to inspect progress.');
+  } else {
+    lines.push(
+      'Execution has not started yet. Use /approve, the chat approval control, or reply "yes, start it" to begin.'
+    );
+  }
   return lines.join('\n');
 }
 
@@ -652,13 +670,13 @@ function buildDraftContract({ session, messages, objective, refinements = {} }) 
     constraints: dedupeList([
       'Use the selected project path only',
       'Keep changes reviewable',
-      'Ask for approval before execution',
+      'Keep publish, deploy, and other public actions approval-gated',
       ...(refinements.constraints ?? []),
     ]).slice(0, 20),
     successCriteria: dedupeList([
       'Plan is explicit and executable',
       'Tests or verification steps are identified',
-      'Operator approval is required before execution',
+      'Local-only work can execute safely without external side effects',
       ...(refinements.successCriteria ?? []),
     ]).slice(0, 20),
     priority: refinements.priority ?? 'medium',
@@ -890,10 +908,15 @@ export function createChatService({
         messages,
         objective,
       });
+    const execution = deriveExecutionControl(contract);
     const planned = await orchestrator.createPlannedTask(contract, {
       source: autoPlannedFromChat ? 'chat_auto_plan' : 'chat',
       chatSessionId: sessionId,
       projectPath: session.project_path,
+      projectTargetId: session.project_target_id ?? null,
+      autoApproveExecution: execution.autoStartAllowed,
+      approvalSource: 'chat',
+      approvalNote: `Auto-started local-only task from chat session ${sessionId}`,
     });
     const assistant = await insertMessage({
       sessionId,
@@ -902,6 +925,8 @@ export function createChatService({
       content: buildPlannedTaskChatResponse({
         task: planned.task,
         plan: planned.plan,
+        execution: planned.execution,
+        executionApproval: planned.executionApproval,
         autoPlannedFromChat,
       }),
       metadata: {
@@ -909,7 +934,9 @@ export function createChatService({
         taskStatus: planned.task.status,
         plan: planned.plan,
         draftContract: contract,
-        executionPending: true,
+        execution: planned.execution,
+        executionPending: planned.executionApproval?.status !== 'approved',
+        executionApproval: planned.executionApproval,
         autoPlannedFromChat,
       },
     });
@@ -1269,10 +1296,15 @@ export function createChatService({
 
       if (input.contract) {
         const messages = await listMessages(sessionId);
-        const planned = await orchestrator.createPlannedTask(normalizeTaskContract(input.contract), {
+        const contract = normalizeTaskContract(input.contract);
+        const planned = await orchestrator.createPlannedTask(contract, {
           source: 'chat',
           chatSessionId: sessionId,
           projectPath: session.project_path,
+          projectTargetId: session.project_target_id ?? null,
+          autoApproveExecution: deriveExecutionControl(contract).autoStartAllowed,
+          approvalSource: 'chat',
+          approvalNote: `Auto-started local-only task from chat session ${sessionId}`,
         });
 
         const assistant = await insertMessage({
@@ -1282,12 +1314,16 @@ export function createChatService({
           content: buildPlannedTaskChatResponse({
             task: planned.task,
             plan: planned.plan,
+            execution: planned.execution,
+            executionApproval: planned.executionApproval,
           }),
           metadata: {
             taskId: planned.task.id,
             taskStatus: planned.task.status,
             plan: planned.plan,
-            executionPending: true,
+            execution: planned.execution,
+            executionPending: planned.executionApproval?.status !== 'approved',
+            executionApproval: planned.executionApproval,
           },
         });
 

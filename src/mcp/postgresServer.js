@@ -172,6 +172,10 @@ const POSTGRES_TOOLS = [
     description: 'Fetch a project target by id.',
   },
   {
+    name: 'get_project_target_by_root_path',
+    description: 'Fetch a project target by root path.',
+  },
+  {
     name: 'delete_project_target',
     description: 'Delete a project target by id.',
   },
@@ -266,6 +270,7 @@ const TASK_UPDATE_COLUMNS = new Map([
   ['project_name', 'text'],
   ['project_path', 'text'],
   ['repo_url', 'text'],
+  ['project_target_id', 'uuid'],
   ['locked_by', 'text'],
   ['lease_expires_at', 'timestamptz'],
   ['retry_count', 'int'],
@@ -554,11 +559,12 @@ export function createPostgresMcpServer({ pool }) {
                source,
                project_name,
                project_path,
+               project_target_id,
                chat_session_id,
                status
              )
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
-             RETURNING id, title, description, status, priority, source, project_name, project_path, chat_session_id, created_at`,
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+             RETURNING id, title, description, status, priority, source, project_name, project_path, project_target_id, chat_session_id, created_at`,
             [
               args.title,
               args.description,
@@ -566,6 +572,7 @@ export function createPostgresMcpServer({ pool }) {
               args.source ?? 'manual',
               args.projectName ?? null,
               args.projectPath ?? null,
+              args.projectTargetId ?? null,
               args.chatSessionId ?? null,
               args.status ?? 'pending',
             ]
@@ -589,6 +596,7 @@ export function createPostgresMcpServer({ pool }) {
                    source,
                    project_name,
                    project_path,
+                   project_target_id,
                    repo_url,
                    retry_count,
                    max_retries,
@@ -1324,7 +1332,10 @@ export function createPostgresMcpServer({ pool }) {
 
         case 'list_project_targets': {
           const result = await pool.query(
-            `SELECT id, name, root_path, created_at, updated_at
+            `SELECT id, name, root_path, created_at, updated_at,
+                    github_repo_owner, github_repo_name,
+                    railway_project_id, railway_environment_id, railway_service_id, railway_service_name,
+                    browser_allowed_origins
              FROM project_targets
              ORDER BY updated_at DESC, created_at DESC`
           );
@@ -1332,23 +1343,73 @@ export function createPostgresMcpServer({ pool }) {
         }
 
         case 'upsert_project_target': {
+          const metadata = args.metadata ?? {};
           const result = await pool.query(
-            `INSERT INTO project_targets (name, root_path, updated_at)
-             VALUES ($1, $2, NOW())
+            `INSERT INTO project_targets (
+               name,
+               root_path,
+               github_repo_owner,
+               github_repo_name,
+               railway_project_id,
+               railway_environment_id,
+               railway_service_id,
+               railway_service_name,
+               browser_allowed_origins,
+               updated_at
+             )
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9::jsonb, NOW())
              ON CONFLICT (root_path)
-             DO UPDATE SET name = EXCLUDED.name, updated_at = NOW()
-             RETURNING id, name, root_path, created_at, updated_at`,
-            [args.name, args.rootPath]
+             DO UPDATE SET
+               name = EXCLUDED.name,
+               github_repo_owner = EXCLUDED.github_repo_owner,
+               github_repo_name = EXCLUDED.github_repo_name,
+               railway_project_id = EXCLUDED.railway_project_id,
+               railway_environment_id = EXCLUDED.railway_environment_id,
+               railway_service_id = EXCLUDED.railway_service_id,
+               railway_service_name = EXCLUDED.railway_service_name,
+               browser_allowed_origins = EXCLUDED.browser_allowed_origins,
+               updated_at = NOW()
+             RETURNING id, name, root_path, created_at, updated_at,
+               github_repo_owner, github_repo_name,
+               railway_project_id, railway_environment_id, railway_service_id, railway_service_name,
+               browser_allowed_origins`,
+            [
+              args.name,
+              args.rootPath,
+              metadata.githubRepoOwner ?? null,
+              metadata.githubRepoName ?? null,
+              metadata.railwayProjectId ?? null,
+              metadata.railwayEnvironmentId ?? null,
+              metadata.railwayServiceId ?? null,
+              metadata.railwayServiceName ?? null,
+              JSON.stringify(metadata.browserAllowedOrigins ?? []),
+            ]
           );
           return { rows: result.rows };
         }
 
         case 'get_project_target': {
           const result = await pool.query(
-            `SELECT id, name, root_path, created_at, updated_at
+            `SELECT id, name, root_path, created_at, updated_at,
+                    github_repo_owner, github_repo_name,
+                    railway_project_id, railway_environment_id, railway_service_id, railway_service_name,
+                    browser_allowed_origins
              FROM project_targets
              WHERE id = $1`,
             [args.id]
+          );
+          return { rows: result.rows };
+        }
+
+        case 'get_project_target_by_root_path': {
+          const result = await pool.query(
+            `SELECT id, name, root_path, created_at, updated_at,
+                    github_repo_owner, github_repo_name,
+                    railway_project_id, railway_environment_id, railway_service_id, railway_service_name,
+                    browser_allowed_origins
+             FROM project_targets
+             WHERE root_path = $1`,
+            [args.rootPath]
           );
           return { rows: result.rows };
         }
@@ -1357,7 +1418,10 @@ export function createPostgresMcpServer({ pool }) {
           const result = await pool.query(
             `DELETE FROM project_targets
              WHERE id = $1
-             RETURNING id, name, root_path, created_at, updated_at`,
+             RETURNING id, name, root_path, created_at, updated_at,
+               github_repo_owner, github_repo_name,
+               railway_project_id, railway_environment_id, railway_service_id, railway_service_name,
+               browser_allowed_origins`,
             [args.id]
           );
           return { rows: result.rows };

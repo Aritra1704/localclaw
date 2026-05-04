@@ -8,7 +8,7 @@ import { promisify } from 'node:util';
 
 import { parse as parseEnv } from 'dotenv';
 
-import { normalizeTaskContract } from '../control/taskContract.js';
+import { deriveExecutionControl, normalizeTaskContract } from '../control/taskContract.js';
 
 const execFileAsync = promisify(execFile);
 const cliModuleDir = path.dirname(fileURLToPath(import.meta.url));
@@ -59,7 +59,7 @@ function usage() {
     '  localclaw approvals [--limit 20]',
     '  localclaw skills [--limit 20] [--include-disabled]',
     '  localclaw projects list',
-    '  localclaw projects add <path> [--name <name>]',
+    '  localclaw projects add <path> [--name <name>] [--github-owner <owner>] [--github-repo <repo>]',
     '  localclaw chat [--project <path>] [--actor architect]',
     '  localclaw pause [reason]',
     '  localclaw resume',
@@ -90,6 +90,7 @@ function templateContract() {
     successCriteria: ['Tests pass', 'Changes are reviewable and production-safe'],
     priority: 'medium',
     skillHints: [],
+    executionPolicy: 'external_only',
     repoIntent: {
       publish: false,
       deploy: false,
@@ -732,6 +733,19 @@ export async function runCli(argv, io = {}, deps = {}) {
           body: {
             rootPath,
             name: options.name,
+            githubRepoOwner: options['github-owner'],
+            githubRepoName: options['github-repo'],
+            railwayProjectId: options['railway-project-id'],
+            railwayEnvironmentId: options['railway-environment-id'],
+            railwayServiceId: options['railway-service-id'],
+            railwayServiceName: options['railway-service-name'],
+            browserAllowedOrigins:
+              typeof options['browser-origins'] === 'string'
+                ? options['browser-origins']
+                    .split(',')
+                    .map((value) => value.trim())
+                    .filter(Boolean)
+                : undefined,
           },
           waitMs,
           sleepImpl,
@@ -819,8 +833,21 @@ export async function runCli(argv, io = {}, deps = {}) {
             logger.out(`Task: ${plan.task.id}`);
             logger.out(`Status: ${plan.task.status}`);
             logger.out(formatPlanOutput(plan.plan));
-            logger.out('Execution is still approval-gated. Use /approve to start this task.');
             lastPlannedTaskId = plan.task.id;
+            if (plan.executionApproval?.status === 'approved') {
+              logger.out('Execution started automatically.');
+              logger.out('Watching task progress...');
+              await watchTaskProgress({
+                taskId: plan.task.id,
+                logger,
+                fetchImpl,
+                baseUrl,
+                waitMs,
+                sleepImpl,
+              });
+              continue;
+            }
+            logger.out('Execution is still approval-gated. Use /approve to start this task.');
             continue;
           }
 
@@ -1037,8 +1064,13 @@ export async function runCli(argv, io = {}, deps = {}) {
           [
             `Task: ${response.task.id}`,
             `Status: ${response.task.status}`,
+            response.execution?.executionClass
+              ? `Execution class: ${response.execution.executionClass}`
+              : null,
             formatPlanOutput(response.plan),
-          ].join('\n')
+          ]
+            .filter(Boolean)
+            .join('\n')
         );
         return 0;
       }
@@ -1048,7 +1080,8 @@ export async function runCli(argv, io = {}, deps = {}) {
           ensureArg(options.file, 'Usage: localclaw task run --file <contract.json> [--approve]')
         );
         const contract = await readContractFromFile(filePath);
-        const approveExecution = options.approve === true;
+        const execution = deriveExecutionControl(contract);
+        const approveExecution = options.approve === true || execution.autoStartAllowed;
         const response = await requestJson({
           fetchImpl,
           baseUrl,
@@ -1068,7 +1101,12 @@ export async function runCli(argv, io = {}, deps = {}) {
             `Task: ${response.task.id}`,
             `Status: ${approveExecution ? 'pending' : response.task.status}`,
             `Execution approval: ${response.executionApproval.status}`,
-          ].join('\n')
+            response.execution?.executionClass
+              ? `Execution class: ${response.execution.executionClass}`
+              : null,
+          ]
+            .filter(Boolean)
+            .join('\n')
         );
         return 0;
       }

@@ -9,6 +9,8 @@ import { config } from './config.js';
 import {
   buildTaskDescriptionFromContract,
   buildTaskTitleFromContract,
+  deriveExecutionControl,
+  extractTaskContractFromTask,
 } from './control/taskContract.js';
 import { getPool } from './db/client.js';
 import {
@@ -25,6 +27,12 @@ import {
   resolvePersonaPreferences,
 } from './persona/artifacts.js';
 import { removeWorkspaceJunk } from './project/contract.js';
+import {
+  buildDeployTarget,
+  buildRepositoryTarget,
+  hasDeployMapping,
+  hasRepositoryMapping,
+} from './project/targets.js';
 import { ReflectionEngine } from './selfimprovement/reflectionEngine.js';
 import { RepairEngine } from './selfhealing/repairEngine.js';
 import { ChatHistoryManager } from './control/chatHistory.js';
@@ -486,6 +494,7 @@ function deriveFinalReviewStatus(result) {
 
 function deriveBlockedReason(result) {
   return (
+    result?.deployment?.error ??
     result?.publication?.error?.message ??
     result?.specializedReview?.summary ??
     result?.verification?.review?.summary ??
@@ -962,7 +971,7 @@ export class Orchestrator {
           await client.query('BEGIN');
 
           const selected = await client.query(
-            `SELECT id, title, description, priority, project_name, project_path, chat_session_id
+            `SELECT id, title, description, priority, project_name, project_path, project_target_id, chat_session_id, result
              FROM tasks
              WHERE status = 'pending'
              ORDER BY
@@ -1036,10 +1045,17 @@ export class Orchestrator {
 
     try {
       const { retrievalContext, chatHistory } = await this.buildRetrievalContext(task);
+      const projectTarget = await this.getProjectTargetRecord({
+        projectTargetId: task.project_target_id ?? null,
+        projectPath: task.project_path ?? null,
+      });
+      const taskContract = extractTaskContractFromTask(task);
       let result = await this.taskExecutor.executeTask(task, {
         startStepNumber: 2,
         publisher: this.publisher,
         deployer: this.deployer,
+        projectTarget,
+        taskContract,
         retrievalContext,
         chatHistory,
         logStep: async (step) => {
@@ -1061,8 +1077,14 @@ export class Orchestrator {
       let personaArtifacts = [];
       let taskStatus = null;
       const personaContext = await this.resolvePersonaContext(task);
+      const publishBlocked =
+        result.publication?.attempted === true &&
+        result.publication?.published === false;
+      const deploymentBlocked =
+        result.deployment?.requested === true && Boolean(result.deployment?.error);
+      const awaitingExternalApproval = result.deployment?.readyForApproval === true;
 
-      if (result.publication?.published && this.deployer?.isEnabled?.()) {
+      if (awaitingExternalApproval) {
         personaArtifacts = buildPersonaArtifactsForExecution({
           task,
           result,
@@ -1071,11 +1093,7 @@ export class Orchestrator {
           preferenceSource: personaContext.preferenceSource,
         });
       } else {
-        const publishBlocked =
-          result.publication?.attempted === true &&
-          result.publication?.published === false;
-
-        taskStatus = publishBlocked
+        taskStatus = publishBlocked || deploymentBlocked
           ? 'blocked'
           : deriveFinalReviewStatus(result);
         personaArtifacts = buildPersonaArtifactsForExecution({
@@ -1091,9 +1109,10 @@ export class Orchestrator {
       await this.persistLearnings(task, result);
       await this.enqueueSpecializedFollowUpTasks(task, result.specializedReview?.followUpTasks ?? []);
 
-      if (result.publication?.published && this.deployer?.isEnabled?.()) {
+      if (awaitingExternalApproval) {
         const deploymentTargetCheck = this.deployer.validateRepositoryName?.(
-          result.publication.repo?.name ?? null
+          result.publication.repo?.name ?? null,
+          result.deployment?.target ?? {}
         );
 
         if (deploymentTargetCheck?.ok === false) {
@@ -1150,7 +1169,7 @@ export class Orchestrator {
             {
               taskId: task.id,
               repositoryName: result.publication.repo?.name ?? null,
-              deployTarget: this.deployer.getTarget(),
+              deployTarget: this.deployer.getTarget(result.deployment?.target ?? {}),
             },
             'Published repository does not match the configured Railway service'
           );
@@ -1167,7 +1186,7 @@ export class Orchestrator {
         }
 
         this.updateTaskRuntime(task.id, {
-          phase: 'waiting_approval',
+          phase: 'awaiting_external_approval',
           phaseLabel: 'Awaiting deploy approval',
           detail: 'Execution passed verification and is waiting for deployment approval.',
           currentModel: null,
@@ -1347,6 +1366,7 @@ export class Orchestrator {
         source: followUpTask.source ?? 'phase10_dependency_agent',
         projectName: followUpTask.projectName ?? task.project_name ?? null,
         projectPath: followUpTask.projectPath ?? task.project_path ?? null,
+        projectTargetId: task.project_target_id ?? null,
       });
 
       await this.logTaskStep(task.id, {
@@ -1627,7 +1647,7 @@ export class Orchestrator {
   }
 
   async queueDeploymentApproval(task, result, narratedSummary = null) {
-    const target = this.deployer.getTarget();
+    const target = this.deployer.getTarget(result.deployment?.target ?? {});
     const approvalResult = await this.callPostgresTool(
       'insert_approval',
       {
@@ -3142,14 +3162,59 @@ export class Orchestrator {
     await this.setAgentStateValue('pause_reason', reason);
   }
 
+  async getProjectTargetRecord({ projectTargetId = null, projectPath = null } = {}) {
+    if (projectTargetId) {
+      const result = await this.callPostgresTool(
+        'get_project_target',
+        { id: projectTargetId },
+        () =>
+          this.pool.query(
+            `SELECT id, name, root_path, github_repo_owner, github_repo_name,
+                    railway_project_id, railway_environment_id, railway_service_id, railway_service_name,
+                    browser_allowed_origins
+             FROM project_targets
+             WHERE id = $1`,
+            [projectTargetId]
+          )
+      );
+
+      return result.rows[0] ?? null;
+    }
+
+    if (projectPath) {
+      const result = await this.callPostgresTool(
+        'get_project_target_by_root_path',
+        { rootPath: projectPath },
+        () =>
+          this.pool.query(
+            `SELECT id, name, root_path, github_repo_owner, github_repo_name,
+                    railway_project_id, railway_environment_id, railway_service_id, railway_service_name,
+                    browser_allowed_origins
+             FROM project_targets
+             WHERE root_path = $1`,
+            [projectPath]
+          )
+      );
+
+      return result.rows[0] ?? null;
+    }
+
+    return null;
+  }
+
   async createPlannedTask(contract, options = {}) {
     if (!this.taskExecutor?.previewTaskPlan) {
       throw new Error('Task executor preview mode is not configured');
     }
 
     const source = options.source ?? 'control_api';
+    const execution = deriveExecutionControl(contract);
     const title = buildTaskTitleFromContract(contract);
     const description = buildTaskDescriptionFromContract(contract);
+    const projectTarget = await this.getProjectTargetRecord({
+      projectTargetId: options.projectTargetId ?? null,
+      projectPath: options.projectPath ?? null,
+    });
 
     const inserted = await this.callPostgresTool(
       'create_task',
@@ -3160,6 +3225,7 @@ export class Orchestrator {
         source,
         projectName: contract.projectName,
         projectPath: options.projectPath ?? null,
+        projectTargetId: projectTarget?.id ?? null,
         chatSessionId: options.chatSessionId ?? null,
         status: 'pending',
       },
@@ -3172,11 +3238,12 @@ export class Orchestrator {
              source,
              project_name,
              project_path,
+             project_target_id,
              chat_session_id,
              status
            )
-           VALUES ($1, $2, $3, $4, $5, $6, $7, 'pending')
-           RETURNING id, title, description, status, priority, source, created_at`,
+           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 'pending')
+           RETURNING id, title, description, status, priority, source, project_target_id, created_at`,
           [
             title,
             description,
@@ -3184,6 +3251,7 @@ export class Orchestrator {
             source,
             contract.projectName,
             options.projectPath ?? null,
+            projectTarget?.id ?? null,
             options.chatSessionId ?? null,
           ]
         )
@@ -3212,6 +3280,7 @@ export class Orchestrator {
 
       const resultPayload = {
         taskContract: contract,
+        execution,
         preExecutionPlan: {
           status: 'pending',
           requested_at: requestedAt,
@@ -3234,6 +3303,7 @@ export class Orchestrator {
             status: 'waiting_approval',
             project_name: contract.projectName,
             project_path: options.projectPath ?? workspaceRoot,
+            project_target_id: projectTarget?.id ?? null,
             result: resultPayload,
             clear_blocked_reason: true,
             clear_lock: true,
@@ -3247,8 +3317,9 @@ export class Orchestrator {
                status = 'waiting_approval',
                project_name = COALESCE(project_name, $2),
                project_path = COALESCE($3, project_path),
+               project_target_id = COALESCE($4, project_target_id),
                blocked_reason = NULL,
-               result = $4::jsonb,
+               result = $5::jsonb,
                updated_at = NOW(),
                locked_by = NULL,
                lease_expires_at = NULL,
@@ -3258,6 +3329,7 @@ export class Orchestrator {
               task.id,
               contract.projectName,
               options.projectPath ?? workspaceRoot,
+              projectTarget?.id ?? null,
               JSON.stringify(resultPayload),
             ]
           )
@@ -3277,6 +3349,15 @@ export class Orchestrator {
             modelUsed: planning.modelUsed,
             repaired: planning.repaired === true,
             fallback: planning.fallback === true,
+          },
+        },
+        {
+          artifactType: 'plan_v1',
+          artifactPath: `task://${task.id}/plan_v1`,
+          metadata: {
+            summary: planning.plan.summary,
+            steps: planning.plan.steps,
+            execution,
           },
         },
         buildPersonaProfileArtifact(task, {
@@ -3306,17 +3387,42 @@ export class Orchestrator {
         stepNumber: 2,
         stepType: 'approval',
         status: 'success',
-        outputSummary: 'Execution approval requested via control API',
+        outputSummary:
+          options.autoApproveExecution === true
+            ? 'Execution approval will be applied automatically after planning'
+            : 'Execution approval requested via control API',
       });
+
+      let executionApproval = {
+        status: 'pending',
+        approvalRequired: execution.approvalRequired,
+        autoStarted: false,
+      };
+
+      if (options.autoApproveExecution === true) {
+        const approved = await this.approveTaskExecution(task.id, {
+          respondedVia: options.approvalSource ?? source,
+          note: options.approvalNote ?? 'Approved automatically after planning',
+        });
+
+        if (approved) {
+          executionApproval = {
+            ...approved,
+            approvalRequired: false,
+            autoStarted: true,
+          };
+        }
+      }
 
       return {
         task: {
           id: task.id,
           title: task.title,
-          status: 'waiting_approval',
+          status: executionApproval.autoStarted ? 'pending' : 'waiting_approval',
           priority: task.priority,
           source: task.source,
           project_name: contract.projectName,
+          project_target_id: projectTarget?.id ?? null,
           created_at: task.created_at,
         },
         plan: planning.plan,
@@ -3328,6 +3434,8 @@ export class Orchestrator {
         memory: {
           impactAnalysis,
         },
+        execution,
+        executionApproval,
       };
     } catch (error) {
       await this.callPostgresTool(
@@ -3550,6 +3658,7 @@ export class Orchestrator {
         source: options.source ?? 'telegram',
         projectName: options.projectName ?? null,
         projectPath: options.projectPath ?? null,
+        projectTargetId: options.projectTargetId ?? null,
       },
       () =>
         this.pool.query(
@@ -3559,9 +3668,10 @@ export class Orchestrator {
              priority,
              source,
              project_name,
-             project_path
+             project_path,
+             project_target_id
            )
-           VALUES ($1, $2, $3, $4, $5, $6)
+           VALUES ($1, $2, $3, $4, $5, $6, $7)
            RETURNING id, title, status, priority, created_at`,
           [
             title,
@@ -3570,6 +3680,7 @@ export class Orchestrator {
             options.source ?? 'telegram',
             options.projectName ?? null,
             options.projectPath ?? null,
+            options.projectTargetId ?? null,
           ]
         )
     );
@@ -3618,6 +3729,7 @@ export class Orchestrator {
              source,
              project_name,
              project_path,
+             project_target_id,
              repo_url,
              blocked_reason,
              result,

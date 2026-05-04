@@ -76,32 +76,40 @@ export function createRailwayDeployer(options = {}) {
   }
 
   return {
-    isEnabled() {
+    isEnabled(input = {}) {
+      const resolvedTarget = this.getTarget(input);
       return (
         config.railwayDeployEnabled &&
         Boolean(config.railwayApiToken) &&
-        Boolean(target.projectId) &&
-        Boolean(target.environmentId) &&
-        Boolean(target.serviceId)
+        Boolean(resolvedTarget.projectId) &&
+        Boolean(resolvedTarget.environmentId) &&
+        Boolean(resolvedTarget.serviceId)
       );
     },
 
-    getTarget() {
-      return target;
+    getTarget(input = {}) {
+      return {
+        projectId: input.projectId ?? target.projectId,
+        environmentId: input.environmentId ?? target.environmentId,
+        serviceId: input.serviceId ?? target.serviceId,
+        serviceName: input.serviceName ?? target.serviceName,
+        environmentName: input.environmentName ?? target.environmentName,
+      };
     },
 
-    validateRepositoryName(repositoryName) {
-      if (!target.serviceName || !repositoryName) {
+    validateRepositoryName(repositoryName, input = {}) {
+      const resolvedTarget = this.getTarget(input);
+      if (!resolvedTarget.serviceName || !repositoryName) {
         return { ok: true };
       }
 
-      if (repositoryName.toLowerCase() === target.serviceName.toLowerCase()) {
+      if (repositoryName.toLowerCase() === resolvedTarget.serviceName.toLowerCase()) {
         return { ok: true };
       }
 
       return {
         ok: false,
-        error: `Publish target ${repositoryName} does not match Railway service ${target.serviceName}. Update the Railway service or rerun the task with the dedicated deploy target.`,
+        error: `Publish target ${repositoryName} does not match Railway service ${resolvedTarget.serviceName}. Update the Railway service or rerun the task with the dedicated deploy target.`,
       };
     },
 

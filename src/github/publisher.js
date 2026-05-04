@@ -1,4 +1,5 @@
 import { config } from '../config.js';
+import { buildRepositoryTarget, hasRepositoryMapping } from '../project/targets.js';
 
 function sanitizeRepositoryName(value) {
   return value
@@ -45,12 +46,24 @@ export function createGitHubPublisher({ gitClient, githubClient, githubServer = 
     },
 
     async publishWorkspace(task, context) {
-      const owner = config.githubRepoOwner || config.githubUsername;
+      const explicitTarget = buildRepositoryTarget(context.projectTarget);
+      const owner =
+        explicitTarget?.owner ?? (config.githubRepoOwner || config.githubUsername);
+      const requestedExternalPublish =
+        context.taskContract?.repoIntent?.publish === true ||
+        context.taskContract?.repoIntent?.deploy === true;
+
+      if (requestedExternalPublish && !hasRepositoryMapping(context.projectTarget)) {
+        throw new Error(
+          'This project does not have a GitHub repository mapping. Add the project repo target before publishing.'
+        );
+      }
+
       if (!owner) {
         throw new Error('GITHUB_REPO_OWNER or GITHUB_USERNAME is required for publish');
       }
 
-      const repositoryName = deriveRepositoryName(task, context);
+      const repositoryName = explicitTarget?.name ?? deriveRepositoryName(task, context);
 
       if (!repositoryName) {
         throw new Error('Unable to derive a valid GitHub repository name for this task');

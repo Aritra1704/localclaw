@@ -21,6 +21,13 @@ test('project service only accepts paths inside configured workspace roots', asy
           id: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
           name: params[0],
           root_path: params[1],
+          github_repo_owner: params[2],
+          github_repo_name: params[3],
+          railway_project_id: params[4],
+          railway_environment_id: params[5],
+          railway_service_id: params[6],
+          railway_service_name: params[7],
+          browser_allowed_origins: JSON.parse(params[8] ?? '[]'),
         };
         rows.push(row);
         return { rows: [row] };
@@ -52,9 +59,20 @@ test('project service only accepts paths inside configured workspace roots', asy
   const project = await service.addProject({
     name: 'demo',
     rootPath: projectPath,
+    metadata: {
+      githubRepoOwner: 'example',
+      githubRepoName: 'demo',
+      railwayProjectId: 'railway-project',
+      railwayEnvironmentId: 'prod',
+      railwayServiceId: 'svc-1',
+      railwayServiceName: 'demo-service',
+      browserAllowedOrigins: ['https://example.com'],
+    },
   });
   assert.equal(project.name, 'demo');
   assert.equal(project.root_path, projectPath);
+  assert.equal(project.github_repo_owner, 'example');
+  assert.deepEqual(project.browser_allowed_origins, ['https://example.com']);
 
   await assert.rejects(
     () => service.addProject({ rootPath: outside }),
@@ -86,6 +104,9 @@ test('project service uses postgres MCP server when available', async () => {
                 id: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
                 name: args.name,
                 root_path: args.rootPath,
+                github_repo_owner: args.metadata?.githubRepoOwner ?? null,
+                github_repo_name: args.metadata?.githubRepoName ?? null,
+                browser_allowed_origins: args.metadata?.browserAllowedOrigins ?? [],
               },
             ],
           };
@@ -132,11 +153,17 @@ test('project service uses postgres MCP server when available', async () => {
   const project = await service.addProject({
     name: 'demo',
     rootPath: projectPath,
+    metadata: {
+      githubRepoOwner: 'example',
+      githubRepoName: 'demo',
+      browserAllowedOrigins: ['https://example.com'],
+    },
   });
   const listed = await service.listProjects();
   const deleted = await service.deleteProject(project.id);
 
   assert.equal(project.root_path, projectPath);
+  assert.equal(project.github_repo_owner, 'example');
   assert.equal(listed.projects.length, 1);
   assert.equal(deleted.id, project.id);
   assert.deepEqual(

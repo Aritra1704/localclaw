@@ -1,8 +1,10 @@
 import path from 'node:path';
 
 import { config } from '../config.js';
+import { deriveExecutionControl, extractTaskContractFromTask } from '../control/taskContract.js';
 import { removeWorkspaceJunk, seedRepoContract } from '../project/contract.js';
 import { collectWorkspaceSnapshot } from '../tools/registry.js';
+import { buildDeployTarget, hasDeployMapping } from '../project/targets.js';
 
 function slugifyTaskTitle(value) {
   return value
@@ -52,18 +54,91 @@ function buildChecklist(steps, options = {}) {
   });
 }
 
-export function shouldAttemptAutoPublish(task, plan) {
-  const taskText = `${task.title ?? ''}\n${task.description ?? ''}`.toLowerCase();
+function deriveDocumentArtifactType(relativePath = '') {
+  const normalized = `${relativePath}`.toLowerCase();
+  if (!/\.(md|mdx|txt)$/i.test(normalized)) {
+    return null;
+  }
 
-  const explicitlyLocalOnly =
-    /\b(local[-\s]?only|no\s+publish|no\s+deploy|dry\s+run|test\s+only)\b/.test(taskText);
-  if (explicitlyLocalOnly) {
+  if (normalized.includes('phase') && normalized.includes('plan')) {
+    return 'phase_plan_v1';
+  }
+
+  if (normalized.includes('handoff') || normalized.includes('handover')) {
+    return 'task_handoff_v1';
+  }
+
+  if (
+    normalized.includes('readme') ||
+    normalized.includes('implementation') ||
+    normalized.includes('runbook') ||
+    normalized.includes('/docs/')
+  ) {
+    return 'implementation_note_v1';
+  }
+
+  return null;
+}
+
+function buildStructuredArtifacts({ task, planning, toolRuns, verification, publication, deployment, artifacts }) {
+  const structured = [
+    {
+      artifactType: 'execution_summary_v1',
+      artifactPath: `task://${task.id}/execution_summary_v1`,
+      metadata: {
+        summary: planning.plan.summary,
+        toolRuns,
+        publication,
+        deployment,
+      },
+    },
+    {
+      artifactType: 'verification_summary_v1',
+      artifactPath: `task://${task.id}/verification_summary_v1`,
+      metadata: {
+        review: verification.review,
+        workspaceFiles: verification.workspaceFiles,
+        modelUsed: verification.modelUsed,
+      },
+    },
+  ];
+
+  for (const artifact of artifacts ?? []) {
+    const relativePath = artifact?.metadata?.relativePath ?? '';
+    const artifactType = deriveDocumentArtifactType(relativePath);
+    if (!artifactType) {
+      continue;
+    }
+
+    structured.push({
+      artifactType,
+      artifactPath: artifact.artifactPath,
+      metadata: {
+        relativePath,
+      },
+    });
+  }
+
+  return structured;
+}
+
+export function shouldAttemptAutoPublish(task, plan, taskContract = null) {
+  const resolvedContract = taskContract ?? extractTaskContractFromTask(task);
+  if (resolvedContract) {
+    const execution = deriveExecutionControl(resolvedContract);
+    if (execution.executionClass === 'local_only') {
+      return false;
+    }
+
+    return resolvedContract.repoIntent.publish === true || resolvedContract.repoIntent.deploy === true;
+  }
+
+  const taskText = `${task.title ?? ''}\n${task.description ?? ''}`.toLowerCase();
+  if (/\b(local[-\s]?only|no\s+publish|no\s+deploy|dry\s+run|test\s+only)\b/.test(taskText)) {
     return false;
   }
 
-  const explicitPublishIntent =
-    /\b(github|publish|repository|repo|deploy|railway|release|ship)\b/.test(taskText);
-  if (explicitPublishIntent) {
+  if (/\b(github|publish|repository|repo|deploy|railway|release|ship)\b/.test(taskText)) {
     return true;
   }
 
@@ -139,6 +214,8 @@ export function createTaskExecutor({
         artifacts: [],
         followUpTasks: [],
       };
+      const taskContract = hooks.taskContract ?? extractTaskContractFromTask(task);
+      const deployRequested = taskContract?.repoIntent?.deploy === true;
       hooks.runtimeUpdate?.({
         phase: 'preparing',
         phaseLabel: 'Preparing workspace',
@@ -301,6 +378,7 @@ export function createTaskExecutor({
           const toolResult = await toolRegistry.runTool(planStep.tool, planStep.args, {
             workspaceRoot,
             taskId: task.id,
+            projectTarget: hooks.projectTarget ?? null,
           });
 
           toolRuns.push({
@@ -541,9 +619,45 @@ export function createTaskExecutor({
         currentStep: null,
       });
 
-      const publishRequested = shouldAttemptAutoPublish(task, planning.plan);
+      const publishRequested = shouldAttemptAutoPublish(task, planning.plan, taskContract);
 
       if (
+        verification.review.status === 'passed' &&
+        specializedReview.status === 'passed' &&
+        publishRequested &&
+        !hooks.publisher?.isEnabled?.()
+      ) {
+        publication = {
+          attempted: true,
+          published: false,
+          repo: null,
+          commit: null,
+          error: {
+            message: 'GitHub publishing is not configured for this LocalClaw runtime.',
+            status: null,
+          },
+        };
+
+        await hooks.logStep?.({
+          stepNumber: logStepNumber,
+          stepType: 'publish',
+          status: 'error',
+          inputSummary: workspaceName,
+          outputSummary: null,
+          errorMessage: publication.error.message,
+        });
+
+        hooks.runtimeUpdate?.({
+          phase: 'blocked',
+          phaseLabel: 'Publishing blocked',
+          detail: publication.error.message,
+          currentModel: null,
+          modelRole: null,
+          usage: null,
+        });
+
+        logStepNumber += 1;
+      } else if (
         verification.review.status === 'passed' &&
         specializedReview.status === 'passed' &&
         hooks.publisher?.isEnabled?.() &&
@@ -627,6 +741,58 @@ export function createTaskExecutor({
         logStepNumber += 1;
       }
 
+      let deployment = {
+        requested: deployRequested,
+        readyForApproval: false,
+        target: buildDeployTarget(hooks.projectTarget),
+        error: null,
+      };
+
+      if (
+        verification.review.status === 'passed' &&
+        specializedReview.status === 'passed' &&
+        deployRequested &&
+        publication.published
+      ) {
+        if (!hasDeployMapping(hooks.projectTarget)) {
+          deployment.error =
+            'This project does not have a Railway deploy target mapping. Add the project deploy target before deploying.';
+        } else if (!hooks.deployer?.isEnabled?.(deployment.target ?? {})) {
+          deployment.error =
+            'Railway deployment is not enabled for this runtime or project target.';
+        } else {
+          deployment.readyForApproval = true;
+        }
+
+        if (deployment.error) {
+          await hooks.logStep?.({
+            stepNumber: logStepNumber,
+            stepType: 'deploy',
+            status: 'error',
+            inputSummary: publication.repo?.name ?? workspaceName,
+            outputSummary: null,
+            errorMessage: deployment.error,
+          });
+          logStepNumber += 1;
+        }
+      }
+
+      artifacts.push(
+        ...buildStructuredArtifacts({
+          task,
+          planning,
+          toolRuns,
+          verification: {
+            review: verification.review,
+            workspaceFiles: verification.workspaceFiles,
+            modelUsed: verification.modelUsed,
+          },
+          publication,
+          deployment,
+          artifacts,
+        })
+      );
+
       return {
         executionMode: hooks.deployer?.isEnabled?.()
           ? 'phase4_controlled'
@@ -649,6 +815,7 @@ export function createTaskExecutor({
           usedFallback: verification.usedFallback,
         },
         publication,
+        deployment,
         artifacts,
       };
     },

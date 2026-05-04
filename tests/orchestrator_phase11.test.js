@@ -386,6 +386,8 @@ test('queueRepairApproval records repair budget metadata and increments retry co
       calls.push({ toolName, args });
 
       switch (toolName) {
+        case 'get_agent_state':
+          return { rows: [] };
         case 'insert_task_artifact':
         case 'insert_agent_log':
           return { rows: [{ id: 'ok' }] };
