@@ -547,3 +547,75 @@ test('approved repairs stay pending until their cooldown window opens', async ()
     ['respond_to_approval', 'update_deployments_by_approval', 'list_ready_repairs']
   );
 });
+
+test('persistLearnings emits deterministic self-healing learnings for repaired runs', async () => {
+  const calls = [];
+  const postgresServer = {
+    name: 'postgres',
+    async callTool(toolName, args) {
+      calls.push({ toolName, args });
+
+      switch (toolName) {
+        case 'insert_learning':
+        case 'insert_agent_log':
+          return { rows: [{ id: 'ok' }] };
+        default:
+          throw new Error(`Unexpected MCP tool: ${toolName}`);
+      }
+    },
+  };
+
+  const orchestrator = new Orchestrator({
+    logger,
+    pool: {
+      async query() {
+        throw new Error('Direct pool.query should not be used in this test');
+      },
+    },
+    learningExtractor: {
+      async extract() {
+        return [
+          {
+            category: 'verification',
+            observation: 'Verification passed after the repaired workspace reran cleanly.',
+            keywords: ['verification', 'repair'],
+            confidenceScore: 7,
+          },
+        ];
+      },
+    },
+    mcpRegistry: {
+      getServer(name) {
+        return name === 'postgres' ? postgresServer : null;
+      },
+      listAllTools() {
+        return [];
+      },
+    },
+  });
+
+  await orchestrator.persistLearnings(
+    {
+      id: 'task-repaired-1',
+      title: 'Recover test workspace',
+    },
+    {
+      repairState: {
+        status: 'resolved',
+        attemptCount: 2,
+        maxAttempts: 3,
+        lastOutcome: 'repair_recovered',
+      },
+    }
+  );
+
+  const learningCalls = calls.filter((entry) => entry.toolName === 'insert_learning');
+  assert.equal(learningCalls.length, 2);
+  assert.equal(learningCalls[0].args.category, 'self-healing');
+  assert.match(learningCalls[0].args.observation, /bounded repair workflow recovered task/i);
+  assert.equal(learningCalls[1].args.category, 'verification');
+  assert.deepEqual(
+    calls.map((entry) => entry.toolName),
+    ['insert_learning', 'insert_learning', 'insert_agent_log']
+  );
+});

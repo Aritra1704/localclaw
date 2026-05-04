@@ -239,6 +239,58 @@ function annotateResolvedRepairState(task, result, outcome = 'repair_recovered')
   };
 }
 
+function buildRepairOutcomeLearnings(task, result) {
+  const repairState = result?.repairState ?? {};
+  const attemptCount = clampNonNegativeInteger(repairState.attemptCount, 0);
+  if (attemptCount <= 0) {
+    return [];
+  }
+
+  if (repairState.status === 'resolved') {
+    return [
+      {
+        category: 'self-healing',
+        observation: `A bounded repair workflow recovered task "${task.title}" after ${attemptCount} attempt(s). Preserve the successful repair pattern and keep retry budgets explicit so recovery stays controlled.`,
+        keywords: ['self-healing', 'repair', 'retry', 'recovery'],
+        confidenceScore: 8,
+      },
+    ];
+  }
+
+  if (repairState.status === 'exhausted') {
+    return [
+      {
+        category: 'self-healing',
+        observation: `Repair retries for task "${task.title}" were exhausted after ${repairState.exhaustedAfterAttempt ?? attemptCount} attempt(s). When repeated repairs do not converge, escalate with context instead of retrying indefinitely.`,
+        keywords: ['self-healing', 'repair', 'budget', 'escalation'],
+        confidenceScore: 9,
+      },
+    ];
+  }
+
+  return [];
+}
+
+function normalizeLearningForInsert(learning) {
+  return {
+    category:
+      typeof learning?.category === 'string' && learning.category.trim().length > 0
+        ? learning.category.trim().slice(0, 50)
+        : 'execution',
+    observation: typeof learning?.observation === 'string' ? learning.observation.trim() : '',
+    keywords: Array.isArray(learning?.keywords)
+      ? [...new Set(
+          learning.keywords
+            .map((item) => (typeof item === 'string' ? item.trim().toLowerCase() : ''))
+            .filter((item) => item.length >= 3)
+        )].slice(0, 8)
+      : [],
+    confidenceScore: Number.isFinite(learning?.confidenceScore)
+      ? Math.max(1, Math.min(10, Math.round(learning.confidenceScore)))
+      : 6,
+  };
+}
+
 function buildChecklistFromPlan(planSteps = [], options = {}) {
   const completedCount = Math.max(options.completedCount ?? 0, 0);
   const currentStepNumber = options.currentStepNumber ?? null;
@@ -1327,13 +1379,37 @@ export class Orchestrator {
   }
 
   async persistLearnings(task, result) {
-    if (!this.learningExtractor?.extract) {
+    const repairLearnings = buildRepairOutcomeLearnings(task, result);
+    if (!this.learningExtractor?.extract && repairLearnings.length === 0) {
       return;
     }
 
     try {
-      const learnings = await this.learningExtractor.extract(task, result);
-      if (!Array.isArray(learnings) || learnings.length === 0) {
+      const extractedLearnings = this.learningExtractor?.extract
+        ? await this.learningExtractor.extract(task, result)
+        : [];
+      const learnings = [];
+      const seenObservations = new Set();
+
+      for (const candidate of [
+        ...repairLearnings,
+        ...(Array.isArray(extractedLearnings) ? extractedLearnings : []),
+      ]) {
+        const learning = normalizeLearningForInsert(candidate);
+        if (learning.observation.length < 10) {
+          continue;
+        }
+
+        const key = learning.observation.toLowerCase();
+        if (seenObservations.has(key)) {
+          continue;
+        }
+
+        seenObservations.add(key);
+        learnings.push(learning);
+      }
+
+      if (learnings.length === 0) {
         return;
       }
 
@@ -1651,6 +1727,8 @@ export class Orchestrator {
         outputSummary: null,
         errorMessage: reason,
       });
+
+      await this.persistLearnings(task, nextResult);
 
       const narratedSummary = findArtifactMetadata(personaArtifacts, 'narrated_summary_v1');
       if (narratedSummary?.channelDrafts?.telegram) {

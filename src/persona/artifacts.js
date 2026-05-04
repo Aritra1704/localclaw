@@ -253,6 +253,79 @@ function buildObservationArtifacts(task, result) {
   }));
 }
 
+function buildSelfHealingDiagnosticArtifact(task, result, taskStatus) {
+  const repairState = result?.repairState ?? {};
+  const repairProposal = result?.repairProposal ?? {};
+  const failedRuns = (result?.toolRuns ?? []).filter((run) => run?.status === 'failed');
+  const lastFailedRun = failedRuns.at(-1) ?? null;
+  const attemptCount = repairState.attemptCount ?? 0;
+  const maxAttempts = repairState.maxAttempts ?? null;
+
+  if (
+    !repairState.status &&
+    !repairProposal.reasoning &&
+    !lastFailedRun &&
+    taskStatus !== 'needs_repair'
+  ) {
+    return null;
+  }
+
+  const inspectTargets = unique(
+    [
+      lastFailedRun?.tool ? `tool:${lastFailedRun.tool}` : null,
+      Number.isInteger(lastFailedRun?.stepNumber) ? `step:${lastFailedRun.stepNumber}` : null,
+      result?.workspaceRoot ? `workspace:${result.workspaceRoot}` : null,
+      'artifact:handover_summary_v1',
+      repairProposal.reasoning ? 'artifact:repair_proposal' : null,
+    ].filter(Boolean)
+  );
+
+  const recommendedActions = [];
+  if (repairState.nextEligibleAt) {
+    recommendedActions.push(`Wait until ${repairState.nextEligibleAt} before expecting the approved repair to resume.`);
+  }
+  if (repairProposal.reasoning) {
+    recommendedActions.push('Review the repair proposal reasoning before approving another attempt.');
+  }
+  if (repairState.status === 'exhausted') {
+    recommendedActions.push('Inspect the latest failed repair step and decide whether the next fix requires human guidance or a broader task rewrite.');
+  } else if (taskStatus === 'needs_repair') {
+    recommendedActions.push('Confirm the proposed repair steps are safe and narrowly scoped before approval.');
+  } else if (repairState.status === 'failed') {
+    recommendedActions.push('Inspect the repair-step logs first, then compare the resumed task state against the original failure.');
+  }
+
+  return {
+    artifactType: 'self_healing_diagnostic_v1',
+    artifactPath: `task://${task.id}/self_healing_diagnostic_v1`,
+    metadata: {
+      version: 'self_healing_diagnostic_v1',
+      taskStatus,
+      repairStatus: repairState.status ?? (taskStatus === 'needs_repair' ? 'pending_review' : null),
+      attemptCount,
+      maxAttempts,
+      attemptsRemaining: repairState.attemptsRemaining ?? null,
+      nextEligibleAt: repairState.nextEligibleAt ?? null,
+      backoffMs: repairState.backoffMs ?? null,
+      lastOutcome: repairState.lastOutcome ?? null,
+      lastFailureMessage:
+        repairState.lastFailureMessage ??
+        lastFailedRun?.summary ??
+        repairProposal.reasoning ??
+        null,
+      failedStepNumber:
+        repairState.lastFailureStepNumber ??
+        lastFailedRun?.stepNumber ??
+        null,
+      failedTool: lastFailedRun?.tool ?? null,
+      repairSummary: repairProposal.summary ?? null,
+      repairReasoning: repairProposal.reasoning ?? null,
+      inspectTargets,
+      recommendedActions,
+    },
+  };
+}
+
 export function buildPersonaProfileArtifact(task, options = {}) {
   return {
     artifactType: 'persona_profile_v1',
@@ -304,6 +377,10 @@ export function buildPersonaArtifactsForExecution({ task, result, taskStatus }) 
     buildReviewCommentDraft(task, result, taskStatus),
     ...buildObservationArtifacts(task, result),
   ];
+  const selfHealingDiagnostic = buildSelfHealingDiagnosticArtifact(task, result, taskStatus);
+  if (selfHealingDiagnostic) {
+    artifacts.push(selfHealingDiagnostic);
+  }
 
   if (taskStatus === 'blocked' || taskStatus === 'failed' || taskStatus === 'waiting_approval') {
     artifacts.push({
@@ -342,7 +419,7 @@ export function buildPersonaArtifactsForRepairApproval({ task, result }) {
     .map((step) => `${step.objective} (${step.tool})`)
     .slice(0, 4);
 
-  return [
+  const artifacts = [
     {
       artifactType: 'narrated_summary_v1',
       artifactPath: `task://${task.id}/narrated_summary_v1`,
@@ -393,6 +470,12 @@ export function buildPersonaArtifactsForRepairApproval({ task, result }) {
       },
     },
   ];
+  const selfHealingDiagnostic = buildSelfHealingDiagnosticArtifact(task, result, 'needs_repair');
+  if (selfHealingDiagnostic) {
+    artifacts.push(selfHealingDiagnostic);
+  }
+
+  return artifacts;
 }
 
 export function buildPersonaArtifactsForExecutionError({ task, error }) {
@@ -447,6 +530,7 @@ export function hydratePersonaArtifacts(artifacts = []) {
     profile: latestByType('persona_profile_v1')?.metadata ?? null,
     narratedSummary: latestByType('narrated_summary_v1')?.metadata ?? null,
     handoverSummary: latestByType('handover_summary_v1')?.metadata ?? null,
+    selfHealingDiagnostic: latestByType('self_healing_diagnostic_v1')?.metadata ?? null,
     reviewCommentDraft: latestByType('review_comment_draft_v1')?.metadata ?? null,
     observationNotes: typed
       .filter((artifact) => artifact.artifact_type === 'observation_note_v1')

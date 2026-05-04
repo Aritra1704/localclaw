@@ -97,6 +97,8 @@ export class ReflectionEngine {
 
     if (logs.length === 0) return;
 
+    const repairState = task?.result?.repairState ?? {};
+
     const logContext = logs.map(l => 
       `Step ${l.step_number} [${l.step_type}]: Tool=${l.tool_called || 'N/A'}, Status=${l.status}, Error=${l.error_message || 'None'}\nOutput: ${l.output_summary || 'N/A'}`
     ).join('\n---\n');
@@ -108,6 +110,12 @@ Your job is to analyze a failed task and extract a single, actionable architectu
 Task Title: ${task.title}
 Task Description: ${task.description}
 Failure Reason: ${task.blocked_reason}
+Repair State:
+- status: ${repairState.status ?? 'none'}
+- attemptCount: ${repairState.attemptCount ?? 0}
+- maxAttempts: ${repairState.maxAttempts ?? 0}
+- lastOutcome: ${repairState.lastOutcome ?? 'none'}
+- lastFailureMessage: ${repairState.lastFailureMessage ?? 'none'}
 
 Execution Logs:
 ${logContext}

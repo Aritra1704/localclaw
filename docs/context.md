@@ -25,7 +25,7 @@ As of 2026-04-19, the project status is:
 | Phase 10: Specialized Agents | complete | Documentation, Security, and Dependency agents now run before publish, refresh workspace docs, flag risky findings, and create dependency follow-up tasks. |
 | Phase 11: MCP Integration | complete | Filesystem, GitHub, task/runtime PostgreSQL access, RAG indexing/retrieval, reflection, chat, projects, and skills now run through internal MCP-style servers with verified runtime coverage. |
 | Phase 12: Cognitive Memory | complete | Knowledge graph storage now maps files, symbols, dependencies, document references, historical changes, and related learnings, and semantic impact analysis is injected into planning and approval previews alongside flat RAG. |
-| Phase 13: Self-Healing & Proactive Autonomy | planned | Automated failure analysis, repair planning, retry/back-off, and stronger operator escalation will raise execution resilience. |
+| Phase 13: Self-Healing & Proactive Autonomy | in progress | Repair proposal generation, immediate repair resume, bounded retry budget, cooldown metadata, and exhausted-repair handoff are now implemented; learnings capture and proactive remediation remain open. |
 | Phase 14: Conversational Agent & Iterative Planning | planned | Persistent chat context and iterative contract drafting will turn LocalClaw into a dialogue-driven planning partner. |
 | Phase 15: Persona Layer & Humanized Presence | planned | A channel-aware narration and preference layer will make LocalClaw sound like a consistent teammate across Telegram, UI, and GitHub. |
 
@@ -381,7 +381,7 @@ Outputs:
 
 - "Senior Engineer" level awareness of codebase architectural debt and cross-cutting impacts
 
-### Phase 13: Self-Healing & Proactive Autonomy (Planned)
+### Phase 13: Self-Healing & Proactive Autonomy (In Progress)
 
 Inputs:
 
@@ -397,6 +397,15 @@ Actions:
 - Refine **Human Escalation**: If automated repair attempts are exhausted or the identified risk is too high, the system escalates to the operator with a comprehensive diagnostic report and proposed manual intervention.
 - Introduce **Proactive System Remediation**: Beyond passive monitoring (Space Guard), the system will actively attempt to fix minor operational issues (e.g., restart a hung Ollama process, clear specific caches).
 - Keep **Autonomy Scope Narrow**: proactive behavior in this phase is operational and recovery-oriented only; repo hygiene suggestions, review tone, and user-facing teammate behaviors are deferred to Phase 15.
+
+Current progress:
+
+- repair proposal generation is active through `src/selfhealing/repairEngine.js`, and failed execution can now enter a structured `needs_repair` path
+- repair approvals no longer wait only for the next queue poll; approved repairs can now resume immediately through the orchestrator
+- repair attempts now use bounded retry policy via `tasks.retry_count` and `tasks.max_retries`, with persisted `repairState` metadata in task results
+- repeated repair attempts now carry exponential cooldown metadata (`nextEligibleAt`, `backoffMs`) so the operator can see when a retry is eligible
+- exhausted repair budgets now fail cleanly with narrated handoff context instead of looping indefinitely or degrading into a generic task failure
+- remaining work is concentrated on feeding successful repairs into learnings/reflection, adding narrow proactive remediations, and improving operator diagnostics
 
 Outputs:
 
