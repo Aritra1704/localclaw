@@ -231,3 +231,319 @@ test('orchestrator routes queue recovery, leasing, and task history through post
     ]
   );
 });
+
+test('repair approvals resume immediately through postgres MCP and repair tooling', async () => {
+  const calls = [];
+  let resumedTask = null;
+  const postgresServer = {
+    name: 'postgres',
+    async callTool(toolName, args) {
+      calls.push({ toolName, args });
+
+      switch (toolName) {
+        case 'respond_to_approval':
+          return {
+            rows: [
+              {
+                id: args.approvalId,
+                task_id: 'task-repair-1',
+                approval_type: 'repair',
+              },
+            ],
+          };
+        case 'update_deployments_by_approval':
+          return { rows: [] };
+        case 'list_ready_repairs':
+          return {
+            rows: [
+              {
+                approval_id: args.approvalId,
+                task_id: args.taskId,
+                repair_proposal: {
+                  steps: [
+                    {
+                      stepNumber: 1,
+                      objective: 'Rewrite the broken file with a corrected path',
+                      tool: 'write_file',
+                      args: {
+                        path: 'README.md',
+                        content: '# repaired\n',
+                        overwrite: true,
+                      },
+                    },
+                  ],
+                },
+                title: 'Repair task',
+                task_result: {
+                  workspaceRoot: '/tmp/localclaw-repair',
+                  plan: { summary: 'Repair and resume' },
+                },
+              },
+            ],
+          };
+        case 'mark_approval_applied':
+          return {
+            rows: [
+              {
+                id: args.approvalId,
+                task_id: 'task-repair-1',
+                approval_type: 'repair',
+              },
+            ],
+          };
+        case 'update_task_record':
+          return { rows: [{ id: 'task-repair-1', status: args.patch.status }] };
+        case 'insert_agent_log':
+          return { rows: [{ id: 'log-1' }] };
+        case 'get_task_by_id':
+          return {
+            rows: [
+              {
+                id: args.taskId,
+                title: 'Repair task',
+                description: 'Resume from approved repair',
+                priority: 'medium',
+                status: 'in_progress',
+                source: 'test',
+                project_name: 'demo',
+                project_path: '/tmp/demo',
+                repo_url: null,
+                blocked_reason: null,
+                result: {},
+                created_at: '2026-04-16T00:00:00.000Z',
+                started_at: '2026-04-16T00:01:00.000Z',
+                completed_at: null,
+                updated_at: '2026-04-16T00:02:00.000Z',
+              },
+            ],
+          };
+        default:
+          throw new Error(`Unexpected MCP tool: ${toolName}`);
+      }
+    },
+  };
+
+  const orchestrator = new Orchestrator({
+    logger,
+    pool: {
+      async query() {
+        throw new Error('Direct pool.query should not be used in this test');
+      },
+    },
+    taskExecutor: {
+      toolRegistry: {
+        async runTool() {
+          return { summary: 'repair applied' };
+        },
+      },
+    },
+    mcpRegistry: {
+      getServer(name) {
+        return name === 'postgres' ? postgresServer : null;
+      },
+      listAllTools() {
+        return [];
+      },
+    },
+  });
+
+  orchestrator.executeTask = async (task) => {
+    resumedTask = task;
+  };
+
+  const approval = await orchestrator.approveApproval('repair-1', {
+    respondedVia: 'test',
+  });
+  await Promise.all(Array.from(orchestrator.activeTasks).map((entry) => entry.promise));
+
+  assert.equal(approval.id, 'repair-1');
+  assert.equal(approval.approval_type, 'repair');
+  assert.equal(resumedTask?.id, 'task-repair-1');
+  assert.deepEqual(
+    calls.map((entry) => entry.toolName),
+    [
+      'respond_to_approval',
+      'update_deployments_by_approval',
+      'list_ready_repairs',
+      'mark_approval_applied',
+      'update_task_record',
+      'insert_agent_log',
+      'insert_agent_log',
+      'get_task_by_id',
+    ]
+  );
+});
+
+test('queueRepairApproval records repair budget metadata and increments retry count', async () => {
+  const calls = [];
+  const postgresServer = {
+    name: 'postgres',
+    async callTool(toolName, args) {
+      calls.push({ toolName, args });
+
+      switch (toolName) {
+        case 'insert_task_artifact':
+        case 'insert_agent_log':
+          return { rows: [{ id: 'ok' }] };
+        case 'insert_approval':
+          return {
+            rows: [
+              {
+                id: 'approval-1',
+                task_id: args.taskId,
+                requested_at: '2026-04-19T00:00:00.000Z',
+              },
+            ],
+          };
+        case 'update_task_record':
+          return { rows: [{ id: args.taskId, status: args.patch.status }] };
+        case 'update_approval_request_message':
+          return { rows: [{ id: args.approvalId }] };
+        default:
+          throw new Error(`Unexpected MCP tool: ${toolName}`);
+      }
+    },
+  };
+
+  const orchestrator = new Orchestrator({
+    logger,
+    pool: {
+      async query() {
+        throw new Error('Direct pool.query should not be used in this test');
+      },
+    },
+    mcpRegistry: {
+      getServer(name) {
+        return name === 'postgres' ? postgresServer : null;
+      },
+      listAllTools() {
+        return [];
+      },
+    },
+  });
+  orchestrator.notify = async () => ({ message_id: 42 });
+
+  await orchestrator.queueRepairApproval(
+    {
+      id: 'task-1',
+      title: 'Repair me',
+      retry_count: 1,
+      max_retries: 3,
+      result: {},
+    },
+    {
+      repairProposal: {
+        summary: 'Retry with corrected path',
+        reasoning: 'The file path was incorrect.',
+        steps: [
+          {
+            stepNumber: 1,
+            objective: 'Rewrite the file at the correct path',
+            tool: 'write_file',
+            args: {
+              path: 'README.md',
+              content: '# fixed\n',
+              overwrite: true,
+            },
+          },
+        ],
+      },
+      toolRuns: [
+        {
+          stepNumber: 2,
+          objective: 'Write the file',
+          tool: 'write_file',
+          status: 'failed',
+          summary: 'ENOENT: no such file or directory',
+        },
+      ],
+      artifacts: [],
+    }
+  );
+
+  const approvalInsert = calls.find((entry) => entry.toolName === 'insert_approval');
+  const taskUpdate = calls.find((entry) => entry.toolName === 'update_task_record');
+
+  assert.equal(approvalInsert.args.responsePayload.repairState.attemptCount, 2);
+  assert.equal(approvalInsert.args.responsePayload.repairState.maxAttempts, 3);
+  assert.equal(approvalInsert.args.responsePayload.repairState.lastOutcome, 'repair_proposal_generated');
+  assert.equal(taskUpdate.args.patch.retry_count, 2);
+  assert.equal(taskUpdate.args.patch.result.repairState.attemptCount, 2);
+  assert.equal(typeof taskUpdate.args.patch.result.repairState.nextEligibleAt, 'string');
+});
+
+test('approved repairs stay pending until their cooldown window opens', async () => {
+  const calls = [];
+  const nextEligibleAt = new Date(Date.now() + 60_000).toISOString();
+  const postgresServer = {
+    name: 'postgres',
+    async callTool(toolName, args) {
+      calls.push({ toolName, args });
+
+      switch (toolName) {
+        case 'respond_to_approval':
+          return {
+            rows: [
+              {
+                id: args.approvalId,
+                task_id: 'task-repair-2',
+                approval_type: 'repair',
+              },
+            ],
+          };
+        case 'update_deployments_by_approval':
+          return { rows: [] };
+        case 'list_ready_repairs':
+          return {
+            rows: [
+              {
+                approval_id: args.approvalId,
+                task_id: args.taskId,
+                repair_proposal: {
+                  steps: [],
+                },
+                title: 'Repair task',
+                task_result: {
+                  repairState: {
+                    attemptCount: 2,
+                    maxAttempts: 3,
+                    nextEligibleAt,
+                  },
+                },
+              },
+            ],
+          };
+        default:
+          throw new Error(`Unexpected MCP tool: ${toolName}`);
+      }
+    },
+  };
+
+  const orchestrator = new Orchestrator({
+    logger,
+    pool: {
+      async query() {
+        throw new Error('Direct pool.query should not be used in this test');
+      },
+    },
+    mcpRegistry: {
+      getServer(name) {
+        return name === 'postgres' ? postgresServer : null;
+      },
+      listAllTools() {
+        return [];
+      },
+    },
+  });
+
+  const approval = await orchestrator.approveApproval('repair-2', {
+    respondedVia: 'test',
+  });
+
+  assert.equal(approval.id, 'repair-2');
+  assert.equal(orchestrator.activeTasks.size, 0);
+  assert.deepEqual(
+    calls.map((entry) => entry.toolName),
+    ['respond_to_approval', 'update_deployments_by_approval', 'list_ready_repairs']
+  );
+});

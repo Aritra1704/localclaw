@@ -106,6 +106,7 @@ function buildEvidence(result = {}) {
 }
 
 function buildFacts(task, result, taskStatus) {
+  const repairState = result?.repairState ?? {};
   return {
     taskId: task.id,
     taskTitle: task.title,
@@ -119,9 +120,16 @@ function buildFacts(task, result, taskStatus) {
     specializedReviewSummary: result?.specializedReview?.summary ?? null,
     publishAttempted: result?.publication?.attempted === true,
     publishSucceeded: result?.publication?.published === true,
+    repairAttemptCount: repairState.attemptCount ?? null,
+    repairMaxAttempts: repairState.maxAttempts ?? null,
+    repairNextEligibleAt: repairState.nextEligibleAt ?? null,
+    repairLastOutcome: repairState.lastOutcome ?? null,
     blockedReason:
       taskStatus === 'blocked' || taskStatus === 'failed'
-        ? result?.publication?.error?.message ??
+        ? (repairState.status === 'exhausted'
+            ? `Repair budget exhausted after ${repairState.exhaustedAfterAttempt ?? repairState.attemptCount ?? 0} attempt(s).`
+            : null) ??
+          result?.publication?.error?.message ??
           result?.specializedReview?.summary ??
           result?.verification?.review?.summary ??
           null
@@ -130,10 +138,18 @@ function buildFacts(task, result, taskStatus) {
 }
 
 function buildNarrativeText(task, result, taskStatus) {
+  const repairState = result?.repairState ?? {};
   const execution = summarizeExecution(result);
   const verification = summarizeVerification(result);
   const specialized = summarizeSpecializedReview(result);
   const publication = summarizePublication(result.publication);
+
+  if (repairState.status === 'exhausted') {
+    return compactText(
+      `I stopped retrying "${task.title}" because the repair budget was exhausted after ${repairState.exhaustedAfterAttempt ?? repairState.attemptCount ?? 0} attempt(s). ${repairState.lastFailureMessage ?? 'The latest failure did not produce a safe next step.'}`,
+      700
+    );
+  }
 
   if (taskStatus === 'done') {
     return compactText(
@@ -321,6 +337,7 @@ export function buildPersonaArtifactsForExecution({ task, result, taskStatus }) 
 
 export function buildPersonaArtifactsForRepairApproval({ task, result }) {
   const repairProposal = result?.repairProposal ?? {};
+  const repairState = result?.repairState ?? {};
   const steps = (repairProposal.steps ?? [])
     .map((step) => `${step.objective} (${step.tool})`)
     .slice(0, 4);
@@ -340,6 +357,9 @@ export function buildPersonaArtifactsForRepairApproval({ task, result }) {
           taskTitle: task.title,
           taskStatus: 'needs_repair',
           repairReason: repairProposal.reasoning ?? null,
+          repairAttemptCount: repairState.attemptCount ?? null,
+          repairMaxAttempts: repairState.maxAttempts ?? null,
+          repairNextEligibleAt: repairState.nextEligibleAt ?? null,
         },
         evidence: {
           stepNumbers: unique((repairProposal.steps ?? []).map((step, index) => step.stepNumber ?? index + 1)),
@@ -366,7 +386,9 @@ export function buildPersonaArtifactsForRepairApproval({ task, result }) {
         taskStatus: 'needs_repair',
         summary: repairProposal.reasoning ?? 'A repair proposal is ready for operator review.',
         whatWasTried: steps.join(' | '),
-        nextAction: 'Approve the repair proposal if the plan looks safe, or reject it and inspect the logs for missing context.',
+        nextAction: repairState.nextEligibleAt
+          ? `Approve the repair proposal if the plan looks safe. Execution will resume after ${repairState.nextEligibleAt}.`
+          : 'Approve the repair proposal if the plan looks safe, or reject it and inspect the logs for missing context.',
         proposedSteps: steps,
       },
     },

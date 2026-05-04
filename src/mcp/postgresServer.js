@@ -228,6 +228,10 @@ const POSTGRES_TOOLS = [
     description: 'Mark an approval approved or rejected and return the linked task.',
   },
   {
+    name: 'mark_approval_applied',
+    description: 'Mark an approved repair approval as applied before resuming execution.',
+  },
+  {
     name: 'insert_deployment',
     description: 'Insert a deployment row.',
   },
@@ -586,6 +590,8 @@ export function createPostgresMcpServer({ pool }) {
                    project_name,
                    project_path,
                    repo_url,
+                   retry_count,
+                   max_retries,
                    blocked_reason,
                    result,
                    created_at,
@@ -1537,8 +1543,20 @@ export function createPostgresMcpServer({ pool }) {
                response_payload = COALESCE(response_payload, '{}'::jsonb) || $3::jsonb
              WHERE id = $1
                AND status = 'pending'
-             RETURNING id, task_id`,
+             RETURNING id, task_id, approval_type`,
             [args.approvalId, args.status, JSON.stringify(responsePayload)]
+          );
+          return { rows: result.rows };
+        }
+
+        case 'mark_approval_applied': {
+          const result = await pool.query(
+            `UPDATE approvals
+             SET status = 'applied'
+             WHERE id = $1
+               AND status = 'approved'
+             RETURNING id, task_id, approval_type`,
+            [args.approvalId]
           );
           return { rows: result.rows };
         }
@@ -1638,6 +1656,23 @@ export function createPostgresMcpServer({ pool }) {
         }
 
         case 'list_ready_repairs': {
+          const values = [];
+          const filters = [
+            `approvals.status = 'approved'`,
+            `approvals.approval_type = 'repair'`,
+            `tasks.status = 'waiting_approval'`,
+          ];
+
+          if (args.approvalId) {
+            values.push(args.approvalId);
+            filters.push(`approvals.id = $${values.length}`);
+          }
+
+          if (args.taskId) {
+            values.push(args.taskId);
+            filters.push(`approvals.task_id = $${values.length}`);
+          }
+
           const result = await pool.query(
             `SELECT
                approvals.id AS approval_id,
@@ -1647,10 +1682,9 @@ export function createPostgresMcpServer({ pool }) {
                tasks.result AS task_result
              FROM approvals
              JOIN tasks ON tasks.id = approvals.task_id
-             WHERE approvals.status = 'approved'
-               AND approvals.approval_type = 'repair'
-               AND tasks.status = 'waiting_approval'
-             ORDER BY approvals.requested_at ASC`
+             WHERE ${filters.join('\n               AND ')}
+             ORDER BY approvals.requested_at ASC`,
+            values
           );
           return { rows: result.rows };
         }

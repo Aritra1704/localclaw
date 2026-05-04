@@ -27,6 +27,8 @@ const logger = pino({
   level: config.nodeEnv === 'development' ? 'debug' : 'info',
 });
 const RAG_SYNC_INTERVAL_MS = 10 * 60 * 1000;
+const REPAIR_BASE_BACKOFF_MS = 30 * 1000;
+const REPAIR_MAX_BACKOFF_MS = 15 * 60 * 1000;
 
 const RETRIEVAL_STOP_WORDS = new Set([
   'about',
@@ -120,6 +122,121 @@ function slugifyTaskTitle(value) {
     .replace(/[^a-z0-9]+/g, '-')
     .replace(/^-+|-+$/g, '')
     .slice(0, 40);
+}
+
+function clampPositiveInteger(value, fallback) {
+  const parsed = Number(value);
+  if (!Number.isInteger(parsed) || parsed <= 0) {
+    return fallback;
+  }
+
+  return parsed;
+}
+
+function clampNonNegativeInteger(value, fallback = 0) {
+  const parsed = Number(value);
+  if (!Number.isInteger(parsed) || parsed < 0) {
+    return fallback;
+  }
+
+  return parsed;
+}
+
+function computeRepairBackoffMs(attemptNumber) {
+  if (attemptNumber <= 1) {
+    return 0;
+  }
+
+  return Math.min(
+    REPAIR_MAX_BACKOFF_MS,
+    REPAIR_BASE_BACKOFF_MS * 2 ** Math.max(attemptNumber - 2, 0)
+  );
+}
+
+function getExistingRepairState(taskResult = {}) {
+  const candidate = taskResult?.repairState;
+  return candidate && typeof candidate === 'object' ? candidate : {};
+}
+
+function buildPendingRepairState(task, result, now = new Date()) {
+  const repairState = getExistingRepairState(task?.result);
+  const retryCount = clampNonNegativeInteger(task?.retry_count, 0);
+  const maxAttempts = clampPositiveInteger(task?.max_retries, 3);
+  const failedRun = [...(result?.toolRuns ?? [])]
+    .reverse()
+    .find((run) => run?.status === 'failed');
+
+  if (retryCount >= maxAttempts) {
+    return {
+      ...repairState,
+      status: 'exhausted',
+      attemptCount: retryCount,
+      maxAttempts,
+      attemptsRemaining: 0,
+      exhaustedAfterAttempt: retryCount,
+      nextAttemptNumber: retryCount + 1,
+      backoffMs: 0,
+      nextEligibleAt: null,
+      lastFailureMessage:
+        failedRun?.summary ?? result?.repairProposal?.reasoning ?? repairState.lastFailureMessage ?? null,
+      lastFailureStepNumber: failedRun?.stepNumber ?? repairState.lastFailureStepNumber ?? null,
+      lastOutcome: 'repair_budget_exhausted',
+      lastOutcomeAt: now.toISOString(),
+    };
+  }
+
+  const attemptCount = retryCount + 1;
+  const backoffMs = computeRepairBackoffMs(attemptCount);
+
+  return {
+    ...repairState,
+    status: 'pending_approval',
+    attemptCount,
+    maxAttempts,
+    attemptsRemaining: Math.max(maxAttempts - attemptCount, 0),
+    nextAttemptNumber: attemptCount,
+    backoffMs,
+    nextEligibleAt: backoffMs > 0 ? new Date(now.getTime() + backoffMs).toISOString() : null,
+    lastFailureMessage:
+      failedRun?.summary ?? result?.repairProposal?.reasoning ?? repairState.lastFailureMessage ?? null,
+    lastFailureStepNumber: failedRun?.stepNumber ?? repairState.lastFailureStepNumber ?? null,
+    lastOutcome: 'repair_proposal_generated',
+    lastOutcomeAt: now.toISOString(),
+  };
+}
+
+function isRepairBackoffActive(taskResult = {}, now = Date.now()) {
+  const nextEligibleAt = taskResult?.repairState?.nextEligibleAt ?? null;
+  if (!nextEligibleAt) {
+    return false;
+  }
+
+  const nextEligibleMs = Date.parse(nextEligibleAt);
+  return Number.isFinite(nextEligibleMs) && nextEligibleMs > now;
+}
+
+function annotateResolvedRepairState(task, result, outcome = 'repair_recovered') {
+  const repairState = getExistingRepairState(task?.result);
+  if (!repairState.attemptCount) {
+    return result;
+  }
+
+  return {
+    ...result,
+    repairState: {
+      ...repairState,
+      status: 'resolved',
+      attemptsRemaining: Math.max(
+        clampPositiveInteger(repairState.maxAttempts, 3) -
+          clampNonNegativeInteger(repairState.attemptCount, 0),
+        0
+      ),
+      nextEligibleAt: null,
+      backoffMs: 0,
+      lastOutcome: outcome,
+      lastOutcomeAt: new Date().toISOString(),
+    },
+  };
 }
 
 function buildChecklistFromPlan(planSteps = [], options = {}) {
@@ -742,7 +859,7 @@ export class Orchestrator {
 
     try {
       const { retrievalContext, chatHistory } = await this.buildRetrievalContext(task);
-      const result = await this.taskExecutor.executeTask(task, {
+      let result = await this.taskExecutor.executeTask(task, {
         startStepNumber: 2,
         publisher: this.publisher,
         deployer: this.deployer,
@@ -761,6 +878,8 @@ export class Orchestrator {
         await this.queueRepairApproval(task, result);
         return;
       }
+
+      result = annotateResolvedRepairState(task, result);
 
       let personaArtifacts = [];
       let taskStatus = null;
@@ -1478,7 +1597,80 @@ export class Orchestrator {
   }
 
   async queueRepairApproval(task, result) {
-    const personaArtifacts = buildPersonaArtifactsForRepairApproval({ task, result });
+    const repairState = buildPendingRepairState(task, result);
+    const nextResult = {
+      ...result,
+      repairState,
+    };
+    const attemptLabel = `${repairState.attemptCount}/${repairState.maxAttempts}`;
+
+    if (repairState.status === 'exhausted') {
+      const reason = `Repair budget exhausted after ${repairState.exhaustedAfterAttempt} attempt(s). ${repairState.lastFailureMessage ?? 'No additional repair attempts remain.'}`.trim();
+      const personaArtifacts = buildPersonaArtifactsForExecution({
+        task,
+        result: nextResult,
+        taskStatus: 'failed',
+      });
+      await this.persistArtifacts(task.id, [...(result.artifacts ?? []), ...personaArtifacts]);
+
+      await this.callPostgresTool(
+        'update_task_record',
+        {
+          taskId: task.id,
+          patch: {
+            status: 'failed',
+            blocked_reason: reason,
+            retry_count: repairState.attemptCount,
+            result: nextResult,
+            clear_lock: true,
+            touch_heartbeat: true,
+          },
+        },
+        () =>
+          this.pool.query(
+            `UPDATE tasks
+             SET
+               status = 'failed',
+               blocked_reason = $2,
+               retry_count = $3,
+               result = $4::jsonb,
+               updated_at = NOW(),
+               locked_by = NULL,
+               lease_expires_at = NULL,
+               last_heartbeat_at = NOW()
+             WHERE id = $1`,
+            [task.id, reason, repairState.attemptCount, JSON.stringify(nextResult)]
+          )
+      );
+
+      await this.logTaskStep(task.id, {
+        stepNumber: 910,
+        stepType: 'repair',
+        status: 'error',
+        inputSummary: `Repair attempt ${attemptLabel}`,
+        outputSummary: null,
+        errorMessage: reason,
+      });
+
+      const narratedSummary = findArtifactMetadata(personaArtifacts, 'narrated_summary_v1');
+      if (narratedSummary?.channelDrafts?.telegram) {
+        await this.notify(narratedSummary.channelDrafts.telegram);
+      }
+
+      this.updateTaskRuntime(task.id, {
+        phase: 'failed',
+        phaseLabel: 'Repair budget exhausted',
+        detail: reason,
+        currentModel: null,
+        modelRole: null,
+        currentStep: null,
+      });
+      await this.incrementStats('tasks_failed');
+
+      return;
+    }
+
+    const personaArtifacts = buildPersonaArtifactsForRepairApproval({ task, result: nextResult });
     await this.persistArtifacts(task.id, [...(result.artifacts ?? []), ...personaArtifacts]);
 
     const approvalResult = await this.callPostgresTool(
@@ -1490,6 +1682,7 @@ export class Orchestrator {
         requestedVia: 'telegram',
         responsePayload: {
           repairProposal: result.repairProposal,
+          repairState,
         },
       },
       () =>
@@ -1508,6 +1701,7 @@ export class Orchestrator {
             'repair',
             JSON.stringify({
               repairProposal: result.repairProposal,
+              repairState,
             }),
           ]
         )
@@ -1521,7 +1715,8 @@ export class Orchestrator {
         taskId: task.id,
         patch: {
           status: 'waiting_approval',
-          result,
+          retry_count: repairState.attemptCount,
+          result: nextResult,
           clear_blocked_reason: true,
           clear_lock: true,
           touch_heartbeat: true,
@@ -1533,13 +1728,14 @@ export class Orchestrator {
            SET
              status = 'waiting_approval',
              blocked_reason = NULL,
-             result = $2::jsonb,
+             retry_count = $2,
+             result = $3::jsonb,
              updated_at = NOW(),
              locked_by = NULL,
              lease_expires_at = NULL,
              last_heartbeat_at = NOW()
            WHERE id = $1`,
-          [task.id, JSON.stringify(result)]
+          [task.id, repairState.attemptCount, JSON.stringify(nextResult)]
         )
     );
 
@@ -1547,18 +1743,23 @@ export class Orchestrator {
       stepNumber: 910,
       stepType: 'approval',
       status: 'success',
-      inputSummary: result.repairProposal.summary,
+      inputSummary: `${result.repairProposal.summary} (attempt ${attemptLabel})`,
       outputSummary: `Repair approval requested: ${approval.id}`,
     });
 
     const stepsText = result.repairProposal.steps.map(s => `- ${s.objective} (${s.tool})`).join('\n');
     const narratedSummary = findArtifactMetadata(personaArtifacts, 'narrated_summary_v1');
     const handoverSummary = findArtifactMetadata(personaArtifacts, 'handover_summary_v1');
+    const cooldownLine = repairState.nextEligibleAt
+      ? `Cooldown: repair can resume after ${repairState.nextEligibleAt}`
+      : null;
     const message = [
       `🛠 *REPAIR PROPOSAL*`,
       narratedSummary?.channelDrafts?.telegram ?? null,
       `Task: ${task.title}`,
+      `Attempt: ${attemptLabel}`,
       `Error: ${handoverSummary?.summary ?? result.repairProposal.reasoning}`,
+      cooldownLine,
       `Proposed Fix:`,
       stepsText,
       `Approve: /approve_repair ${approval.id}`,
@@ -1566,6 +1767,17 @@ export class Orchestrator {
     ]
       .filter(Boolean)
       .join('\n');
+
+    this.updateTaskRuntime(task.id, {
+      phase: 'waiting_approval',
+      phaseLabel: 'Waiting for repair approval',
+      detail: repairState.nextEligibleAt
+        ? `Repair attempt ${attemptLabel} is ready for approval and will resume after ${repairState.nextEligibleAt}.`
+        : `Repair attempt ${attemptLabel} is ready for approval.`,
+      currentModel: null,
+      modelRole: 'repair',
+      currentStep: null,
+    });
 
     const sentMessage = await this.notify(message, {
       parse_mode: 'Markdown',
@@ -1612,8 +1824,41 @@ export class Orchestrator {
   }
 
   async resumeWithRepair(taskId, approvalId) {
-    // This will be implemented in the next step to trigger re-execution
+    const result = await this.callPostgresTool(
+      'list_ready_repairs',
+      {
+        approvalId,
+        taskId,
+      },
+      () =>
+        this.pool.query(
+          `SELECT
+             approvals.id AS approval_id,
+             approvals.task_id,
+             approvals.response_payload->'repairProposal' AS repair_proposal,
+             tasks.title,
+             tasks.result AS task_result
+           FROM approvals
+           JOIN tasks ON tasks.id = approvals.task_id
+           WHERE approvals.status = 'approved'
+             AND approvals.approval_type = 'repair'
+             AND tasks.status = 'waiting_approval'
+             AND approvals.id = $1
+             AND approvals.task_id = $2
+           ORDER BY approvals.requested_at ASC`,
+          [approvalId, taskId]
+        )
+    );
+
+    const row = result.rows[0];
+    if (!row) {
+      this.logger.info({ taskId, approvalId }, 'No ready repair found to resume');
+      return null;
+    }
+
     this.logger.info({ taskId, approvalId }, 'Resuming task with repair');
+    await this.startApprovedRepair(row);
+    return row;
   }
 
   async processReadyRepairs() {
@@ -1643,13 +1888,64 @@ export class Orchestrator {
   }
 
   async startApprovedRepair(row) {
-    const task = {
-      id: row.task_id,
-      title: row.title,
-      // ... other task fields needed for executor
-    };
+    if (isRepairBackoffActive(row.task_result)) {
+      this.logger.info(
+        {
+          taskId: row.task_id,
+          approvalId: row.approval_id,
+          nextEligibleAt: row.task_result?.repairState?.nextEligibleAt ?? null,
+        },
+        'Repair approval is waiting for its backoff window'
+      );
+      this.updateTaskRuntime(row.task_id, {
+        phase: 'waiting_approval',
+        phaseLabel: 'Repair cooling down',
+        detail: `Repair was approved and will resume after ${row.task_result?.repairState?.nextEligibleAt}.`,
+        currentModel: null,
+        modelRole: null,
+        currentStep: null,
+      });
+      return null;
+    }
+
+    const appliedResult = await this.callPostgresTool(
+      'mark_approval_applied',
+      {
+        approvalId: row.approval_id,
+      },
+      () =>
+        this.pool.query(
+          `UPDATE approvals
+           SET status = 'applied'
+           WHERE id = $1
+             AND status = 'approved'
+           RETURNING id`,
+          [row.approval_id]
+        )
+    );
+
+    if (appliedResult.rows.length === 0) {
+      this.logger.info(
+        { taskId: row.task_id, approvalId: row.approval_id },
+        'Repair was already resumed by another worker'
+      );
+      return null;
+    }
 
     this.logger.info({ taskId: row.task_id }, 'Starting approved repair');
+    const repairState = getExistingRepairState(row.task_result);
+    const updatedResult = {
+      ...(row.task_result ?? {}),
+      repairState: {
+        ...repairState,
+        status: 'running',
+        nextEligibleAt: null,
+        backoffMs: 0,
+        lastOutcome: 'repair_started',
+        lastOutcomeAt: new Date().toISOString(),
+        appliedApprovalId: row.approval_id,
+      },
+    };
 
     // Update task status back to in_progress
     await this.callPostgresTool(
@@ -1660,6 +1956,7 @@ export class Orchestrator {
           status: 'in_progress',
           locked_by: this.instanceId,
           lease_expires_at: new Date(Date.now() + 15 * 60 * 1000).toISOString(),
+          result: updatedResult,
           touch_heartbeat: true,
         },
       },
@@ -1670,17 +1967,12 @@ export class Orchestrator {
              status = 'in_progress',
              locked_by = $2,
              lease_expires_at = NOW() + INTERVAL '15 minutes',
+             result = $3::jsonb,
              last_heartbeat_at = NOW(),
              updated_at = NOW()
            WHERE id = $1`,
-          [row.task_id, this.instanceId]
+          [row.task_id, this.instanceId, JSON.stringify(updatedResult)]
         )
-    );
-
-    // Update approval status to 'applied' or similar
-    await this.pool.query(
-      `UPDATE approvals SET status = 'applied' WHERE id = $1`,
-      [row.approval_id]
     );
 
     // Trigger execution with repair steps
@@ -1689,13 +1981,14 @@ export class Orchestrator {
       this.activeTasks.delete(taskObj);
     });
     this.activeTasks.add(taskObj);
+    return row.task_id;
   }
 
   async executeTaskWithRepair(row) {
     const task = {
       id: row.task_id,
       title: row.title,
-      description: row.task_result.plan.summary, // Use plan summary or original description
+      description: row.task_result?.plan?.summary ?? row.title,
       result: row.task_result,
     };
 
@@ -1703,10 +1996,10 @@ export class Orchestrator {
 
     try {
       // 1. Apply repair steps
-      const repairProposal = row.repair_proposal;
-      const workspaceRoot = row.task_result.workspaceRoot;
+      const repairProposal = row.repair_proposal ?? {};
+      const workspaceRoot = row.task_result?.workspaceRoot;
 
-      for (const step of repairProposal.steps) {
+      for (const step of repairProposal.steps ?? []) {
         await this.logTaskStep(task.id, {
           stepNumber: 911,
           stepType: 'repair',
@@ -1730,21 +2023,65 @@ export class Orchestrator {
       }
 
       // 2. Resume original task
-      // For now, we just re-run the whole task. 
+      // For now, we just re-run the whole task.
       // A more sophisticated implementation would resume from the failed step.
-      const taskRecord = (await this.pool.query('SELECT * FROM tasks WHERE id = $1', [task.id])).rows[0];
+      const taskRecordResult = await this.callPostgresTool(
+        'get_task_by_id',
+        { taskId: task.id, view: 'detail' },
+        () => this.pool.query('SELECT * FROM tasks WHERE id = $1', [task.id])
+      );
+      const taskRecord = taskRecordResult.rows[0];
+      if (!taskRecord) {
+        throw new Error(`Task not found while resuming repair: ${task.id}`);
+      }
       await this.executeTask(taskRecord);
     } catch (error) {
       this.logger.error({ err: error, taskId: task.id }, 'Repair failed');
+      const repairState = getExistingRepairState(task.result);
+      const nextResult = {
+        ...(task.result ?? {}),
+        repairState: {
+          ...repairState,
+          status: 'failed',
+          nextEligibleAt: null,
+          backoffMs: 0,
+          lastOutcome: 'repair_execution_failed',
+          lastOutcomeAt: new Date().toISOString(),
+          lastFailureMessage: error.message,
+        },
+      };
       await this.logTaskStep(task.id, {
         stepNumber: 911,
         stepType: 'repair',
         status: 'error',
         errorMessage: error.message,
       });
-      await this.pool.query(
-        `UPDATE tasks SET status = 'failed', blocked_reason = $2 WHERE id = $1`,
-        [task.id, `Repair failed: ${error.message}`]
+      await this.callPostgresTool(
+        'update_task_record',
+        {
+          taskId: task.id,
+          patch: {
+            status: 'failed',
+            blocked_reason: `Repair failed: ${error.message}`,
+            result: nextResult,
+            clear_lock: true,
+            touch_heartbeat: true,
+          },
+        },
+        () =>
+          this.pool.query(
+            `UPDATE tasks
+             SET
+               status = 'failed',
+               blocked_reason = $2,
+               result = $3::jsonb,
+               updated_at = NOW(),
+               locked_by = NULL,
+               lease_expires_at = NULL,
+               last_heartbeat_at = NOW()
+             WHERE id = $1`,
+            [task.id, `Repair failed: ${error.message}`, JSON.stringify(nextResult)]
+          )
       );
     }
   }
@@ -1799,7 +2136,7 @@ export class Orchestrator {
              response_payload = COALESCE(response_payload, '{}'::jsonb) || $2::jsonb
            WHERE id = $1
              AND status = 'pending'
-           RETURNING id, task_id`,
+           RETURNING id, task_id, approval_type`,
           [approvalId, JSON.stringify(payload)]
         )
     );
@@ -1830,6 +2167,17 @@ export class Orchestrator {
           [approvalId]
         )
     );
+
+    if (approval.approval_type === 'repair') {
+      try {
+        await this.resumeWithRepair(approval.task_id, approval.id);
+      } catch (error) {
+        this.logger.error(
+          { err: error, approvalId, taskId: approval.task_id },
+          'Repair approval was stored but immediate resume failed'
+        );
+      }
+    }
 
     return approval;
   }

@@ -198,6 +198,18 @@ test('postgres MCP server standardizes queue, reflection, and document indexing 
         };
       }
 
+      if (sql.includes("UPDATE approvals") && sql.includes("SET status = 'applied'")) {
+        return {
+          rows: [
+            {
+              id: 'repair-1',
+              task_id: 'task-repair-1',
+              approval_type: 'repair',
+            },
+          ],
+        };
+      }
+
       if (sql.includes('LEFT JOIN learnings l')) {
         return { rows: [{ id: 'task-2', title: 'Failed task' }] };
       }
@@ -273,7 +285,13 @@ test('postgres MCP server standardizes queue, reflection, and document indexing 
     modelTag: 'embed-model',
     embedding: [0.1, 0.2],
   });
-  const readyRepairs = await server.callTool('list_ready_repairs');
+  const readyRepairs = await server.callTool('list_ready_repairs', {
+    approvalId: 'repair-1',
+    taskId: 'task-repair-1',
+  });
+  const appliedApproval = await server.callTool('mark_approval_applied', {
+    approvalId: 'repair-1',
+  });
   const candidates = await server.callTool('list_embedding_candidates', {
     modelTag: 'embed-model',
     limit: 10,
@@ -289,6 +307,7 @@ test('postgres MCP server standardizes queue, reflection, and document indexing 
   assert.equal(chunk.rows[0].id, 'chunk-1');
   assert.equal(embedding.rows[0].model_tag, 'embed-model');
   assert.equal(readyRepairs.rows[0].approval_id, 'repair-1');
+  assert.equal(appliedApproval.rows[0].approval_type, 'repair');
   assert.equal(candidates.rows[0].source_path, 'README.md');
   assert.equal(txCalls.some((entry) => entry.sql === 'BEGIN'), true);
   assert.equal(txCalls.some((entry) => entry.sql === 'COMMIT'), true);
