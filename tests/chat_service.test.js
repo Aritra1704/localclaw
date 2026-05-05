@@ -419,7 +419,7 @@ test('chat service can approve the only pending planned task from natural langua
   assert.match(response.assistant.content, /Work is now in progress/);
 });
 
-test('chat service turns a clear execution request into an approval-gated planned task', async () => {
+test('chat service turns a clear execution request into an immediately-started planned task', async () => {
   const sessionId = '99999999-9999-4999-8999-999999999999';
   const plannedContracts = [];
 
@@ -527,7 +527,7 @@ test('chat service turns a clear execution request into an approval-gated planne
         return {
           task: {
             id: 'aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee',
-            status: 'waiting_approval',
+            status: 'pending',
           },
           plan: {
             summary: 'Create the new project directory and seed the planning document.',
@@ -543,6 +543,10 @@ test('chat service turns a clear execution request into an approval-gated planne
                 tool: 'filesystem',
               },
             ],
+          },
+          executionApproval: {
+            task_id: 'aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee',
+            status: 'approved',
           },
         };
       },
@@ -563,10 +567,117 @@ test('chat service turns a clear execution request into an approval-gated planne
   assert.equal(plannedContracts[0].options.source, 'chat_auto_plan');
   assert.equal(plannedContracts[0].options.chatSessionId, sessionId);
   assert.equal(response.assistant.metadata.taskId, 'aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee');
-  assert.equal(response.assistant.metadata.executionPending, true);
+  assert.equal(response.assistant.metadata.executionPending, false);
   assert.equal(response.assistant.metadata.autoPlannedFromChat, true);
-  assert.match(response.assistant.content, /approval-gated task/i);
-  assert.match(response.assistant.content, /Execution has not started yet/i);
+  assert.match(response.assistant.content, /started execution/i);
+  assert.match(response.assistant.content, /Execution is in progress/i);
+});
+
+test('chat service draftTask does not infer GitHub publication from local commit wording alone', async () => {
+  const sessionId = '97979797-9797-4979-8979-979797979797';
+
+  const chatService = createChatService({
+    pool: {
+      async query(sql, params) {
+        if (sql.includes('INSERT INTO chat_sessions')) {
+          return {
+            rows: [
+              {
+                id: sessionId,
+                title: 'Local coding chat',
+                actor: 'architect',
+                project_target_id: null,
+                project_path: '/tmp/demo-project',
+                summary: '',
+                summary_state: {},
+                status: 'active',
+                created_at: '2026-04-16T00:00:00.000Z',
+                updated_at: '2026-04-16T00:00:00.000Z',
+              },
+            ],
+          };
+        }
+
+        if (sql.includes('FROM chat_sessions')) {
+          return {
+            rows: [
+              {
+                id: sessionId,
+                title: 'Local coding chat',
+                actor: 'architect',
+                project_target_id: null,
+                project_path: '/tmp/demo-project',
+                summary: '',
+                summary_state: {},
+                status: 'active',
+                created_at: '2026-04-16T00:00:00.000Z',
+                updated_at: '2026-04-16T00:00:00.000Z',
+                project_name: null,
+              },
+            ],
+          };
+        }
+
+        if (sql.includes('FROM chat_messages')) {
+          return { rows: [] };
+        }
+
+        if (sql.includes('WHERE chat_session_id =')) {
+          return { rows: [] };
+        }
+
+        if (sql.includes('INSERT INTO chat_messages')) {
+          return {
+            rows: [
+              {
+                id: 'msg-local-commit',
+                session_id: sessionId,
+                role: params[1],
+                actor: params[2],
+                content: params[3],
+                metadata: JSON.parse(params[4]),
+                created_at: '2026-04-16T00:00:02.000Z',
+              },
+            ],
+          };
+        }
+
+        if (sql.includes('UPDATE chat_sessions SET updated_at')) {
+          return { rowCount: 1, rows: [] };
+        }
+
+        if (sql.includes('SET summary =')) {
+          return { rowCount: 1, rows: [] };
+        }
+
+        if (sql.includes('INSERT INTO chat_summaries')) {
+          return { rowCount: 1, rows: [] };
+        }
+
+        throw new Error(`Unexpected query: ${sql.slice(0, 80)}`);
+      },
+    },
+    projectService: {
+      async ensureProjectTarget() {
+        return null;
+      },
+    },
+    orchestrator: {},
+  });
+
+  await chatService.createSession({
+    title: 'Local coding chat',
+    actor: 'architect',
+    projectPath: '/tmp/demo-project',
+  });
+
+  const draft = await chatService.draftTask(sessionId, {
+    objective:
+      'Update the README with the CLI setup steps, commit it locally, and add a regression test for the local-only plan flow.',
+  });
+
+  assert.equal(draft.contract.repoIntent.publish, false);
+  assert.equal(draft.contract.repoIntent.deploy, false);
 });
 
 test('chat service planTask reconciles local-only auto-start tasks before rendering approval guidance', async () => {
@@ -646,7 +757,7 @@ test('chat service planTask reconciles local-only auto-start tasks before render
         return {
           task: {
             id: '67676767-6767-4676-8676-676767676767',
-            status: 'waiting_approval',
+            status: 'pending',
           },
           plan: {
             summary: 'Create the requested local markdown file.',
@@ -664,9 +775,10 @@ test('chat service planTask reconciles local-only auto-start tasks before render
             approvalRequired: false,
           },
           executionApproval: {
-            status: 'pending',
+            status: 'approved',
+            task_id: '67676767-6767-4676-8676-676767676767',
             approvalRequired: false,
-            autoStarted: false,
+            autoStarted: true,
           },
         };
       },
@@ -710,7 +822,7 @@ test('chat service planTask reconciles local-only auto-start tasks before render
     },
   });
 
-  assert.equal(planned.task.status, 'in_progress');
+  assert.equal(planned.task.status, 'pending');
   assert.equal(planned.executionApproval.status, 'approved');
   assert.equal(messages.length, 1);
   assert.match(messages[0].content, /Plan created and execution started\./);
@@ -906,7 +1018,7 @@ test('chat service auto-plans after clarification makes the draft contract concr
         return {
           task: {
             id: 'planned-after-refine',
-            status: 'waiting_approval',
+            status: 'pending',
           },
           plan: {
             summary: 'Fix the invoice rounding logic in the billing API.',
@@ -917,6 +1029,10 @@ test('chat service auto-plans after clarification makes the draft contract concr
                 tool: 'shell',
               },
             ],
+          },
+          executionApproval: {
+            task_id: 'planned-after-refine',
+            status: 'approved',
           },
         };
       },
@@ -941,9 +1057,9 @@ test('chat service auto-plans after clarification makes the draft contract concr
   assert.equal(plannedContracts[0].options.source, 'chat_auto_plan');
   assert.match(plannedContracts[0].contract.objective, /fix it/i);
   assert.match(plannedContracts[0].contract.objective, /billing API/i);
-  assert.equal(response.assistant.metadata.executionPending, true);
+  assert.equal(response.assistant.metadata.executionPending, false);
   assert.equal(response.assistant.metadata.taskId, 'planned-after-refine');
-  assert.match(response.assistant.content, /approval-gated task/i);
+  assert.match(response.assistant.content, /started execution/i);
 });
 
 test('chat service refines structured contract fields across follow-up turns', async () => {
@@ -1025,11 +1141,15 @@ test('chat service refines structured contract fields across follow-up turns', a
         return {
           task: {
             id: 'structured-plan',
-            status: 'waiting_approval',
+            status: 'pending',
           },
           plan: {
             summary: 'Refine contract fields before execution.',
             steps: [],
+          },
+          executionApproval: {
+            task_id: 'structured-plan',
+            status: 'approved',
           },
         };
       },

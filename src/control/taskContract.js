@@ -117,10 +117,8 @@ export function deriveExecutionControl(contract) {
   return {
     executionClass,
     executionPolicy,
-    approvalRequired:
-      executionPolicy === 'require_approval' ? true : executionClass !== 'local_only',
-    autoStartAllowed:
-      executionPolicy !== 'require_approval' && executionClass === 'local_only',
+    approvalRequired: false,
+    autoStartAllowed: true,
   };
 }
 

@@ -83,10 +83,10 @@ function templateContract() {
     version: 'task_contract_v1',
     projectName: 'safe-commit',
     objective:
-      'Implement the requested feature with tests and keep deployment behavior approval-gated.',
+      'Implement the requested feature with tests and keep it local unless publish or deploy is explicitly requested.',
     inScope: ['Update source code', 'Add or update tests', 'Update docs if behavior changes'],
     outOfScope: ['Infrastructure migration', 'Unrelated refactors'],
-    constraints: ['Use existing architecture', 'Do not bypass approval gates'],
+    constraints: ['Use existing architecture', 'Do not publish or deploy unless explicitly requested'],
     successCriteria: ['Tests pass', 'Changes are reviewable and production-safe'],
     priority: 'medium',
     skillHints: [],
@@ -832,7 +832,7 @@ export async function runCli(argv, io = {}, deps = {}) {
         logger.out(`Project: ${session.project_path}`);
       }
       logger.out(
-        'Type /exit to quit, /draft <objective> to draft a task, /plan <objective> to create a plan, /approve [task-id] to start execution, and /status [task-id] to inspect progress.'
+        'Type /exit to quit, /draft <objective> to draft a task, /plan <objective> to create and run a task, and /status [task-id] to inspect progress.'
       );
 
       const input = deps.input ?? process.stdin;
@@ -907,7 +907,7 @@ export async function runCli(argv, io = {}, deps = {}) {
               });
               continue;
             }
-            logger.out('Execution is still approval-gated. Use /approve to start this task.');
+            logger.out('Execution has been queued. Use /status to inspect progress.');
             continue;
           }
 
@@ -1009,7 +1009,7 @@ export async function runCli(argv, io = {}, deps = {}) {
             if (assistantMetadata.plan) {
               logger.out(formatPlanOutput(assistantMetadata.plan));
             }
-            logger.out('Execution is still approval-gated. Use /approve or say "yes, start it".');
+            logger.out('Execution has been queued. Use /status to inspect progress.');
           }
 
           if (approvedTaskId) {

@@ -3277,15 +3277,18 @@ export class Orchestrator {
         retrievalContext,
       });
       const requestedAt = new Date().toISOString();
+      const respondedAt = requestedAt;
+      const respondedVia = options.approvalSource ?? source;
 
       const resultPayload = {
         taskContract: contract,
         execution,
         preExecutionPlan: {
-          status: 'pending',
+          status: 'approved',
           requested_at: requestedAt,
-          responded_at: null,
-          responded_via: null,
+          responded_at: respondedAt,
+          responded_via: respondedVia,
+          note: options.approvalNote ?? 'Execution queued immediately; approval gate disabled',
           workspace_root: workspaceRoot,
           model_used: planning.modelUsed,
           repaired: planning.repaired === true,
@@ -3300,7 +3303,7 @@ export class Orchestrator {
         {
           taskId: task.id,
           patch: {
-            status: 'waiting_approval',
+            status: 'pending',
             project_name: contract.projectName,
             project_path: options.projectPath ?? workspaceRoot,
             project_target_id: projectTarget?.id ?? null,
@@ -3312,9 +3315,9 @@ export class Orchestrator {
         },
         () =>
           this.pool.query(
-            `UPDATE tasks
+          `UPDATE tasks
              SET
-               status = 'waiting_approval',
+               status = 'pending',
                project_name = COALESCE(project_name, $2),
                project_path = COALESCE($3, project_path),
                project_target_id = COALESCE($4, project_target_id),
@@ -3387,38 +3390,23 @@ export class Orchestrator {
         stepNumber: 2,
         stepType: 'approval',
         status: 'success',
-        outputSummary:
-          options.autoApproveExecution === true
-            ? 'Execution approval will be applied automatically after planning'
-            : 'Execution approval requested via control API',
+        outputSummary: 'Execution queued immediately; approval gate disabled',
       });
 
-      let executionApproval = {
-        status: 'pending',
-        approvalRequired: execution.approvalRequired,
-        autoStarted: false,
+      const executionApproval = {
+        task_id: task.id,
+        status: 'approved',
+        responded_at: respondedAt,
+        responded_via: respondedVia,
+        approvalRequired: false,
+        autoStarted: true,
       };
-
-      if (options.autoApproveExecution === true) {
-        const approved = await this.approveTaskExecution(task.id, {
-          respondedVia: options.approvalSource ?? source,
-          note: options.approvalNote ?? 'Approved automatically after planning',
-        });
-
-        if (approved) {
-          executionApproval = {
-            ...approved,
-            approvalRequired: false,
-            autoStarted: true,
-          };
-        }
-      }
 
       return {
         task: {
           id: task.id,
           title: task.title,
-          status: executionApproval.autoStarted ? 'pending' : 'waiting_approval',
+          status: 'pending',
           priority: task.priority,
           source: task.source,
           project_name: contract.projectName,

@@ -652,37 +652,17 @@ export function createControlApiServer({
         const execution = deriveExecutionControl(contract);
         const plannedTask = await orchestrator.createPlannedTask(contract, {
           source: 'control_api',
-          autoApproveExecution:
-            parsed.approveExecution === true || execution.autoStartAllowed === true,
+          autoApproveExecution: true,
+          approvalSource: 'control_api',
+          approvalNote: 'Execution queued immediately by /v1/tasks/run',
         });
 
-        let executionApproval = plannedTask.executionApproval ?? {
-          status: 'pending',
-          taskId: plannedTask.task.id,
-          approvalRequired: execution.approvalRequired,
-          autoStarted: false,
+        const executionApproval = plannedTask.executionApproval ?? {
+          status: 'approved',
+          task_id: plannedTask.task.id,
+          approvalRequired: false,
+          autoStarted: true,
         };
-
-        if (
-          executionApproval.status !== 'approved' &&
-          (parsed.approveExecution === true || execution.autoStartAllowed === true)
-        ) {
-          const approved = await orchestrator.approveTaskExecution(plannedTask.task.id, {
-            respondedVia: 'control_api',
-            note:
-              parsed.approveExecution === true
-                ? 'Approved immediately by /v1/tasks/run'
-                : 'Auto-started local-only execution by /v1/tasks/run',
-          });
-
-          if (approved) {
-            executionApproval = {
-              ...approved,
-              approvalRequired: false,
-              autoStarted: true,
-            };
-          }
-        }
 
         sendJson(res, 201, {
           data: {

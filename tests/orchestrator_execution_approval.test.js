@@ -13,11 +13,11 @@ const pool = getPool();
 const contract = {
   version: 'task_contract_v1',
   projectName: 'phase7-exec-gate',
-  objective: 'Validate plan then require explicit execution approval before running tools.',
+  objective: 'Validate plan and queue execution immediately after planning.',
   inScope: ['Create strict task contract', 'Store plan preview'],
   outOfScope: ['Deploy the generated app'],
-  constraints: ['Do not execute tools before approval'],
-  successCriteria: ['Task is waiting approval after planning'],
+  constraints: ['Queue execution immediately after planning'],
+  successCriteria: ['Task is pending after planning'],
   priority: 'medium',
   skillHints: [],
   repoIntent: {
@@ -38,7 +38,7 @@ test.after(async () => {
   );
 });
 
-test('createPlannedTask and execution approval transitions are enforced', async () => {
+test('createPlannedTask queues execution immediately without a waiting approval state', async () => {
   const previewCalls = [];
   const orchestrator = new Orchestrator({
     logger,
@@ -68,7 +68,7 @@ test('createPlannedTask and execution approval transitions are enforced', async 
         return {
           plan: {
             summary: 'Create baseline files and verify structure',
-            reasoning: 'Minimal deterministic plan for approval-gated execution',
+            reasoning: 'Minimal deterministic plan for immediate execution',
             executionMode: 'workspace_controlled',
             steps: [
               {
@@ -96,7 +96,8 @@ test('createPlannedTask and execution approval transitions are enforced', async 
     source: 'control_api_test',
   });
 
-  assert.equal(planned.task.status, 'waiting_approval');
+  assert.equal(planned.task.status, 'pending');
+  assert.equal(planned.executionApproval.status, 'approved');
   assert.equal(previewCalls.length, 1);
 
   const waitingTask = await pool.query(
@@ -106,8 +107,8 @@ test('createPlannedTask and execution approval transitions are enforced', async 
     [planned.task.id]
   );
 
-  assert.equal(waitingTask.rows[0].status, 'waiting_approval');
-  assert.equal(waitingTask.rows[0].result.preExecutionPlan.status, 'pending');
+  assert.equal(waitingTask.rows[0].status, 'pending');
+  assert.equal(waitingTask.rows[0].result.preExecutionPlan.status, 'approved');
   assert.equal(waitingTask.rows[0].result.preExecutionPlan.impact_analysis.riskLevel, 'medium');
 
   const workspaceArtifacts = await pool.query(
@@ -124,17 +125,7 @@ test('createPlannedTask and execution approval transitions are enforced', async 
     respondedVia: 'test_suite',
   });
 
-  assert.equal(approved.status, 'approved');
-
-  const pendingTask = await pool.query(
-    `SELECT status, result
-     FROM tasks
-     WHERE id = $1`,
-    [planned.task.id]
-  );
-
-  assert.equal(pendingTask.rows[0].status, 'pending');
-  assert.equal(pendingTask.rows[0].result.preExecutionPlan.status, 'approved');
+  assert.equal(approved, null);
 
   const cannotRejectApproved = await orchestrator.rejectTaskExecution(planned.task.id, {
     respondedVia: 'test_suite',
@@ -152,16 +143,5 @@ test('createPlannedTask and execution approval transitions are enforced', async 
     reason: 'Rejected by test',
   });
 
-  assert.equal(rejected.status, 'rejected');
-
-  const blockedTask = await pool.query(
-    `SELECT status, blocked_reason, result
-     FROM tasks
-     WHERE id = $1`,
-    [plannedForRejection.task.id]
-  );
-
-  assert.equal(blockedTask.rows[0].status, 'blocked');
-  assert.equal(blockedTask.rows[0].blocked_reason, 'Rejected by test');
-  assert.equal(blockedTask.rows[0].result.preExecutionPlan.status, 'rejected');
+  assert.equal(rejected, null);
 });

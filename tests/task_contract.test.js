@@ -72,7 +72,7 @@ test('contract helpers build title and markdown description', () => {
   assert.match(description, /Parse input payloads/);
 });
 
-test('deriveExecutionControl auto-starts local-only work and gates external work', () => {
+test('deriveExecutionControl auto-starts all work without an execution gate', () => {
   const localOnly = deriveExecutionControl(
     normalizeTaskContract({
       ...validContract,
@@ -97,6 +97,6 @@ test('deriveExecutionControl auto-starts local-only work and gates external work
     })
   );
   assert.equal(deploy.executionClass, 'deploy');
-  assert.equal(deploy.autoStartAllowed, false);
-  assert.equal(deploy.approvalRequired, true);
+  assert.equal(deploy.autoStartAllowed, true);
+  assert.equal(deploy.approvalRequired, false);
 });

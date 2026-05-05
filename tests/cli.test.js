@@ -85,7 +85,7 @@ test('cli task plan posts contract payload and prints task id and steps', async 
           data: {
             task: {
               id: '11111111-1111-4111-8111-111111111111',
-              status: 'waiting_approval',
+              status: 'pending',
             },
             plan: {
               summary: 'Plan generated',
@@ -180,7 +180,7 @@ test('cli task run --approve sends approveExecution=true', async () => {
           data: {
             task: {
               id: '22222222-2222-4222-8222-222222222222',
-              status: 'waiting_approval',
+              status: 'pending',
             },
             executionApproval: {
               status: 'approved',
@@ -254,7 +254,7 @@ test('cli waits for control API health before mutating requests', async () => {
           data: {
             task: {
               id: '33333333-3333-4333-8333-333333333333',
-              status: 'waiting_approval',
+              status: 'pending',
             },
             plan: {
               summary: 'Plan generated after readiness wait',
@@ -337,7 +337,7 @@ test('cli loads CONTROL_API_TOKEN from nearest .env for mutating requests', asyn
           data: {
             task: {
               id: '44444444-4444-4444-8444-444444444444',
-              status: 'waiting_approval',
+              status: 'pending',
             },
             plan: {
               summary: 'Plan generated',
@@ -481,12 +481,16 @@ test('cli chat shows pending plan details for auto-planned requests without star
           return {
             data: {
               assistant: {
-                content: 'I turned that request into an approval-gated task.',
+                content: 'I turned that request into a local task and started execution.',
                 metadata: {
                   taskId: '55555555-5555-4555-8555-555555555555',
-                  taskStatus: 'waiting_approval',
-                  executionPending: true,
+                  taskStatus: 'pending',
+                  executionPending: false,
                   autoPlannedFromChat: true,
+                  executionApproval: {
+                    task_id: '55555555-5555-4555-8555-555555555555',
+                    status: 'approved',
+                  },
                   plan: {
                     summary: 'Create the project directory and write the plan file.',
                     steps: [
@@ -503,6 +507,33 @@ test('cli chat shows pending plan details for auto-planned requests without star
                     ],
                   },
                 },
+              },
+            },
+          };
+        },
+      };
+    }
+
+    if (url.endsWith('/v1/tasks/55555555-5555-4555-8555-555555555555')) {
+      return {
+        ok: true,
+        status: 200,
+        async json() {
+          return {
+            data: {
+              task: {
+                id: '55555555-5555-4555-8555-555555555555',
+                status: 'done',
+                result: {
+                  preExecutionPlan: {
+                    status: 'approved',
+                  },
+                },
+              },
+              runtime: {
+                phase: 'complete',
+                phaseLabel: 'Done',
+                detail: 'Task finished successfully.',
               },
             },
           };
@@ -527,16 +558,13 @@ test('cli chat shows pending plan details for auto-planned requests without star
   assert.equal(exitCode, 0);
   assert.equal(
     calls.filter((call) => /\/v1\/tasks\/55555555-5555-4555-8555-555555555555$/.test(call.url)).length,
-    0
+    1
   );
 
   const output = capture.out.join('');
-  assert.match(output, /approval-gated task/);
-  assert.match(output, /Task: 55555555-5555-4555-8555-555555555555/);
-  assert.match(output, /Status: waiting_approval/);
-  assert.match(output, /1\. Create the project directory \[shell\]/);
-  assert.match(output, /Execution is still approval-gated/);
-  assert.doesNotMatch(output, /Watching task progress/);
+  assert.match(output, /started execution/);
+  assert.match(output, /Watching task progress/);
+  assert.match(output, /\[task 55555555-5555-4555-8555-555555555555\] done \| Done/);
 });
 
 test('cli chat /plan reconciles local-only auto-start tasks before printing approval-gated messaging', async () => {

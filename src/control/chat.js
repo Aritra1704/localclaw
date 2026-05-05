@@ -336,7 +336,11 @@ function inferRepoIntent(messages, previousIntent = { publish: false, deploy: fa
     if (/\b(?:do not deploy|don't deploy|without deploy|no deploy)\b/i.test(content)) {
       intent.deploy = false;
     }
-    if (/\b(?:publish it|open a pr|create a pr|push it|commit it)\b/i.test(content)) {
+    if (
+      /\b(?:publish it|publish to github|open a pr|create a pr|open pull request|create pull request|push to github)\b/i.test(
+        content
+      )
+    ) {
       intent.publish = true;
     }
     if (/\b(?:do not publish|don't publish|without publish|no pr|no publish)\b/i.test(content)) {
@@ -449,7 +453,7 @@ function buildClarificationQuestion(session, draftState) {
   }
 
   return [
-    'I can turn this into an approval-gated task, but I need a bit more detail before planning safely.',
+    'I can turn this into a task, but I need a bit more detail before planning safely.',
     '',
     ...prompts.map((prompt, index) => `${index + 1}. ${prompt}`),
     draftState?.contract?.objective || draftState?.objective
@@ -548,7 +552,7 @@ function formatChatPreferencePrompt(summaryState) {
 function buildFallbackChatResponse({ actor, userMessage, projectPath }) {
   const projectLine = projectPath ? `\nProject: ${projectPath}` : '';
   return compact(
-    `I can help as ${actor}. I will discuss and plan safely without executing anything until you explicitly approve a task.${projectLine}\n\nNext useful step: tell me the objective, constraints, and success criteria, or ask me to draft a task plan.\n\nYour message: ${userMessage}`,
+    `I can help as ${actor}. I can discuss, plan, and execute repo-local work directly.${projectLine}\n\nNext useful step: tell me the objective, constraints, and success criteria, or ask me to draft a task plan.\n\nYour message: ${userMessage}`,
     2000
   );
 }
@@ -557,7 +561,7 @@ function buildGreetingResponse({ actor, projectPath }) {
   const projectLine = projectPath ? `\nProject: ${projectPath}` : '';
   return `Hi. I am LocalClaw in ${actor} mode.${projectLine}
 
-I can discuss, review, plan, draft a task contract, or create an approval-gated execution plan. I will not execute anything until you explicitly approve it.`;
+I can discuss, review, plan, draft a task contract, and execute repo-local work directly.`;
 }
 
 function isExecutionApprovalIntent(message) {
@@ -615,8 +619,8 @@ function buildPlannedTaskChatResponse({
       ? 'I turned that request into a local task and started execution.'
       : 'Plan created and execution started.'
     : autoPlannedFromChat
-      ? 'I turned that request into an approval-gated task.'
-      : 'Plan created and waiting for execution approval.';
+      ? 'I turned that request into a task.'
+      : 'Plan created and queued for execution.';
   const lines = [header, '', `Task: ${task.id}`];
   const formattedPlan = formatPlanForChat(plan);
   if (formattedPlan) {
@@ -628,9 +632,7 @@ function buildPlannedTaskChatResponse({
   if (autoStarted) {
     lines.push('Execution is in progress. Use /status to inspect progress.');
   } else {
-    lines.push(
-      'Execution has not started yet. Use /approve, the chat approval control, or reply "yes, start it" to begin.'
-    );
+    lines.push('Execution has been queued. Use /status to inspect progress.');
   }
   return lines.join('\n');
 }
@@ -714,7 +716,7 @@ function buildDraftContract({ session, messages, objective, refinements = {} }) 
     constraints: dedupeList([
       'Use the selected project path only',
       'Keep changes reviewable',
-      'Keep publish, deploy, and other public actions approval-gated',
+      'Keep publish, deploy, and other public actions explicit and reviewable',
       ...(refinements.constraints ?? []),
     ]).slice(0, 20),
     successCriteria: dedupeList([
@@ -1187,8 +1189,8 @@ export function createChatService({
         } else {
           const content =
             pendingExecutionTasks.length > 1
-              ? `I found ${pendingExecutionTasks.length} tasks waiting for execution approval in this chat. Please approve one explicitly with /approve <task-id> or /status <task-id> first.`
-              : 'There is no task waiting for execution approval in this chat yet. Create one with /plan first.';
+              ? `I found ${pendingExecutionTasks.length} legacy tasks still sitting in waiting_approval in this chat. Use /status <task-id> to inspect one, or create a fresh task with /plan.`
+              : 'There is no task waiting to be started in this chat. Create one with /plan first.';
           const assistant = await insertMessage({
             sessionId,
             role: 'assistant',
@@ -1239,7 +1241,7 @@ export function createChatService({
           actor,
           content:
             activeDraft?.clarificationQuestion ??
-            'I need a bit more detail before I can turn this into an approval-gated task.',
+            'I need a bit more detail before I can turn this into a task.',
           metadata: {
             conservativeExecution: true,
             clarificationRequested: true,

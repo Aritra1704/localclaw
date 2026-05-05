@@ -42,13 +42,32 @@ test('publish policy allows auto-publish when intent is explicit', () => {
 test('publish policy allows non-skill plans by default', () => {
   const shouldPublish = shouldAttemptAutoPublish(
     {
-      title: 'phase4-sample-app',
-      description: 'Create deploy-ready app',
+      title: 'local README cleanup',
+      description: 'Update local docs and add a regression test',
     },
     {
       steps: [
         {
           tool: 'write_file',
+        },
+      ],
+    }
+  );
+
+  assert.equal(shouldPublish, false);
+});
+
+test('publish policy still allows explicit external plan steps without a contract', () => {
+  const shouldPublish = shouldAttemptAutoPublish(
+    {
+      title: 'prepare github publication',
+      description: 'Create release-ready workspace',
+    },
+    {
+      steps: [
+        {
+          tool: 'git_publish',
+          objective: 'Push the verified workspace to GitHub',
         },
       ],
     }

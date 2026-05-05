@@ -10,11 +10,11 @@ const logger = pino({ level: 'fatal' });
 const validContract = {
   version: 'task_contract_v1',
   projectName: 'phase7-prep',
-  objective: 'Implement CLI-first control API with strict plan+approve execution.',
+  objective: 'Implement CLI-first control API with immediate execution after planning.',
   inScope: ['Add local control API', 'Add CLI interface'],
   outOfScope: ['Build web UI'],
   constraints: ['Keep deploy approval gates unchanged'],
-  successCriteria: ['API can create plan previews', 'CLI can approve execution'],
+  successCriteria: ['API can create plan previews', 'CLI can start execution immediately'],
   priority: 'medium',
   skillHints: ['scaffold_node_http_service'],
   repoIntent: {
@@ -33,7 +33,7 @@ test('control API enforces token on mutating routes and returns deterministic re
           pending_count: 1,
           in_progress_count: 0,
           blocked_count: 0,
-          waiting_approval_count: 1,
+          waiting_approval_count: 0,
         },
       };
     },
@@ -61,7 +61,7 @@ test('control API enforces token on mutating routes and returns deterministic re
       return {
         task: {
           id: taskId,
-          status: 'waiting_approval',
+          status: 'pending',
           repo_url: 'https://github.com/example/demo-repo',
         },
         logs: [],
@@ -80,10 +80,10 @@ test('control API enforces token on mutating routes and returns deterministic re
         task: {
           id: '11111111-1111-4111-8111-111111111111',
           title: 'phase7-prep: plan',
-          status: 'waiting_approval',
+          status: 'pending',
         },
         plan: {
-          summary: 'Create strict plan and wait for execution approval',
+          summary: 'Create strict plan and queue execution immediately',
           steps: [
             {
               stepNumber: 1,
@@ -98,13 +98,6 @@ test('control API enforces token on mutating routes and returns deterministic re
           repaired: false,
           fallback: false,
         },
-      };
-    },
-    async approveTaskExecution(taskId) {
-      callLog.push({ fn: 'approveTaskExecution', taskId });
-      return {
-        task_id: taskId,
-        status: 'approved',
       };
     },
     async rejectTaskExecution(taskId, options) {
@@ -250,7 +243,7 @@ test('control API enforces token on mutating routes and returns deterministic re
     });
     assert.equal(planResponse.status, 201);
     const plannedPayload = await planResponse.json();
-    assert.equal(plannedPayload.data.task.status, 'waiting_approval');
+    assert.equal(plannedPayload.data.task.status, 'pending');
     assert.equal(plannedPayload.data.task.id, '11111111-1111-4111-8111-111111111111');
 
     const runResponse = await fetch(`${baseUrl}/v1/tasks/run`, {
@@ -291,7 +284,6 @@ test('control API enforces token on mutating routes and returns deterministic re
     assert.deepEqual(callSummary, [
       'createPlannedTask',
       'createPlannedTask',
-      'approveTaskExecution',
       'publishTaskReviewDraft',
     ]);
   } finally {
@@ -467,7 +459,7 @@ test('control API exposes project and chat operator endpoints', async () => {
       return {
         task: {
           id: '11111111-1111-4111-8111-111111111111',
-          status: 'waiting_approval',
+          status: 'pending',
         },
         plan: {
           summary: 'Plan preview',

@@ -144,7 +144,7 @@ export function shouldAttemptAutoPublish(task, plan, taskContract = null) {
 
   const planSteps = Array.isArray(plan?.steps) ? plan.steps : [];
   if (planSteps.length === 0) {
-    return true;
+    return false;
   }
 
   const runSkillOnly = planSteps.every((step) => step?.tool === 'run_skill');
@@ -152,7 +152,11 @@ export function shouldAttemptAutoPublish(task, plan, taskContract = null) {
     return false;
   }
 
-  return true;
+  const mentionsExternalTooling = planSteps.some((step) =>
+    /\b(?:github|git_push|git_publish|deploy|railway)\b/i.test(`${step?.tool ?? ''} ${step?.objective ?? ''}`)
+  );
+
+  return mentionsExternalTooling;
 }
 
 export function createTaskExecutor({
