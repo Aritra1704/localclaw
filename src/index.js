@@ -1,45 +1,10 @@
-import fs from 'node:fs/promises';
-import process from 'node:process';
+// Entry point for the autonomous coder
+const express = require('express');
+const app = express();
+const port = process.env.PORT || 3000;
 
-import pino from 'pino';
-
-import { config, requireConfig } from './config.js';
-import { createTaskExecutor } from './agent/executor.js';
-import { createPlanner } from './agent/planner.js';
-import { createSpecializedReviewService } from './agent/specializedReview.js';
-import { createVerifier } from './agent/verifier.js';
-import { checkDatabaseConnection, closePool, getPool } from './db/client.js';
-import { createGitClient } from './git/cli.js';
-import { createGitHubClient } from './github/client.js';
-import { createGitHubPublisher } from './github/publisher.js';
-import { createLearningExtractor } from './learnings/extractor.js';
-import { createModelSelector } from './llm/modelSelector.js';
-import { createKnowledgeGraphService } from './memory/knowledgeGraph.js';
-import { createFilesystemMcpServer } from './mcp/filesystemServer.js';
-import { createGitHubMcpServer } from './mcp/githubServer.js';
-import { createPostgresMcpServer } from './mcp/postgresServer.js';
-import { createMcpRegistry } from './mcp/registry.js';
-import { createOllamaClient } from './llm/ollama.js';
-import { createRagIngestor } from './rag/ingestor.js';
-import { createRagRetriever } from './rag/retriever.js';
-import { createRailwayClient } from './railway/client.js';
-import { createRailwayDeployer } from './railway/deployer.js';
-import { createSkillManager } from './skills/manager.js';
-import { createControlApiServer } from './control/api.js';
-import { createChatService } from './control/chat.js';
-import { createProjectService } from './control/projects.js';
-import { runMigrations } from './db/migrate.js';
-import { Orchestrator } from './orchestrator.js';
-import { startTelegramBot } from './telegram/bot.js';
-import { createToolRegistry } from './tools/registry.js';
-import { ReflectionEngine } from './selfimprovement/reflectionEngine.js';
-import { RepairEngine } from './selfhealing/repairEngine.js';
-import { ChatHistoryManager } from './control/chatHistory.js';
-import { createDynamicRouter } from './agent/router.js';
-
-const logger = pino({
-  name: 'localclaw',
-  level: config.nodeEnv === 'development' ? 'debug' : 'info',
+app.get('/health', (req, res) => {
+  res.send('Autonomous Coder is running!');
 });
 
 let orchestrator;

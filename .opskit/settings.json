@@ -1,8 +1,8 @@
 {
   "version": 1,
   "generatedBy": "localclaw",
-  "projectTaskId": "109e3400-ea0b-4114-86a5-fd2cc64698a7",
-  "projectTaskTitle": "localclaw: draft a plan how do i achieve creating the above app",
+  "projectTaskId": "f43ca090-cc13-4ec1-aaea-a4c911d7ba11",
+  "projectTaskTitle": "localclaw: build a detailed architecture stating all the steps how do i build a ",
   "deploy": {
     "provider": "railway",
     "approvalRequired": true

@@ -4,5 +4,5 @@
 .Trashes
 .opskit/settings.local.json
 PROJECT_CONTEXT.local.md
-node_modules/
 .localclaw/
+node_modules/
