@@ -1,16 +1,23 @@
 import { config as loadEnv } from 'dotenv';
+import path from 'node:path';
 import { z } from 'zod';
 
 loadEnv();
 
+const defaultLocalWorkspacePath = path.resolve(process.cwd(), '.localclaw/workspace');
+
 const envSchema = z.object({
   NODE_ENV: z.enum(['development', 'test', 'production']).default('development'),
+  LOCAL_ONLY_MODE: z
+    .enum(['true', 'false'])
+    .default('false')
+    .transform((value) => value === 'true'),
   DATABASE_URL: z.string().min(1, 'DATABASE_URL is required'),
   DATABASE_SCHEMA: z
     .string()
     .regex(/^[a-z_][a-z0-9_]*$/, 'DATABASE_SCHEMA must be a valid PostgreSQL schema name')
     .default('localclaw'),
-  SSD_BASE_PATH: z.string().min(1).default('/Volumes/Ari_SSD_01/PROJECTS/localclaw'),
+  SSD_BASE_PATH: z.string().min(1).default(defaultLocalWorkspacePath),
   TELEGRAM_BOT_TOKEN: z.string().optional(),
   TELEGRAM_CHAT_ID: z.string().optional(),
   GITHUB_PAT: z.string().optional(),
@@ -39,10 +46,17 @@ const envSchema = z.object({
   RAILWAY_DEPLOY_TIMEOUT_MS: z.coerce.number().int().positive().default(900000),
   OLLAMA_BASE_URL: z.string().url().default('http://127.0.0.1:11434'),
   OLLAMA_KEEP_ALIVE: z.string().default('30s'),
-  MODEL_PLANNER: z.string().default('gemma4:e4b'),
+  OLLAMA_REQUEST_TIMEOUT_MS: z.coerce.number().int().positive().default(120000),
+  OLLAMA_WARMUP_ENABLED: z
+    .enum(['true', 'false'])
+    .default('true')
+    .transform((value) => value === 'true'),
+  OLLAMA_WARMUP_TIMEOUT_MS: z.coerce.number().int().positive().default(180000),
+  OLLAMA_MAX_RETRIES: z.coerce.number().int().min(0).max(3).default(1),
+  MODEL_PLANNER: z.string().default('qwen2.5-coder:7b'),
   MODEL_CODER: z.string().default('qwen2.5-coder:7b'),
-  MODEL_FAST: z.string().default('qwen2.5:7b-instruct'),
-  MODEL_REVIEW: z.string().default('gemma4:e4b'),
+  MODEL_FAST: z.string().default('llama3.2:3b'),
+  MODEL_REVIEW: z.string().default('qwen2.5-coder:7b'),
   MODEL_EMBED: z.string().default('nomic-embed-text:latest'),
   TASK_POLL_INTERVAL_MS: z.coerce.number().int().positive().default(30000),
   TASK_TIMEOUT_HOURS: z.coerce.number().positive().default(2),
@@ -77,6 +91,14 @@ const envSchema = z.object({
   UI_DIST_DIR: z.string().default('web/dist'),
   UI_DEV_ORIGIN: z.string().url().default('http://127.0.0.1:5173'),
   PROACTIVE_REMEDIATIONS: z.string().default('disk_auto_prune,workspace_junk_cleanup'),
+  REPAIR_AUTO_APPROVE: z
+    .enum(['true', 'false'])
+    .default('false')
+    .transform((value) => value === 'true'),
+  DEPLOY_AUTO_APPROVE: z
+    .enum(['true', 'false'])
+    .default('false')
+    .transform((value) => value === 'true'),
 });
 
 const parsedEnv = envSchema.safeParse(process.env);
@@ -90,31 +112,41 @@ if (!parsedEnv.success) {
 }
 
 const env = parsedEnv.data;
+const localOnlyMode = env.LOCAL_ONLY_MODE;
+const controlApiEnabled = localOnlyMode ? true : env.CONTROL_API_ENABLED;
+const controlApiToken = localOnlyMode
+  ? env.CONTROL_API_TOKEN ?? 'localclaw-dev-token'
+  : env.CONTROL_API_TOKEN ?? '';
 
 export const config = {
   nodeEnv: env.NODE_ENV,
+  localOnlyMode,
   databaseUrl: env.DATABASE_URL,
   databaseSchema: env.DATABASE_SCHEMA,
-  ssdBasePath: env.SSD_BASE_PATH,
-  telegramBotToken: env.TELEGRAM_BOT_TOKEN ?? '',
-  telegramChatId: env.TELEGRAM_CHAT_ID ?? '',
-  githubPat: env.GITHUB_PAT ?? '',
-  githubUsername: env.GITHUB_USERNAME ?? '',
-  githubRepoOwner: env.GITHUB_REPO_OWNER ?? env.GITHUB_USERNAME ?? '',
+  ssdBasePath: localOnlyMode ? defaultLocalWorkspacePath : env.SSD_BASE_PATH,
+  telegramBotToken: localOnlyMode ? '' : env.TELEGRAM_BOT_TOKEN ?? '',
+  telegramChatId: localOnlyMode ? '' : env.TELEGRAM_CHAT_ID ?? '',
+  githubPat: localOnlyMode ? '' : env.GITHUB_PAT ?? '',
+  githubUsername: localOnlyMode ? '' : env.GITHUB_USERNAME ?? '',
+  githubRepoOwner: localOnlyMode ? '' : env.GITHUB_REPO_OWNER ?? env.GITHUB_USERNAME ?? '',
   githubApiBaseUrl: env.GITHUB_API_BASE_URL,
   githubRepoVisibility: env.GITHUB_REPO_VISIBILITY,
-  githubAutoPublish: env.GITHUB_AUTO_PUBLISH,
+  githubAutoPublish: localOnlyMode ? false : env.GITHUB_AUTO_PUBLISH,
   gitDefaultBranch: env.GIT_DEFAULT_BRANCH,
-  railwayApiToken: env.RAILWAY_API_TOKEN ?? '',
+  railwayApiToken: localOnlyMode ? '' : env.RAILWAY_API_TOKEN ?? '',
   railwayGraphqlEndpoint: env.RAILWAY_GRAPHQL_ENDPOINT,
-  railwayProjectId: env.RAILWAY_PROJECT_ID ?? '',
-  railwayEnvironmentId: env.RAILWAY_ENVIRONMENT_ID ?? '',
-  railwayServiceId: env.RAILWAY_SERVICE_ID ?? '',
-  railwayDeployEnabled: env.RAILWAY_DEPLOY_ENABLED,
+  railwayProjectId: localOnlyMode ? '' : env.RAILWAY_PROJECT_ID ?? '',
+  railwayEnvironmentId: localOnlyMode ? '' : env.RAILWAY_ENVIRONMENT_ID ?? '',
+  railwayServiceId: localOnlyMode ? '' : env.RAILWAY_SERVICE_ID ?? '',
+  railwayDeployEnabled: localOnlyMode ? false : env.RAILWAY_DEPLOY_ENABLED,
   railwayDeployPollIntervalMs: env.RAILWAY_DEPLOY_POLL_INTERVAL_MS,
   railwayDeployTimeoutMs: env.RAILWAY_DEPLOY_TIMEOUT_MS,
   ollamaBaseUrl: env.OLLAMA_BASE_URL,
   ollamaKeepAlive: env.OLLAMA_KEEP_ALIVE,
+  ollamaRequestTimeoutMs: env.OLLAMA_REQUEST_TIMEOUT_MS,
+  ollamaWarmupEnabled: env.OLLAMA_WARMUP_ENABLED,
+  ollamaWarmupTimeoutMs: env.OLLAMA_WARMUP_TIMEOUT_MS,
+  ollamaMaxRetries: env.OLLAMA_MAX_RETRIES,
   modelPlanner: env.MODEL_PLANNER,
   modelCoder: env.MODEL_CODER,
   modelFast: env.MODEL_FAST,
@@ -126,14 +158,17 @@ export const config = {
   dockerSandboxEnabled: env.DOCKER_SANDBOX_ENABLED,
   skillsBuiltinDir: env.SKILLS_BUILTIN_DIR,
   skillsAllowGenerated: env.SKILLS_ALLOW_GENERATED,
-  controlApiEnabled: env.CONTROL_API_ENABLED,
+  controlApiEnabled,
   controlApiHost: env.CONTROL_API_HOST,
   controlApiPort: env.CONTROL_API_PORT,
-  controlApiToken: env.CONTROL_API_TOKEN ?? '',
-  workspaceRoots: (env.LOCALCLAW_WORKSPACE_ROOTS ?? process.cwd())
-    .split(',')
-    .map((value) => value.trim())
-    .filter(Boolean),
+  controlApiToken,
+  workspaceRoots: [
+    process.cwd(),
+    ...(env.LOCALCLAW_WORKSPACE_ROOTS ?? '')
+      .split(',')
+      .map((value) => value.trim())
+      .filter(Boolean),
+  ],
   uiEnabled: env.UI_ENABLED,
   uiDistDir: env.UI_DIST_DIR,
   uiDevOrigin: env.UI_DEV_ORIGIN,
@@ -141,6 +176,8 @@ export const config = {
     .split(',')
     .map((value) => value.trim().toLowerCase())
     .filter(Boolean),
+  repairAutoApprove: env.REPAIR_AUTO_APPROVE,
+  deployAutoApprove: env.DEPLOY_AUTO_APPROVE,
 };
 
 export function requireConfig(...keys) {

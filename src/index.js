@@ -49,8 +49,49 @@ let projectService;
 let chatService;
 const BOOT_STAGE_TIMEOUT_MS = 10_000;
 
+async function warmOllamaModels(client) {
+  if (!config.ollamaWarmupEnabled) {
+    return [];
+  }
+
+  const candidates = [
+    { model: config.modelPlanner, mode: 'generate', role: 'planner' },
+    { model: config.modelCoder, mode: 'generate', role: 'coder' },
+    { model: config.modelFast, mode: 'generate', role: 'fast' },
+    { model: config.modelReview, mode: 'generate', role: 'review' },
+    { model: config.modelEmbed, mode: 'embed', role: 'embed' },
+  ];
+  const seen = new Set();
+  const warmed = [];
+
+  for (const candidate of candidates) {
+    const key = `${candidate.mode}:${candidate.model}`;
+    if (!candidate.model || seen.has(key)) {
+      continue;
+    }
+
+    seen.add(key);
+
+    try {
+      const result = await client.warmModel({
+        model: candidate.model,
+        mode: candidate.mode,
+        timeoutMs: config.ollamaWarmupTimeoutMs,
+      });
+      warmed.push({ ...candidate, cached: result.cached ?? false });
+    } catch (error) {
+      logger.warn(
+        { err: error, model: candidate.model, role: candidate.role, mode: candidate.mode },
+        'Ollama warmup failed; continuing without preloaded model'
+      );
+    }
+  }
+
+  return warmed;
+}
+
 async function ensureSsdBasePath() {
-  await fs.access(config.ssdBasePath);
+  await fs.mkdir(config.ssdBasePath, { recursive: true });
 }
 
 async function setAgentStateValue(key, value) {
@@ -98,7 +139,7 @@ async function withTimeout(promise, timeoutMs, message) {
 }
 
 async function bootstrap() {
-  requireConfig('databaseUrl', 'ssdBasePath');
+  requireConfig('databaseUrl');
 
   await setBootPhase('boot_starting');
   await setAgentStateValue('polling_active', false);
@@ -132,6 +173,18 @@ async function bootstrap() {
       availableModels: ollamaHealth.models.map((model) => model.name),
     },
     'Ollama connection healthy'
+  );
+  const warmedModels = await warmOllamaModels(ollamaClient);
+  logger.info(
+    {
+      warmedModels: warmedModels.map((entry) => ({
+        role: entry.role,
+        model: entry.model,
+        mode: entry.mode,
+        cached: entry.cached,
+      })),
+    },
+    'Ollama warmup pass complete'
   );
   await setBootPhase('boot_ollama_ready');
 
@@ -286,6 +339,8 @@ async function bootstrap() {
     chatHistoryManager,
     mcpRegistry,
   });
+
+  toolRegistry.setOrchestrator(orchestrator);
 
   projectService = createProjectService({
     pool: getPool(),

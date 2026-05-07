@@ -130,15 +130,34 @@ export const TOOL_DEFINITIONS = [
     }),
     },
     {
-    name: 'security_audit',
-    description: 'Perform a deep security scan on a file or the whole workspace to detect secrets, vulnerabilities, or risky patterns.',
-    plannerArgs: '{"path":"src/auth.js","depth":"deep"}',
-    argsSchema: z.object({
-    path: z.string().default('.'),
-    depth: z.enum(['quick', 'deep']).default('deep'),
-    }),
+      name: 'security_audit',
+      description: 'Perform a deep security scan on a file or the whole workspace to detect secrets, vulnerabilities, or risky patterns.',
+      plannerArgs: '{"path":"src/auth.js","depth":"deep"}',
+      argsSchema: z.object({
+        path: z.string().default('.'),
+        depth: z.enum(['quick', 'deep']).default('deep'),
+      }),
     },
-    ];
+    {
+      name: 'spawn_subtask',
+      description: 'Create a new independent task in the LocalClaw queue. Useful for decomposing a large HLD into smaller LLD stages.',
+      plannerArgs: '{"title":"Implement User Auth","description":"Create the user login and registration endpoints as defined in the LLD."}',
+      argsSchema: z.object({
+        title: z.string().min(1),
+        description: z.string().min(1),
+        priority: z.enum(['critical', 'high', 'medium', 'low']).default('medium'),
+        projectPath: z.string().optional(),
+      }),
+    },
+    {
+      name: 'get_task_status',
+      description: 'Check the current status and result of a previously spawned task.',
+      plannerArgs: '{"taskId":"uuid-here"}',
+      argsSchema: z.object({
+        taskId: z.string().uuid(),
+      }),
+    },
+  ];
 export const TOOL_NAMES = TOOL_DEFINITIONS.map((tool) => tool.name);
 
 export async function collectWorkspaceSnapshot(workspaceRoot, options = {}) {
@@ -148,6 +167,7 @@ export async function collectWorkspaceSnapshot(workspaceRoot, options = {}) {
 export function createToolRegistry(options = {}) {
   const skillManager = options.skillManager ?? null;
   const browserAutomation = options.browserAutomation ?? createBrowserAutomation();
+  let orchestrator = options.orchestrator ?? null;
   const filesystemServer =
     options.filesystemServer ??
     options.mcpRegistry?.getServer?.('filesystem') ??
@@ -169,6 +189,43 @@ export function createToolRegistry(options = {}) {
     }
 
     switch (name) {
+      case 'spawn_subtask': {
+        if (!orchestrator) {
+          throw new Error('Orchestrator is not connected to tool registry.');
+        }
+        const task = await orchestrator.createTask(args.description, {
+          title: args.title,
+          priority: args.priority,
+          projectPath: args.projectPath || workspaceRoot,
+          source: 'spawn_tool',
+        });
+        return {
+          summary: `Spawned sub-task: ${task.title} (ID: ${task.id})`,
+          output: JSON.stringify({ taskId: task.id, status: task.status }),
+          artifacts: [],
+        };
+      }
+
+      case 'get_task_status': {
+        if (!orchestrator) {
+          throw new Error('Orchestrator is not connected to tool registry.');
+        }
+        const task = await orchestrator.getTaskDetails(args.taskId);
+        if (!task) {
+          throw new Error(`Task not found: ${args.taskId}`);
+        }
+        return {
+          summary: `Task ${args.taskId} status: ${task.status}`,
+          output: JSON.stringify({
+            taskId: task.id,
+            status: task.status,
+            completedAt: task.completed_at,
+            result: task.result,
+          }),
+          artifacts: [],
+        };
+      }
+
       case 'surf_web': {
         try {
           const response = await fetch(args.url);
@@ -346,6 +403,10 @@ export function createToolRegistry(options = {}) {
       }
 
       return runBuiltInTool(name, args, context);
+    },
+
+    setOrchestrator(instance) {
+      orchestrator = instance;
     },
   };
 }

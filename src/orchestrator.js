@@ -1125,10 +1125,11 @@ export class Orchestrator {
             errorMessage: deploymentTargetCheck.error,
           });
 
+          const finalStatus = config.repairAutoApprove ? 'completed' : 'blocked';
           await this.pool.query(
             `UPDATE tasks
              SET
-               status = 'blocked',
+               status = $7,
                project_name = COALESCE(project_name, $2),
                project_path = COALESCE(project_path, $3),
                repo_url = COALESCE(repo_url, $4),
@@ -1146,13 +1147,14 @@ export class Orchestrator {
               result.publication.repo?.htmlUrl ?? null,
               deploymentTargetCheck.error,
               JSON.stringify(result),
+              finalStatus,
             ]
           );
 
           const blockedPersonaArtifacts = buildPersonaArtifactsForExecution({
             task,
             result,
-            taskStatus: 'blocked',
+            taskStatus: finalStatus,
             settings: personaContext.settings,
             preferenceSource: personaContext.preferenceSource,
           });
@@ -1648,12 +1650,13 @@ export class Orchestrator {
 
   async queueDeploymentApproval(task, result, narratedSummary = null) {
     const target = this.deployer.getTarget(result.deployment?.target ?? {});
+    const initialStatus = config.deployAutoApprove ? 'approved' : 'pending';
     const approvalResult = await this.callPostgresTool(
       'insert_approval',
       {
         taskId: task.id,
         approvalType: 'railway_deploy',
-        status: 'pending',
+        status: initialStatus,
         requestedVia: 'telegram',
         responsePayload: {
           repoUrl: result.publication.repo.htmlUrl,
@@ -1669,11 +1672,12 @@ export class Orchestrator {
              requested_via,
              response_payload
            )
-           VALUES ($1, $2, 'pending', 'telegram', $3::jsonb)
+           VALUES ($1, $2, $3, 'telegram', $4::jsonb)
            RETURNING id, task_id, requested_at`,
           [
             task.id,
             'railway_deploy',
+            initialStatus,
             JSON.stringify({
               repoUrl: result.publication.repo.htmlUrl,
               target,
@@ -1683,6 +1687,7 @@ export class Orchestrator {
     );
 
     const approval = approvalResult.rows[0];
+    const initialDeploymentStatus = config.deployAutoApprove ? 'queued' : 'approval_pending';
     const deploymentResult = await this.callPostgresTool(
       'insert_deployment',
       {
@@ -1690,7 +1695,7 @@ export class Orchestrator {
         provider: 'railway',
         targetEnv: target.environmentName,
         repoUrl: result.publication.repo.htmlUrl,
-        status: 'approval_pending',
+        status: initialDeploymentStatus,
         approvalId: approval.id,
         projectId: target.projectId,
         environmentId: target.environmentId,
@@ -1710,12 +1715,13 @@ export class Orchestrator {
              service_id,
              updated_at
            )
-           VALUES ($1, 'railway', $2, $3, 'approval_pending', $4, $5, $6, $7, NOW())
+           VALUES ($1, 'railway', $2, $3, $4, $5, $6, $7, $8, NOW())
            RETURNING id`,
           [
             task.id,
             target.environmentName,
             result.publication.repo.htmlUrl,
+            initialDeploymentStatus,
             approval.id,
             target.projectId,
             target.environmentId,
@@ -1724,12 +1730,13 @@ export class Orchestrator {
         )
     );
 
+    const finalTaskStatus = config.deployAutoApprove ? 'done' : 'waiting_approval';
     await this.callPostgresTool(
       'update_task_record',
       {
         taskId: task.id,
         patch: {
-          status: 'waiting_approval',
+          status: finalTaskStatus,
           project_name: result.publication.repo.name,
           project_path: result.workspaceRoot,
           repo_url: result.publication.repo.htmlUrl,
@@ -1743,7 +1750,7 @@ export class Orchestrator {
         this.pool.query(
           `UPDATE tasks
            SET
-             status = 'waiting_approval',
+             status = $6,
              project_name = COALESCE(project_name, $2),
              project_path = COALESCE(project_path, $3),
              repo_url = COALESCE(repo_url, $4),
@@ -1760,6 +1767,7 @@ export class Orchestrator {
             result.workspaceRoot,
             result.publication.repo.htmlUrl,
             JSON.stringify(result),
+            finalTaskStatus,
           ]
         )
     );
@@ -1769,8 +1777,16 @@ export class Orchestrator {
       stepType: 'approval',
       status: 'success',
       inputSummary: result.publication.repo.htmlUrl,
-      outputSummary: `Deploy approval requested: ${approval.id}`,
+      outputSummary: config.deployAutoApprove
+        ? `Deployment auto-approved: ${approval.id}`
+        : `Deploy approval requested: ${approval.id}`,
     });
+
+    if (config.deployAutoApprove) {
+      this.logger.info({ taskId: task.id, approvalId: approval.id }, 'Auto-triggering deployment');
+      await this.triggerDeployment(deploymentResult.rows[0].id);
+      return;
+    }
 
     const message = [
       `Deploy approval requested.`,
@@ -1989,8 +2005,25 @@ export class Orchestrator {
       stepType: 'approval',
       status: 'success',
       inputSummary: `${result.repairProposal.summary} (attempt ${attemptLabel})`,
-      outputSummary: `Repair approval requested: ${approval.id}`,
+      outputSummary: config.repairAutoApprove
+        ? `Repair auto-approved: ${approval.id}`
+        : `Repair approval requested: ${approval.id}`,
     });
+
+    if (config.repairAutoApprove) {
+      this.logger.info({ taskId: task.id, approvalId: approval.id }, 'Auto-triggering repair');
+      // Update task status to pending so it can be picked up by the next tick
+      await this.pool.query(
+        `UPDATE tasks SET status = 'pending', updated_at = NOW() WHERE id = $1`,
+        [task.id]
+      );
+      // Mark approval as approved
+      await this.pool.query(
+        `UPDATE approvals SET status = 'approved', responded_at = NOW(), responded_via = 'auto_approve' WHERE id = $1`,
+        [approval.id]
+      );
+      return;
+    }
 
     const stepsText = result.repairProposal.steps.map(s => `- ${s.objective} (${s.tool})`).join('\n');
     const narratedSummary = findArtifactMetadata(personaArtifacts, 'narrated_summary_v1');

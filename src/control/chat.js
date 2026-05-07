@@ -36,7 +36,7 @@ const draftTaskSchema = z
   .partial()
   .strict();
 
-const CHAT_MODEL_TIMEOUT_MS = 20000;
+const CHAT_MODEL_TIMEOUT_MS = 60000;
 const CHAT_SUMMARY_STATE_VERSION = 'chat_summary_v1';
 const EXECUTION_APPROVAL_PHRASES = new Set([
   'yes',

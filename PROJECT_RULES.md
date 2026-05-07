@@ -21,3 +21,7 @@
 
 - Deployment remains approval-gated.
 - Treat external actions as blocked until the operator confirms them.
+
+- Always verify the existence and correctness of the model names and versions before attempting to access them through the Ollama API.
+
+- Always verify the existence of requested resources before attempting to access them.

@@ -212,17 +212,28 @@ function buildDeterministicFallbackPlan(task) {
       },
       {
         stepNumber: 2,
+        objective: 'Draft implementation notes from task description',
+        tool: 'write_file',
+        args: {
+          path: 'docs/IMPLEMENTATION_NOTES.md',
+          content: `# Implementation Notes\n\nTask: ${task.title}\n\n${task.description}\n\n## Developer Note\nLocalClaw models failed to generate a precise execution plan. This document captures the intent to allow for manual intervention or a retry with stronger models.`,
+          overwrite: true,
+        },
+      },
+      {
+        stepNumber: 3,
         objective: 'Write fallback execution note',
         tool: 'write_file',
         args: {
           path: 'FALLBACK_PLAN.md',
-          content: `# Fallback Plan\n\nTask: ${task.title}\n\n${task.description}\n`,
+          content: `# Fallback Plan\n\nTask: ${task.title}\n\nThis task was executed using a deterministic fallback plan because the primary LLM planner failed to produce a valid JSON schema.\n`,
           overwrite: true,
         },
       },
     ],
     successCriteria: [
       'Workspace is inspected',
+      'Implementation notes are drafted',
       'Fallback plan note is created for operator follow-up',
     ],
     notesForVerifier: [
