@@ -1,10 +1,49 @@
-// Entry point for the autonomous coder
-const express = require('express');
-const app = express();
-const port = process.env.PORT || 3000;
+import fs from 'node:fs/promises';
+import process from 'node:process';
 
-app.get('/health', (req, res) => {
-  res.send('Autonomous Coder is running!');
+import pino from 'pino';
+
+import { config, requireConfig } from './config.js';
+import {
+  closePool,
+  getPool,
+  checkDatabaseConnection,
+} from './db/client.js';
+import { runMigrations } from './db/migrate.js';
+import { createOllamaClient } from './llm/ollama.js';
+import { createModelSelector } from './llm/modelSelector.js';
+import { createPlanner } from './agent/planner.js';
+import { createVerifier } from './agent/verifier.js';
+import { createSpecializedReviewService } from './agent/specializedReview.js';
+import { createLearningExtractor } from './learnings/extractor.js';
+import { createMcpRegistry } from './mcp/registry.js';
+import { createFilesystemMcpServer } from './mcp/filesystemServer.js';
+import { createPostgresMcpServer } from './mcp/postgresServer.js';
+import { createRagIngestor } from './rag/ingestor.js';
+import { createRagRetriever } from './rag/retriever.js';
+import { createKnowledgeGraphService } from './memory/knowledgeGraph.js';
+import { createSkillManager } from './skills/manager.js';
+import { createToolRegistry } from './tools/registry.js';
+import { createGitClient } from './git/cli.js';
+import { createGitHubClient } from './github/client.js';
+import { createGitHubMcpServer } from './mcp/githubServer.js';
+import { createGitHubPublisher } from './github/publisher.js';
+import { createRailwayClient } from './railway/client.js';
+import { createRailwayDeployer } from './railway/deployer.js';
+import { RepairEngine } from './selfhealing/repairEngine.js';
+import { ChatHistoryManager } from './control/chatHistory.js';
+import { createTaskExecutor } from './agent/executor.js';
+import { createDynamicRouter } from './agent/router.js';
+import { ReflectionEngine } from './selfimprovement/reflectionEngine.js';
+import { Orchestrator } from './orchestrator.js';
+import { createProjectService } from './control/projects.js';
+import { createChatService } from './control/chat.js';
+import { startTelegramBot } from './telegram/bot.js';
+import { createControlApiServer } from './control/api.js';
+
+const logger = pino({
+  name: 'localclaw-bootstrap',
+  level: config.nodeEnv === 'development' ? 'debug' : 'info',
 });
 
 let orchestrator;
@@ -12,7 +51,7 @@ let telegramBot;
 let controlApi;
 let projectService;
 let chatService;
-const BOOT_STAGE_TIMEOUT_MS = 10_000;
+const BOOT_STAGE_TIMEOUT_MS = 60_000;
 
 async function warmOllamaModels(client) {
   if (!config.ollamaWarmupEnabled) {
@@ -264,9 +303,9 @@ async function bootstrap() {
   await setBootPhase('boot_skills_ready');
 
   const repairEngine = new RepairEngine({
-    ollamaClient,
+    client: ollamaClient,
     logger,
-    modelName: config.modelReview,
+    modelSelector,
   });
 
   const chatHistoryManager = new ChatHistoryManager({
@@ -326,25 +365,15 @@ async function bootstrap() {
     startTelegramBot({
       logger,
       orchestrator,
-      onKill: async (reason) => {
-        await shutdown(`telegram_kill:${reason}`);
-        process.exit(0);
-      },
+      skillManager,
     }),
     BOOT_STAGE_TIMEOUT_MS,
-    'Timed out while starting Telegram bot.'
+    'Timed out while starting the Telegram bot.'
   );
+
   await setBootPhase('boot_telegram_ready');
-  orchestrator.setNotifier(telegramBot);
-  await withTimeout(
-    orchestrator.start(),
-    BOOT_STAGE_TIMEOUT_MS,
-    'Timed out while starting orchestrator.'
-  );
-  await setBootPhase('boot_orchestrator_ready');
 
   if (config.controlApiEnabled) {
-    requireConfig('controlApiToken');
     controlApi = createControlApiServer({
       orchestrator,
       logger,
