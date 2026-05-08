@@ -189,6 +189,7 @@ export function createTaskExecutor({
 
   return {
     previewTaskPlan,
+    toolRegistry,
 
     async executeTask(task, hooks = {}) {
       const workspaceName = `${slugifyTaskTitle(task.title) || 'task'}-${task.id.slice(0, 8)}`;

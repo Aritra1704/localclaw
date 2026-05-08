@@ -853,7 +853,7 @@ function Chat({ sessions, actors, projects, tokenReady, onRefresh, onSelectTask 
           {!sessionDetail && (
             <div className="message assistant">
               <b>assistant</b>
-              <p>Paste the token, confirm the project, then type normally. `Send` keeps this in discussion mode. `Plan task` creates a tracked task and waits for approval before execution.</p>
+              <p>Paste the token, confirm the project, then type normally. `Send` keeps this in discussion mode. `Plan task` creates a tracked task, and LocalClaw only asks for approval when the live task state actually requires it.</p>
             </div>
           )}
           {(sessionDetail?.messages || []).map((item) => (
@@ -952,11 +952,11 @@ function Chat({ sessions, actors, projects, tokenReady, onRefresh, onSelectTask 
         <section className="task-hints">
           <div className="task-hint-card">
             <strong>What chat expects</strong>
-            <p>Use `Send` for questions, scoping, and drafting. Use `Plan task` when you want LocalClaw to create a real task from the current prompt.</p>
+            <p>Use `Send` for questions, scoping, and drafting. Use `Plan task` when you want LocalClaw to create a real task from the current prompt. Short replies like `yes` or `no` apply to the latest assistant prompt, not to some global command mode.</p>
           </div>
           <div className="task-hint-card">
             <strong>Where progress shows</strong>
-            <p>Planned or approved work appears below as session tasks and in the `Tasks` view. `Send` by itself does not start execution.</p>
+            <p>Planned or approved work appears below as session tasks and in the `Tasks` view. Local-only tasks may start automatically; if approval is required, the live task detail will show it explicitly.</p>
           </div>
         </section>
         {runtimeTaskDetail && (

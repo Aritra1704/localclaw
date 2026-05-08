@@ -988,7 +988,7 @@ export async function runCli(argv, io = {}, deps = {}) {
             waitMs,
             sleepImpl,
           });
-          logger.out(response.assistant.content);
+          logger.out(`\n\x1b[1;32mLocalClaw\x1b[0m\n${response.assistant.content}\n`);
           const assistantMetadata = response.assistant?.metadata ?? {};
           const approvedTaskId = assistantMetadata.executionApproval?.task_id ?? null;
           const plannedTaskId = assistantMetadata.taskId ?? null;

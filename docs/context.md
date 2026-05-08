@@ -1,34 +1,16 @@
 # LocalClaw Context
 
-Version: 1.9
-Date: 2026-05-04  
+Version: 2.0
+Date: 2026-05-08  
 Purpose: end-to-end execution context and checkpoint guide for LocalClaw delivery
 
 ## 0. Current Phase Status
 
-As of 2026-05-04, the project status is:
+As of 2026-05-08, the project status is:
 
 | Phase | Status | Notes |
 |---|---|---|
-| Phase 0: Preflight | complete | SSD layout is ready, mandatory local model baseline is present, Telegram token and chat ID are available, DB credentials are verified, and Railway token can be added later. |
-| Phase 1: Foundation | complete | repo scaffold, env handling, migration runner, dedicated `localclaw` schema, orchestrator bootstrap, PM2 config, Telegram command wiring, command-handler integration testing, and live Telegram polling verification are complete. |
-| Phase 2: LLM and Tool Execution | complete | Ollama client, planner, workspace tool registry, task executor, and verifier are implemented. A live Telegram task generated `src/app.js` and `README.md` in the controlled workspace and verified successfully. |
-| Phase 3: Git and GitHub | complete | Git wrapper, GitHub client, and auto-publish flow are implemented. A live task pushed successfully to GitHub with repo linkage and publish logs captured in the DB. |
-| Phase 4: Deploy Gate Checkpoint | complete | Railway deploy workflow now includes end-to-end approval and successful deployment evidence. Telegram inline Approve/Reject buttons are active, and deployment retry handling is in place for fast-fail/no-log Railway responses. |
-| Phase 5: RAG and Learnings | complete | Planner receives retrieved historical context from learnings/doc chunks, completed tasks persist extracted learnings, and retrieval behavior is covered by tests. |
-| Phase 6: Skills Manager | complete | Built-in skill registry, enablement policy, skill run logging, guarded generated skills, and skill tests are implemented. |
-| Phase 7A: CLI Control Plane | complete | Local control API, `.env` token discovery, `doctor`, project allowlist, chat sessions, actors, and plan-gated task creation are implemented. |
-| Phase 7B: Browser Operator UI | complete | React/Vite UI is served by LocalClaw and covers dashboard, tasks, approvals, projects, skills, and chat. |
-| Phase 7C: Operator Cockpit Reliability | complete | Sidebar navigation, chat-first workspace, visible token state, faster chat fallbacks, task timeline, approval UX, diagnostics, and clearer empty/error states are implemented. |
-| Phase 8: Safe-Commit Proving Run | complete | LocalClaw has successfully executed its first major proving mission (Safe-Commit) and stabilized the multi-agent routing engine. |
-| Phase 9: Hardening & Sandbox | complete | Mandatory Docker sandbox escalation, workspace cleanup protections, and operator-safe recovery guardrails are in place. |
-| Phase 10: Specialized Agents | complete | Documentation, Security, and Dependency agents now run before publish, refresh workspace docs, flag risky findings, and create dependency follow-up tasks. |
-| Phase 11: MCP Integration | complete | Filesystem, GitHub, task/runtime PostgreSQL access, RAG indexing/retrieval, reflection, chat, projects, and skills now run through internal MCP-style servers with verified runtime coverage. |
-| Phase 12: Cognitive Memory | complete | Knowledge graph storage now maps files, symbols, dependencies, document references, historical changes, and related learnings, and semantic impact analysis is injected into planning and approval previews alongside flat RAG. |
-| Phase 13: Self-Healing & Proactive Autonomy | complete | Repair proposal generation, immediate repair resume, bounded retry budget, self-healing learnings, structured operator diagnostics, and allowlisted proactive remediations are now in place. |
-| Phase 14: Conversational Agent & Iterative Planning | complete | Persistent chat context, structured summaries/preferences, clarification-driven draft refinement, structural contract evolution, approval-gated planning, and browser visibility are now all in place. |
-| Phase 15: Persona Layer & Humanized Presence | complete | Operator persona settings and a dedicated `persona_preference_profile_v1` now persist separately, chat-derived preference signals are recorded with explicit-over-inferred resolution and expiry, Telegram/UI/GitHub drafts render through dedicated channel adapters, and evidence-bound narration tests are in place. |
-| Phase 16: Local-First Coding Agent Core | complete | Explicit execution policy, local-only auto-run, per-project repository and deploy target metadata, safer publish/deploy routing, structured plan/execution/verification artifacts, and isolated browser automation scaffolding are now implemented. |
+| Phase 0-16 | complete | Core system, CLI, UI, Telegram, RAG, Skills, Persona, and Local-First core are all stable and active. |
 
 ## 1. Mission
 
@@ -46,20 +28,21 @@ The first proving mission after LocalClaw reaches MVP is Safe-Commit.
 
 ## 2. Current Assumptions
 
-- LocalClaw is a new standalone project and not an extension of the eCardFactory services.
+- LocalClaw is a new standalone project.
 - Ollama is the primary model runtime.
-- Hugging Face is a secondary model source, not the default runtime path.
-- Docker is available locally and may be introduced as a sandbox boundary when tool execution expands.
-- Target machine is memory constrained enough that large multi-model parallelism is out of scope.
-- `qwen2.5-coder:7b` is required for the intended coding path even if it must still be pulled.
+- External SSD (`/Volumes/Ari_SSD_01`) is used for storage.
+- Docker is used for task sandboxing.
+- Target machine is memory constrained (16GB RAM).
 
 ## 3. Mandatory Model Baseline
 
 | Model | Purpose | Requirement |
 |---|---|---|
-| `gemma4:e4b` | planning, review | mandatory |
+| `qwen2.5-coder:14b` | planning, review | mandatory |
 | `qwen2.5-coder:7b` | coding, debugging | mandatory |
+| `llama3.2:3b` | fast utility, fallback | mandatory |
 | `nomic-embed-text:latest` | embeddings | mandatory |
+
 
 Optional and fallback models:
 

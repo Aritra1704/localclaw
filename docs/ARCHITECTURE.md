@@ -1,53 +1,41 @@
-<!-- localclaw:autodoc:architecture:start -->
-## Autodoc Architecture
+# LocalClaw Architecture
 
-Auto-maintained architecture snapshot for task `f43ca090-cc13-4ec1-aaea-a4c911d7ba11`.
+## 1. High-Level Design
+`localclaw` is a Node.js-based autonomous coding agent. It operates as a persistent service that processes a task queue, interacts with LLMs via Ollama, and executes tools to modify project files, run tests, and manage deployments.
 
-### Task Intent
+## 2. Component Breakdown
 
-[task_contract_v1]
+### 2.1. Core Orchestrator
+- **Task Polling:** Continuously checks the PostgreSQL database for new or pending tasks.
+- **State Machine:** Manages transitions between `pending`, `in_progress`, `waiting_approval`, `done`, and `failed`.
+- **Heartbeats:** Maintains process health and ensures tasks aren't lost on restart.
 
-Objective
-build a detailed architecture stating all the steps how do i build a autonomous coder, who acts as a developer and builds apps for me 24/7?
+### 2.2. Agent Plane
+- **Planner:** Uses `qwen2.5-coder:14b` to break down objectives into structured steps.
+- **Executor:** Runs the planned steps using curated tools.
+- **Verifier:** Validates the outcome of each task (e.g., via `npm test` or linting).
+- **Self-Healing:** Automatically attempts to repair common execution failures using an LLM-driven repair loop.
 
-Project
-- name: localclaw
-- priority: medium
-- publish: no
-- deploy: no
+### 2.3. Tool Registry
+- **Filesystem:** Atomic reads and writes within defined workspace roots.
+- **Shell:** Execution of terminal commands with timeouts and redacting secrets.
+- **Git/GitHub:** Automated repository creation, commits, and publishing.
+- **Railway:** Automated deployment of applications to the Railway cloud.
+- **Docker Sandbox:** Secure execution of untrusted or generated code.
 
-In Scope
-- Analyze the requested work
-- Prepare a safe implementation plan
-- Make only changes required by the approved task
+### 2.4. Interfaces
+- **CLI:** Primary control surface for status, diagnostics, and chat.
+- **Operator UI:** A React/Vite dashboard for visual monitoring and approvals.
+- **Telegram Bot:** Real-time alerts, deploy approvals, and basic status queries.
 
-Out Of Scope
-- Unrelated refactors
-- Unapproved deployment
-- Bypassing approval gates
+### 2.5. Memory & Context
+- **PostgreSQL:** Stores the source of truth for all tasks, logs, and agent state.
+- **RAG (Retrieval-Augmented Generation):** Indexes project docs and historical learnings to improve planner context.
+- **Knowledge Graph:** Maps code symbols and dependencies for deeper impact analysis.
 
-Constraints
-- Use the selected project path only
-- Keep changes reviewable
-- Ask for approval before execution
-
-Success Criteria
-- Plan is explicit and executable
-- Tests or verification steps are identified
-- Operator approval is required before execution
-
-Notes
-Drafted from chat session 2b9df28d-d428-487c-8ef1-7971514a8291
-
-### Top-Level Modules
-
-- workspace is currently flat
-
-### Notable Source Files
-
-- no code-oriented files detected
-
-### Node Entry Points
-
-- no explicit entry point declared
-<!-- localclaw:autodoc:architecture:end -->
+## 3. Storage Strategy
+- **Internal Storage:** Application code and configuration.
+- **External SSD (`/Volumes/Ari_SSD_01`):** 
+  - **AI Models:** Ollama model weights.
+  - **Projects:** Workspace directories for generated applications.
+  - **Backups:** Database dumps and project snapshots.

@@ -95,7 +95,8 @@ Return exactly one JSON object:
 Rules:
 - Use ONLY allowed tools.
 - All paths must be relative to the workspace root.
-- Keep the repair plan concise.`;
+- Keep the repair plan concise.
+- DO NOT simply repeat the failed step with the same arguments. Propose a CHANGE to fix the error.`;
 }
 
 export class RepairEngine {

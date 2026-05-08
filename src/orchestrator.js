@@ -2232,6 +2232,7 @@ export class Orchestrator {
         taskId: row.task_id,
         patch: {
           status: 'in_progress',
+          blocked_reason: null,
           locked_by: this.instanceId,
           lease_expires_at: new Date(Date.now() + 15 * 60 * 1000).toISOString(),
           result: updatedResult,
@@ -2243,6 +2244,7 @@ export class Orchestrator {
           `UPDATE tasks
            SET
              status = 'in_progress',
+             blocked_reason = NULL,
              locked_by = $2,
              lease_expires_at = NOW() + INTERVAL '15 minutes',
              result = $3::jsonb,

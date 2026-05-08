@@ -432,6 +432,14 @@ test('control API exposes project and chat operator endpoints', async () => {
                 confidence: 0.98,
               },
             },
+            pendingAction: {
+              type: 'clarification_question',
+              taskId: null,
+              draftObjective: 'Review the billing API and flag risky changes',
+              questionKind: 'open_text',
+              assistantMessageId: 'assistant-1',
+              expiresAt: null,
+            },
             contractDraft: {
               objective: 'Review the billing API and flag risky changes',
               readyForPlanning: false,
@@ -565,6 +573,10 @@ test('control API exposes project and chat operator endpoints', async () => {
     assert.equal(sessionDetail.status, 200);
     const sessionDetailPayload = await sessionDetail.json();
     assert.equal(sessionDetailPayload.data.session.summary_state.version, 'chat_summary_v1');
+    assert.equal(
+      sessionDetailPayload.data.session.summary_state.pendingAction.type,
+      'clarification_question'
+    );
     assert.equal(
       sessionDetailPayload.data.session.summary_state.contractDraft.pendingClarification,
       true

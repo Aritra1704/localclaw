@@ -1,8 +1,8 @@
 # LocalClaw Master HLD
 
-Version: 1.0  
-Date: 2026-04-07  
-Status: Working architecture baseline  
+Version: 2.0
+Date: 2026-05-08  
+Status: Active architecture baseline  
 Owner: Aritra  
 Platform target: Mac Mini M4, 16 GB unified memory, local PostgreSQL, local Ollama, optional Docker sandbox
 
@@ -221,8 +221,9 @@ Ollama is the primary runtime. Hugging Face models may be imported through Ollam
 
 | Model Tag | Runtime | Purpose | Required | Expected State |
 |---|---|---|---|---|
-| `gemma4:e4b` | Ollama | planning, review, structured reasoning | yes | installed |
-| `qwen2.5-coder:7b` | Ollama | coding, debugging, fix generation | yes | must be pulled if absent |
+| `qwen2.5-coder:14b` | Ollama | planning, review, structured reasoning | yes | installed |
+| `qwen2.5-coder:7b` | Ollama | coding, debugging, fix generation | yes | installed |
+| `llama3.2:3b` | Ollama | fast utility, fallback | yes | installed |
 | `nomic-embed-text:latest` | Ollama | embeddings for RAG and similarity workflows | yes | installed |
 
 ### 8.3 Optional or Fallback Models

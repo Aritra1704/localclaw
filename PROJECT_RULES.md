@@ -25,3 +25,11 @@
 - Always verify the existence and correctness of the model names and versions before attempting to access them through the Ollama API.
 
 - Always verify the existence of requested resources before attempting to access them.
+
+- Before running any task that requires external tools or packages, always ensure that all necessary dependencies are installed and available in the runtime environment.
+
+- All file paths must be relative to the project root directory.
+
+- All file paths must be relative to the project root directory and cannot use absolute paths.
+
+- All file paths must be relative to the project root directory and never use absolute paths.

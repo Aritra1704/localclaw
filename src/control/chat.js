@@ -64,16 +64,84 @@ const EXECUTION_APPROVAL_PHRASES = new Set([
   'continue',
   'do it',
   'ship it',
+  'do that',
+  'go for it',
+  'ok',
+  'okay',
+  'do as you said',
+  'proceed with the steps',
+  'start on the action items',
+]);
+const SHORT_AFFIRMATIVE_PHRASES = new Set([
+  'yes',
+  'yep',
+  'yeah',
+  'ok',
+  'okay',
+  'sure',
+  'go ahead',
+  'do it',
+  'proceed',
+  'continue',
+]);
+const SHORT_NEGATIVE_PHRASES = new Set([
+  'no',
+  'nope',
+  'nah',
+  'not now',
+  'stop',
+  'cancel',
+  'don t',
+  'do not',
+  'no thanks',
 ]);
 const EXECUTION_REQUEST_PATTERNS = [
-  /^(?:please\s+)?(?:can you\s+|could you\s+|would you\s+)?(?:create|build|implement|set up|setup|scaffold|generate|write|draft|fix|update|add|remove|refactor|rename|move|delete|start)\b/i,
-  /^(?:please\s+)?(?:i need you to|need you to|help me)\s+(?:create|build|implement|set up|setup|scaffold|generate|write|draft|fix|update|add|remove|refactor|rename|move|delete|start)\b/i,
+  /^(?:please\s+)?(?:can you\s+|could you\s+|would you\s+)?(?:create|build|implement|set up|setup|scaffold|generate|write|draft|fix|update|add|remove|refactor|rename|move|delete|start|analyze|review|examine|read|inspect|check|go through|walk through|scan|find|plan|list|show|tell|summarize|search|get|run|do|execute|perform|extract|compile|gather|investigate|verify|audit|audit-commit|safe-commit|reconstruct|repair|heal|improve|reflect|chat)\b/i,
+  /^(?:please\s+)?(?:i need you to|need you to|help me)\s+(?:create|build|implement|set up|setup|scaffold|generate|write|draft|fix|update|add|remove|refactor|rename|move|delete|start|analyze|review|examine|read|inspect|check|go through|walk through|scan|find|plan|list|show|tell|summarize|search|get|run|do|execute|perform|extract|compile|gather|investigate|verify|audit|audit-commit|safe-commit|reconstruct|repair|heal|improve|reflect|chat)\b/i,
 ];
 const TARGET_HINT_PATTERN =
   /(?:\.[a-z0-9]{1,8}\b|\/[a-z0-9_.-]+|\b(?:readme|package\.json|dockerfile|ui|api|page|component|route|endpoint|schema|table|migration|query|test|frontend|backend|database|react|node|typescript|python|markdown)\b)/i;
 const VAGUE_OBJECTIVE_PATTERN =
   /\b(?:fix it|update it|make it better|do it|handle it|something|stuff|thing|this|that)\b/i;
 const LIST_SPLIT_PATTERN = /\s*(?:\||\n)\s*/;
+const PENDING_ACTION_TYPES = new Set(['approval_request', 'clarification_question', 'none']);
+const PENDING_ACTION_QUESTION_KINDS = new Set(['yes_no', 'open_text', 'none']);
+
+function normalizeIntentMessage(message) {
+  return `${message ?? ''}`
+    .toLowerCase()
+    .replace(/[^a-z0-9\s-]+/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function createPendingAction(input = {}) {
+  const type = PENDING_ACTION_TYPES.has(input?.type) ? input.type : 'none';
+  const questionKind = PENDING_ACTION_QUESTION_KINDS.has(input?.questionKind)
+    ? input.questionKind
+    : 'none';
+
+  return {
+    type,
+    taskId: input?.taskId ?? null,
+    draftObjective: input?.draftObjective ?? null,
+    questionKind,
+    assistantMessageId: input?.assistantMessageId ?? null,
+    expiresAt: input?.expiresAt ?? null,
+  };
+}
+
+function hasPendingAction(action) {
+  return action?.type && action.type !== 'none';
+}
+
+function isShortAffirmative(message) {
+  return SHORT_AFFIRMATIVE_PHRASES.has(normalizeIntentMessage(message));
+}
+
+function isShortNegative(message) {
+  return SHORT_NEGATIVE_PHRASES.has(normalizeIntentMessage(message));
+}
 
 function compact(value, limit = 4000) {
   const text = `${value ?? ''}`.trim();
@@ -222,8 +290,8 @@ function extractChatPreferences(messages) {
   return preferences;
 }
 
-function findLatestExecutionRequestIndex(messages) {
-  for (let index = messages.length - 1; index >= 0; index -= 1) {
+function findFirstExecutionRequestIndex(messages) {
+  for (let index = 0; index < messages.length; index += 1) {
     if (isExecutionTaskRequest(messages[index]?.content)) {
       return index;
     }
@@ -239,7 +307,12 @@ function countWords(text) {
     .filter(Boolean).length;
 }
 
-function buildDraftObjective(messages, previousDraft = null, explicitObjective = null) {
+function buildDraftObjective(
+  messages,
+  previousDraft = null,
+  explicitObjective = null,
+  previousPendingAction = createPendingAction()
+) {
   if (explicitObjective?.trim()) {
     return explicitObjective.trim();
   }
@@ -249,19 +322,47 @@ function buildDraftObjective(messages, previousDraft = null, explicitObjective =
     return previousDraft?.contract?.objective ?? previousDraft?.objective ?? null;
   }
 
-  const latestExecutionIndex = findLatestExecutionRequestIndex(userMessages);
-  if (latestExecutionIndex >= 0) {
-    const baseObjective = `${userMessages[latestExecutionIndex]?.content ?? ''}`.trim();
+  const firstExecutionIndex = findFirstExecutionRequestIndex(userMessages);
+  if (firstExecutionIndex >= 0) {
+    const baseObjective = `${userMessages[firstExecutionIndex]?.content ?? ''}`.trim();
     const followUps = userMessages
-      .slice(latestExecutionIndex + 1)
+      .slice(firstExecutionIndex + 1)
       .map((message) => `${message.content ?? ''}`.trim())
-      .filter((content) => content && !isExecutionApprovalIntent(content));
+      .filter((content) => {
+        if (!content) {
+          return false;
+        }
+
+        if (
+          previousPendingAction.type === 'clarification_question' &&
+          previousPendingAction.questionKind === 'yes_no' &&
+          (isShortAffirmative(content) || isShortNegative(content))
+        ) {
+          return true;
+        }
+
+        return !isExecutionApprovalIntent(content);
+      });
 
     if (followUps.length > 0) {
       return compact(`${baseObjective}\n\nAdditional context: ${followUps.join(' | ')}`, 1800);
     }
 
     return baseObjective;
+  }
+
+  if (
+    previousPendingAction.type === 'clarification_question' &&
+    previousPendingAction.questionKind === 'yes_no' &&
+    (previousDraft?.contract?.objective || previousDraft?.objective)
+  ) {
+    const latestUserMessage = `${userMessages.at(-1)?.content ?? ''}`.trim();
+    if (isShortAffirmative(latestUserMessage) || isShortNegative(latestUserMessage)) {
+      return compact(
+        `${previousDraft.contract?.objective ?? previousDraft.objective}\n\nAdditional context: confirmation=${isShortAffirmative(latestUserMessage) ? 'yes' : 'no'}`,
+        1800
+      );
+    }
   }
 
   if (previousDraft?.pendingClarification && (previousDraft?.contract?.objective || previousDraft?.objective)) {
@@ -282,11 +383,11 @@ function getRelevantDraftMessages(messages) {
     .filter((message) => message.role === 'user')
     .map((message) => `${message.content ?? ''}`.trim())
     .filter(Boolean);
-  const latestExecutionIndex = findLatestExecutionRequestIndex(
+  const firstExecutionIndex = findFirstExecutionRequestIndex(
     userMessages.map((content) => ({ content }))
   );
-  if (latestExecutionIndex >= 0) {
-    return userMessages.slice(latestExecutionIndex);
+  if (firstExecutionIndex >= 0) {
+    return userMessages.slice(firstExecutionIndex);
   }
   return userMessages;
 }
@@ -411,19 +512,23 @@ function buildContractRefinements(messages, previousDraft = null) {
 }
 
 function assessDraftReadiness(session, objective) {
-  const missingContext = [];
-  const wordCount = countWords(objective);
   const normalized = `${objective ?? ''}`.trim();
+  const missingContext = [];
 
-  if (
-    wordCount < 8 ||
-    (wordCount < 14 && VAGUE_OBJECTIVE_PATTERN.test(normalized))
-  ) {
+  if (normalized.length < 5) {
     missingContext.push('requested_change');
-  }
+  } else {
+    const hasTargetHint = TARGET_HINT_PATTERN.test(normalized);
+    const isVagueShortRequest =
+      VAGUE_OBJECTIVE_PATTERN.test(normalized) && countWords(normalized) <= 4;
 
-  if (!session.project_path && !TARGET_HINT_PATTERN.test(normalized)) {
-    missingContext.push('target_area');
+    if (isVagueShortRequest || normalized.length < 12) {
+      missingContext.push('requested_change');
+    }
+
+    if (!hasTargetHint) {
+      missingContext.push('target_area');
+    }
   }
 
   return {
@@ -464,9 +569,27 @@ function buildClarificationQuestion(session, draftState) {
     .join('\n');
 }
 
+function buildPendingActionFromMessages(messages, previousSummaryState = null) {
+  const latestAssistant = [...messages].reverse().find((message) => message.role === 'assistant') ?? null;
+  if (!latestAssistant) {
+    return createPendingAction(previousSummaryState?.pendingAction);
+  }
+
+  return createPendingAction({
+    ...(latestAssistant.metadata?.pendingAction ?? {}),
+    assistantMessageId:
+      latestAssistant.metadata?.pendingAction?.assistantMessageId ?? latestAssistant.id ?? null,
+  });
+}
+
 function buildContractDraftState({ session, messages, previousSummaryState = null, explicitObjective = null }) {
   const previousDraft = previousSummaryState?.contractDraft ?? null;
-  const objective = buildDraftObjective(messages, previousDraft, explicitObjective);
+  const objective = buildDraftObjective(
+    messages,
+    previousDraft,
+    explicitObjective,
+    createPendingAction(previousSummaryState?.pendingAction)
+  );
   if (!objective) {
     return null;
   }
@@ -523,6 +646,7 @@ function buildChatSummaryState({ session, messages, previousSummaryState = null,
     summary,
     highlights: latestUserMessages.map((message) => buildMessageExcerpt(message.content, 180)),
     preferences: extractChatPreferences(messages),
+    pendingAction: buildPendingActionFromMessages(messages, previousSummaryState),
     contractDraft: buildContractDraftState({
       session,
       messages,
@@ -565,12 +689,7 @@ I can discuss, review, plan, draft a task contract, and execute repo-local work 
 }
 
 function isExecutionApprovalIntent(message) {
-  const normalized = `${message ?? ''}`
-    .toLowerCase()
-    .replace(/[^a-z0-9\s-]+/g, ' ')
-    .replace(/\s+/g, ' ')
-    .trim();
-  return EXECUTION_APPROVAL_PHRASES.has(normalized);
+  return EXECUTION_APPROVAL_PHRASES.has(normalizeIntentMessage(message));
 }
 
 function isExecutionTaskRequest(message) {
@@ -606,6 +725,23 @@ function formatPlanForChat(plan) {
   return lines.join('\n');
 }
 
+function buildApprovalPendingAction(taskId, draftObjective = null) {
+  return createPendingAction({
+    type: 'approval_request',
+    taskId,
+    draftObjective,
+    questionKind: 'none',
+  });
+}
+
+function buildClarificationPendingAction(draftObjective = null, questionKind = 'open_text') {
+  return createPendingAction({
+    type: 'clarification_question',
+    draftObjective,
+    questionKind,
+  });
+}
+
 function buildPlannedTaskChatResponse({
   task,
   plan,
@@ -614,10 +750,16 @@ function buildPlannedTaskChatResponse({
   autoPlannedFromChat = false,
 }) {
   const autoStarted = executionApproval?.status === 'approved';
+  const waitingApproval =
+    executionApproval?.status === 'pending' || task?.status === 'waiting_approval';
   const header = autoStarted
     ? autoPlannedFromChat
       ? 'I turned that request into a local task and started execution.'
       : 'Plan created and execution started.'
+    : waitingApproval
+      ? autoPlannedFromChat
+        ? 'I turned that request into a task and it is waiting for approval.'
+        : 'Plan created and is waiting for approval before execution.'
     : autoPlannedFromChat
       ? 'I turned that request into a task.'
       : 'Plan created and queued for execution.';
@@ -631,10 +773,16 @@ function buildPlannedTaskChatResponse({
   }
   if (autoStarted) {
     lines.push('Execution is in progress. Use /status to inspect progress.');
+  } else if (waitingApproval) {
+    lines.push('Execution is waiting for approval. Reply `yes` to approve it, or `no` to keep it blocked.');
   } else {
     lines.push('Execution has been queued. Use /status to inspect progress.');
   }
   return lines.join('\n');
+}
+
+function buildApprovalDisambiguationResponse() {
+  return 'I am not currently holding an approval or yes/no prompt for this chat. Tell me what you want me to continue, or restate the task in one sentence.';
 }
 
 async function reconcileAutoStartedPlan(orchestrator, planned) {
@@ -987,6 +1135,10 @@ export function createChatService({
         executionPending: planned.executionApproval?.status !== 'approved',
         executionApproval: planned.executionApproval,
         autoPlannedFromChat,
+        pendingAction:
+          planned.executionApproval?.status === 'pending'
+            ? buildApprovalPendingAction(planned.task.id, contract.objective)
+            : createPendingAction(),
       },
     });
 
@@ -1148,6 +1300,7 @@ export function createChatService({
       const pendingExecutionTasks = sessionTasks.filter(
         (task) => task.status === 'waiting_approval'
       );
+      const previousPendingAction = createPendingAction(session.summary_state?.pendingAction);
       const conversationSummaryState = buildChatSummaryState({
         session: {
           ...session,
@@ -1157,11 +1310,160 @@ export function createChatService({
         previousSummaryState: session.summary_state,
       });
       const activeDraft = conversationSummaryState.contractDraft ?? null;
+      const isAffirmativeReply = isShortAffirmative(parsed.content);
+      const isNegativeReply = isShortNegative(parsed.content);
+
+      if (isAffirmativeReply || isNegativeReply) {
+        if (previousPendingAction.type === 'approval_request') {
+          const targetedTaskId =
+            previousPendingAction.taskId ??
+            (pendingExecutionTasks.length === 1 ? pendingExecutionTasks[0].id : null);
+
+          if (targetedTaskId) {
+            const approvalResult = isAffirmativeReply
+              ? await orchestrator.approveTaskExecution(targetedTaskId, {
+                  respondedVia: 'chat',
+                  note: `Approved from turn-aware chat reply in session ${sessionId}`,
+                })
+              : await orchestrator.rejectTaskExecution?.(targetedTaskId, {
+                  respondedVia: 'chat',
+                  reason: `Execution rejected from turn-aware chat reply in session ${sessionId}`,
+                });
+
+            if (approvalResult) {
+              const assistant = await insertMessage({
+                sessionId,
+                role: 'assistant',
+                actor,
+                content: isAffirmativeReply
+                  ? `Execution approved for task ${targetedTaskId}. Work is now in progress. Use /status ${targetedTaskId} if you want another snapshot.`
+                  : `Okay. I will not start task ${targetedTaskId}. It stays blocked until you approve it again or create a fresh task.`,
+                metadata: {
+                  taskId: targetedTaskId,
+                  executionApproval: approvalResult,
+                  autoApprovedFromChat: isAffirmativeReply,
+                  pendingAction: createPendingAction(),
+                },
+              });
+
+              await updateSummary(session, [...messages, assistant]);
+
+              return {
+                user,
+                assistant,
+              };
+            }
+          }
+
+          const assistant = await insertMessage({
+            sessionId,
+            role: 'assistant',
+            actor,
+            content: targetedTaskId
+              ? `Task ${targetedTaskId} is no longer waiting for approval. Use /status ${targetedTaskId} to inspect its current state.`
+              : buildApprovalDisambiguationResponse(),
+            metadata: {
+              conservativeExecution: true,
+              approvalIntentDetected: true,
+              pendingAction: createPendingAction(),
+            },
+          });
+
+          await updateSummary(session, [...messages, assistant]);
+
+          return {
+            user,
+            assistant,
+          };
+        }
+
+        if (
+          previousPendingAction.type === 'clarification_question' &&
+          previousPendingAction.questionKind === 'yes_no'
+        ) {
+          if (activeDraft?.readyForPlanning && activeDraft.contract) {
+            const { assistant } = await createPlannedTaskMessage({
+              session: {
+                ...session,
+                actor,
+                summary_state: conversationSummaryState,
+              },
+              sessionId,
+              actor,
+              objective: activeDraft.contract.objective,
+              contract: activeDraft.contract,
+              autoPlannedFromChat: true,
+            });
+
+            return {
+              user,
+              assistant,
+            };
+          }
+
+          const assistant = await insertMessage({
+            sessionId,
+            role: 'assistant',
+            actor,
+            content:
+              activeDraft?.clarificationQuestion ??
+              'I recorded that answer, but I still need a bit more detail before I can plan safely.',
+            metadata: {
+              conservativeExecution: true,
+              clarificationRequested: true,
+              draftContract: activeDraft?.contract ?? null,
+              missingContext: activeDraft?.missingContext ?? ['requested_change'],
+              pendingAction: buildClarificationPendingAction(
+                activeDraft?.contract?.objective ?? activeDraft?.objective ?? previousPendingAction.draftObjective,
+                'open_text'
+              ),
+            },
+          });
+
+          await updateSummary(
+            {
+              ...session,
+              actor,
+              summary_state: conversationSummaryState,
+            },
+            [...messages, assistant]
+          );
+
+          return {
+            user,
+            assistant,
+          };
+        }
+
+        if (!hasPendingAction(previousPendingAction)) {
+          const assistant = await insertMessage({
+            sessionId,
+            role: 'assistant',
+            actor,
+            content: buildApprovalDisambiguationResponse(),
+            metadata: {
+              conservativeExecution: true,
+              clarificationRequested: true,
+              pendingAction: createPendingAction(),
+            },
+          });
+
+          await updateSummary(session, [...messages, assistant]);
+
+          return {
+            user,
+            assistant,
+          };
+        }
+      }
 
       if (isExecutionApprovalIntent(parsed.content)) {
-        if (pendingExecutionTasks.length === 1) {
-          const pendingTask = pendingExecutionTasks[0];
-          const approved = await orchestrator.approveTaskExecution(pendingTask.id, {
+        const targetedPendingTask =
+          pendingExecutionTasks.find((task) => task.id === previousPendingAction.taskId) ??
+          (pendingExecutionTasks.length === 1 ? pendingExecutionTasks[0] : null);
+
+        if (targetedPendingTask) {
+          const approved = await orchestrator.approveTaskExecution(targetedPendingTask.id, {
             respondedVia: 'chat',
             note: `Approved from natural-language chat reply in session ${sessionId}`,
           });
@@ -1171,11 +1473,12 @@ export function createChatService({
               sessionId,
               role: 'assistant',
               actor,
-              content: `Execution approved for task ${pendingTask.id}. Work is now in progress. Use /status ${pendingTask.id} if you want another snapshot.`,
+              content: `Execution approved for task ${targetedPendingTask.id}. Work is now in progress. Use /status ${targetedPendingTask.id} if you want another snapshot.`,
               metadata: {
-                taskId: pendingTask.id,
+                taskId: targetedPendingTask.id,
                 executionApproval: approved,
                 autoApprovedFromChat: true,
+                pendingAction: createPendingAction(),
               },
             });
 
@@ -1186,6 +1489,32 @@ export function createChatService({
               assistant,
             };
           }
+        } else if (pendingExecutionTasks.length === 0 && activeDraft?.objective) {
+          const contract =
+            activeDraft.contract ??
+            buildDraftContract({
+              session,
+              messages,
+              objective: activeDraft.objective,
+            });
+
+          const { assistant } = await createPlannedTaskMessage({
+            session: {
+              ...session,
+              actor,
+              summary_state: conversationSummaryState,
+            },
+            sessionId,
+            actor,
+            objective: contract.objective,
+            contract,
+            autoPlannedFromChat: true,
+          });
+
+          return {
+            user,
+            assistant,
+          };
         } else {
           const content =
             pendingExecutionTasks.length > 1
@@ -1199,6 +1528,7 @@ export function createChatService({
             metadata: {
               conservativeExecution: true,
               approvalIntentDetected: true,
+              pendingAction: createPendingAction(),
             },
           });
 
@@ -1247,6 +1577,10 @@ export function createChatService({
             clarificationRequested: true,
             draftContract: activeDraft?.contract ?? null,
             missingContext: activeDraft?.missingContext ?? ['requested_change'],
+            pendingAction: buildClarificationPendingAction(
+              activeDraft?.contract?.objective ?? activeDraft?.objective ?? null,
+              'open_text'
+            ),
           },
         });
 
@@ -1282,6 +1616,7 @@ export function createChatService({
         content,
         metadata: {
           conservativeExecution: true,
+          pendingAction: createPendingAction(),
         },
       });
 
@@ -1322,7 +1657,7 @@ export function createChatService({
           objective: parsed.objective,
         });
 
-      await insertMessage({
+      const assistant = await insertMessage({
         sessionId,
         role: 'assistant',
         actor: parsed.actor ?? session.actor,
@@ -1331,8 +1666,11 @@ export function createChatService({
           draftContract: contract,
           draftReadyForPlanning: draftState?.readyForPlanning ?? true,
           missingContext: draftState?.missingContext ?? [],
+          pendingAction: createPendingAction(),
         },
       });
+
+      await updateSummary(session, [...messages, assistant]);
 
       return { contract };
     },
@@ -1376,6 +1714,10 @@ export function createChatService({
             execution: planned.execution,
             executionPending: planned.executionApproval?.status !== 'approved',
             executionApproval: planned.executionApproval,
+            pendingAction:
+              planned.executionApproval?.status === 'pending'
+                ? buildApprovalPendingAction(planned.task.id, contract.objective)
+                : createPendingAction(),
           },
         });
 
@@ -1404,6 +1746,7 @@ export function createChatService({
 
     async approveTask(sessionId, input = {}) {
       const taskId = z.string().uuid().parse(input.taskId);
+      const session = await getSessionRow(sessionId);
       const approved = await orchestrator.approveTaskExecution(taskId, {
         respondedVia: 'chat',
         note: `Approved from chat session ${sessionId}`,
@@ -1413,7 +1756,8 @@ export function createChatService({
         return null;
       }
 
-      await insertMessage({
+      const messages = session ? await listMessages(sessionId) : [];
+      const assistant = await insertMessage({
         sessionId,
         role: 'assistant',
         actor: input.actor ?? null,
@@ -1421,8 +1765,13 @@ export function createChatService({
         metadata: {
           taskId,
           executionApproval: approved,
+          pendingAction: createPendingAction(),
         },
       });
+
+      if (session) {
+        await updateSummary(session, [...messages, assistant]);
+      }
 
       return approved;
     },
