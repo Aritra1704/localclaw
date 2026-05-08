@@ -361,6 +361,13 @@ async function bootstrap() {
     mcpRegistry,
   });
 
+  await withTimeout(
+    orchestrator.start(),
+    BOOT_STAGE_TIMEOUT_MS,
+    'Timed out while starting the orchestrator.'
+  );
+  await setBootPhase('boot_orchestrator_ready');
+
   telegramBot = await withTimeout(
     startTelegramBot({
       logger,
