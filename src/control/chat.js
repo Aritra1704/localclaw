@@ -96,8 +96,8 @@ const SHORT_NEGATIVE_PHRASES = new Set([
   'no thanks',
 ]);
 const EXECUTION_REQUEST_PATTERNS = [
-  /^(?:please\s+)?(?:can you\s+|could you\s+|would you\s+)?(?:create|build|implement|set up|setup|scaffold|generate|write|draft|fix|update|add|remove|refactor|rename|move|delete|start|analyze|review|examine|read|inspect|check|go through|walk through|scan|find|plan|list|show|tell|summarize|search|get|run|do|execute|perform|extract|compile|gather|investigate|verify|audit|audit-commit|safe-commit|reconstruct|repair|heal|improve|reflect|chat)\b/i,
-  /^(?:please\s+)?(?:i need you to|need you to|help me)\s+(?:create|build|implement|set up|setup|scaffold|generate|write|draft|fix|update|add|remove|refactor|rename|move|delete|start|analyze|review|examine|read|inspect|check|go through|walk through|scan|find|plan|list|show|tell|summarize|search|get|run|do|execute|perform|extract|compile|gather|investigate|verify|audit|audit-commit|safe-commit|reconstruct|repair|heal|improve|reflect|chat)\b/i,
+  /^(?:please\s+)?(?:can you\s+|could you\s+|would you\s+)?(?:create|build|implement|set up|setup|scaffold|generate|write|draft|fix|update|add|remove|refactor|rename|move|delete|start|analyze|review|examine|read|inspect|check|go through|walk through|scan|find|plan|list|show|tell|summarize|search|get|run|do|execute|perform|extract|compile|gather|investigate|verify|audit|audit-commit|safe-commit|reconstruct|repair|heal|improve|reflect|chat|decompose|split)\b/i,
+  /^(?:please\s+)?(?:i need you to|need you to|help me)\s+(?:create|build|implement|set up|setup|scaffold|generate|write|draft|fix|update|add|remove|refactor|rename|move|delete|start|analyze|review|examine|read|inspect|check|go through|walk through|scan|find|plan|list|show|tell|summarize|search|get|run|do|execute|perform|extract|compile|gather|investigate|verify|audit|audit-commit|safe-commit|reconstruct|repair|heal|improve|reflect|chat|decompose|split)\b/i,
 ];
 const TARGET_HINT_PATTERN =
   /(?:\.[a-z0-9]{1,8}\b|\/[a-z0-9_.-]+|\b(?:readme|package\.json|dockerfile|ui|api|page|component|route|endpoint|schema|table|migration|query|test|frontend|backend|database|react|node|typescript|python|markdown)\b)/i;

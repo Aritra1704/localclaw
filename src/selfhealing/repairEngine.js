@@ -96,6 +96,7 @@ Rules:
 - Use ONLY allowed tools.
 - All paths must be relative to the workspace root.
 - Keep the repair plan concise.
+- EVERY step args object must include ALL required fields for the selected tool (e.g., spawn_subtask REQUIRES "title" and "description").
 - DO NOT simply repeat the failed step with the same arguments. Propose a CHANGE to fix the error.`;
 }
 

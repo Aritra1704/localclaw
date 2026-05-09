@@ -268,7 +268,7 @@ export function createTaskExecutor({
       });
       logStepNumber += 1;
 
-      if (task.project_path) {
+      if (task.project_path && task.project_path !== workspaceRoot) {
         const projectSyncResult = await syncProjectIntoWorkspace({
           workspaceRoot,
           sourceProjectPath: task.project_path,

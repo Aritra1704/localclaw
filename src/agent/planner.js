@@ -35,7 +35,7 @@ const relativePathArgKeysByTool = {
   write_file: ['path'],
 };
 
-function assertRelativePlannerPaths(tool, args) {
+function assertRelativePlannerPaths(tool, args, workspaceRoot) {
   const keys = relativePathArgKeysByTool[tool] ?? [];
   for (const key of keys) {
     const value = args?.[key];
@@ -44,7 +44,14 @@ function assertRelativePlannerPaths(tool, args) {
     }
 
     if (path.isAbsolute(value)) {
-      throw new Error(`${tool}.${key} must be relative to the workspace root`);
+      if (workspaceRoot) {
+        const relative = path.relative(workspaceRoot, value);
+        if (relative && !relative.startsWith('..')) {
+          args[key] = relative;
+          continue;
+        }
+      }
+      throw new Error(`${tool}.${key} must be relative to the workspace root: ${value}`);
     }
   }
 }
@@ -105,6 +112,14 @@ function extractReferencedPath(task, workspaceRoot) {
   }
 
   const normalized = rawPath.trim().replace(/^[("' ]+|[)"' ]+$/g, '');
+
+  if (path.isAbsolute(normalized) && task.project_path) {
+    const relativeToProject = path.relative(task.project_path, normalized);
+    if (relativeToProject && !relativeToProject.startsWith('..')) {
+      return relativeToProject;
+    }
+  }
+
   if (path.isAbsolute(normalized) && path.isAbsolute(workspaceRoot)) {
     const relativePath = path.relative(workspaceRoot, normalized);
     if (relativePath && !relativePath.startsWith('..')) {
@@ -176,7 +191,7 @@ function buildDeterministicPlanningOnlyPlan(task, context) {
       'The plan stays scoped to dependencies, checks, and approval points',
     ],
     notesForVerifier: ['Planning-only requests should not introduce unrelated deploy, README, or audit work.'],
-  });
+  }, context.workspaceRoot);
 }
 
 function coerceStepCandidate(step) {
@@ -398,12 +413,12 @@ function buildDeterministicFallbackPlan(task) {
   };
 }
 
-function normalizePlan(task, plan) {
+function normalizePlan(task, plan, workspaceRoot = null) {
   const normalizedSteps = [...plan.steps]
     .sort((left, right) => left.stepNumber - right.stepNumber)
     .map((step, index) => {
       const args = toolArgsSchemaByName[step.tool].parse(step.args ?? {});
-      assertRelativePlannerPaths(step.tool, args);
+      assertRelativePlannerPaths(step.tool, args, workspaceRoot);
       return {
         ...step,
         stepNumber: index + 1,
@@ -419,11 +434,11 @@ function normalizePlan(task, plan) {
   };
 }
 
-function parsePlannerOutput(task, text) {
+function parsePlannerOutput(task, text, workspaceRoot = null) {
   const candidate = sanitizePlannerCandidate(
     JSON.parse(extractJsonObjectText(text))
   );
-  return normalizePlan(task, plannerOutputSchema.parse(candidate));
+  return normalizePlan(task, plannerOutputSchema.parse(candidate), workspaceRoot);
 }
 
 function buildPlannerPrompt(task, context) {
@@ -555,7 +570,7 @@ export function createPlanner({ client, modelSelector }) {
       });
 
       try {
-        const plan = parsePlannerOutput(task, primaryResponse.responseText);
+        const plan = parsePlannerOutput(task, primaryResponse.responseText, context.workspaceRoot);
         return {
           plan,
           modelUsed: primaryModel,
@@ -578,7 +593,7 @@ export function createPlanner({ client, modelSelector }) {
           },
         });
         try {
-          const plan = parsePlannerOutput(task, repairedResponse.responseText);
+          const plan = parsePlannerOutput(task, repairedResponse.responseText, context.workspaceRoot);
 
           return {
             plan,
@@ -588,7 +603,7 @@ export function createPlanner({ client, modelSelector }) {
             usage: buildUsage(repairedResponse),
           };
         } catch (repairError) {
-          const plan = normalizePlan(task, buildDeterministicFallbackPlan(task));
+          const plan = normalizePlan(task, buildDeterministicFallbackPlan(task), context.workspaceRoot);
 
           return {
             plan,
