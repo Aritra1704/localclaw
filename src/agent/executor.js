@@ -2,7 +2,7 @@ import path from 'node:path';
 
 import { config } from '../config.js';
 import { deriveExecutionControl, extractTaskContractFromTask } from '../control/taskContract.js';
-import { removeWorkspaceJunk, seedRepoContract } from '../project/contract.js';
+import { removeWorkspaceJunk, seedRepoContract, syncProjectIntoWorkspace } from '../project/contract.js';
 import { collectWorkspaceSnapshot } from '../tools/registry.js';
 import { buildDeployTarget, hasDeployMapping } from '../project/targets.js';
 
@@ -159,6 +159,22 @@ export function shouldAttemptAutoPublish(task, plan, taskContract = null) {
   return mentionsExternalTooling;
 }
 
+function buildPlanningFromPreview(task) {
+  const preview = task?.result?.preExecutionPlan;
+  if (!preview?.plan || preview.status !== 'approved') {
+    return null;
+  }
+
+  return {
+    plan: preview.plan,
+    modelUsed: preview.model_used ?? 'preview_plan',
+    repaired: preview.repaired === true,
+    fallback: preview.fallback === true,
+    durationMs: null,
+    usage: null,
+  };
+}
+
 export function createTaskExecutor({
   planner,
   verifier,
@@ -252,6 +268,22 @@ export function createTaskExecutor({
       });
       logStepNumber += 1;
 
+      if (task.project_path) {
+        const projectSyncResult = await syncProjectIntoWorkspace({
+          workspaceRoot,
+          sourceProjectPath: task.project_path,
+        });
+        artifacts.push(...projectSyncResult.artifacts);
+        await hooks.logStep?.({
+          stepNumber: logStepNumber,
+          stepType: 'system',
+          status: 'success',
+          inputSummary: 'Sync selected project into controlled workspace',
+          outputSummary: projectSyncResult.summary,
+        });
+        logStepNumber += 1;
+      }
+
       const seedWorkspaceResult = await toolRegistry.runTool(
         'write_file',
         {
@@ -300,25 +332,27 @@ export function createTaskExecutor({
         usage: null,
       });
 
-      const planning = await previewTaskPlan(task, {
-        workspaceRoot,
-        retrievalContext: hooks.retrievalContext ?? null,
-        chatHistory: hooks.chatHistory ?? null,
-        overrideRole: actorRole,
-        onStart: ({ stage, model }) => {
-          hooks.runtimeUpdate?.({
-            phase: 'planning',
-            phaseLabel: stage === 'repair' ? 'Repairing planner output' : 'Planning task',
-            detail:
-              stage === 'repair'
-                ? 'Primary planner output was invalid. Repairing it with a fallback model.'
-                : 'Planner model is generating the execution checklist.',
-            currentModel: model,
-            modelRole: 'planner',
-            usage: null,
-          });
-        },
-      });
+      const planning =
+        buildPlanningFromPreview(task) ??
+        (await previewTaskPlan(task, {
+          workspaceRoot,
+          retrievalContext: hooks.retrievalContext ?? null,
+          chatHistory: hooks.chatHistory ?? null,
+          overrideRole: actorRole,
+          onStart: ({ stage, model }) => {
+            hooks.runtimeUpdate?.({
+              phase: 'planning',
+              phaseLabel: stage === 'repair' ? 'Repairing planner output' : 'Planning task',
+              detail:
+                stage === 'repair'
+                  ? 'Primary planner output was invalid. Repairing it with a fallback model.'
+                  : 'Planner model is generating the execution checklist.',
+              currentModel: model,
+              modelRole: 'planner',
+              usage: null,
+            });
+          },
+        }));
 
       await hooks.logStep?.({
         stepNumber: logStepNumber,

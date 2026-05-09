@@ -72,7 +72,7 @@ test('contract helpers build title and markdown description', () => {
   assert.match(description, /Parse input payloads/);
 });
 
-test('deriveExecutionControl auto-starts all work without an execution gate', () => {
+test('deriveExecutionControl only auto-starts explicit auto_local work', () => {
   const localOnly = deriveExecutionControl(
     normalizeTaskContract({
       ...validContract,
@@ -84,8 +84,22 @@ test('deriveExecutionControl auto-starts all work without an execution gate', ()
     })
   );
   assert.equal(localOnly.executionClass, 'local_only');
-  assert.equal(localOnly.autoStartAllowed, true);
-  assert.equal(localOnly.approvalRequired, false);
+  assert.equal(localOnly.autoStartAllowed, false);
+  assert.equal(localOnly.approvalRequired, true);
+
+  const autoLocal = deriveExecutionControl(
+    normalizeTaskContract({
+      ...validContract,
+      executionPolicy: 'auto_local',
+      repoIntent: {
+        publish: false,
+        deploy: false,
+      },
+    })
+  );
+  assert.equal(autoLocal.executionClass, 'local_only');
+  assert.equal(autoLocal.autoStartAllowed, true);
+  assert.equal(autoLocal.approvalRequired, false);
 
   const deploy = deriveExecutionControl(
     normalizeTaskContract({
@@ -97,6 +111,6 @@ test('deriveExecutionControl auto-starts all work without an execution gate', ()
     })
   );
   assert.equal(deploy.executionClass, 'deploy');
-  assert.equal(deploy.autoStartAllowed, true);
-  assert.equal(deploy.approvalRequired, false);
+  assert.equal(deploy.autoStartAllowed, false);
+  assert.equal(deploy.approvalRequired, true);
 });

@@ -10,6 +10,7 @@ import {
   collectWorkspaceJunk,
   removeWorkspaceJunk,
   seedRepoContract,
+  syncProjectIntoWorkspace,
   shouldIgnoreWorkspaceEntry,
 } from '../src/project/contract.js';
 
@@ -94,4 +95,37 @@ test('workspace junk cleanup removes AppleDouble files', async () => {
   const afterCleanup = await collectWorkspaceJunk(workspaceRoot);
   assert.deepEqual(afterCleanup, []);
   assert.equal(buildBaselineGitIgnore().includes('._*'), true);
+});
+
+test('project sync copies repo files into the controlled workspace without heavyweight junk', async () => {
+  const sourceProjectRoot = await fs.mkdtemp(
+    path.join(os.tmpdir(), 'localclaw-project-source-')
+  );
+  const workspaceRoot = await fs.mkdtemp(
+    path.join(os.tmpdir(), 'localclaw-project-workspace-')
+  );
+
+  await fs.mkdir(path.join(sourceProjectRoot, 'docs'), { recursive: true });
+  await fs.mkdir(path.join(sourceProjectRoot, 'node_modules', 'left-pad'), { recursive: true });
+  await fs.writeFile(path.join(sourceProjectRoot, 'docs', 'guide.md'), '# guide\n', 'utf8');
+  await fs.writeFile(path.join(sourceProjectRoot, '.env'), 'SECRET=1\n', 'utf8');
+  await fs.writeFile(
+    path.join(sourceProjectRoot, 'node_modules', 'left-pad', 'index.js'),
+    'module.exports = () => {};\n',
+    'utf8'
+  );
+
+  const result = await syncProjectIntoWorkspace({
+    workspaceRoot,
+    sourceProjectPath: sourceProjectRoot,
+  });
+
+  assert.equal(result.copiedCount >= 1, true);
+  assert.equal(
+    await fs.readFile(path.join(workspaceRoot, 'docs', 'guide.md'), 'utf8'),
+    '# guide\n'
+  );
+
+  await assert.rejects(fs.stat(path.join(workspaceRoot, '.env')));
+  await assert.rejects(fs.stat(path.join(workspaceRoot, 'node_modules')));
 });

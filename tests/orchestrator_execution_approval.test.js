@@ -20,6 +20,7 @@ const contract = {
   successCriteria: ['Task is pending after planning'],
   priority: 'medium',
   skillHints: [],
+  executionPolicy: 'external_only',
   repoIntent: {
     publish: false,
     deploy: false,
@@ -38,7 +39,7 @@ test.after(async () => {
   );
 });
 
-test('createPlannedTask queues execution immediately without a waiting approval state', async () => {
+test('createPlannedTask leaves external_only work waiting for explicit approval', async () => {
   const previewCalls = [];
   const orchestrator = new Orchestrator({
     logger,
@@ -96,8 +97,8 @@ test('createPlannedTask queues execution immediately without a waiting approval 
     source: 'control_api_test',
   });
 
-  assert.equal(planned.task.status, 'pending');
-  assert.equal(planned.executionApproval.status, 'approved');
+  assert.equal(planned.task.status, 'waiting_approval');
+  assert.equal(planned.executionApproval.status, 'pending');
   assert.equal(previewCalls.length, 1);
 
   const waitingTask = await pool.query(
@@ -107,8 +108,8 @@ test('createPlannedTask queues execution immediately without a waiting approval 
     [planned.task.id]
   );
 
-  assert.equal(waitingTask.rows[0].status, 'pending');
-  assert.equal(waitingTask.rows[0].result.preExecutionPlan.status, 'approved');
+  assert.equal(waitingTask.rows[0].status, 'waiting_approval');
+  assert.equal(waitingTask.rows[0].result.preExecutionPlan.status, 'pending');
   assert.equal(waitingTask.rows[0].result.preExecutionPlan.impact_analysis.riskLevel, 'medium');
 
   const workspaceArtifacts = await pool.query(
@@ -125,7 +126,7 @@ test('createPlannedTask queues execution immediately without a waiting approval 
     respondedVia: 'test_suite',
   });
 
-  assert.equal(approved, null);
+  assert.equal(approved.status, 'approved');
 
   const cannotRejectApproved = await orchestrator.rejectTaskExecution(planned.task.id, {
     respondedVia: 'test_suite',
@@ -143,5 +144,5 @@ test('createPlannedTask queues execution immediately without a waiting approval 
     reason: 'Rejected by test',
   });
 
-  assert.equal(rejected, null);
+  assert.equal(rejected.status, 'rejected');
 });

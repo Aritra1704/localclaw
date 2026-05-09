@@ -160,3 +160,212 @@ test('planner falls back to deterministic run_skill plan when model output is ma
   assert.equal(result.plan.steps[0].args.input.projectName, 'phase6-smoke');
   assert.equal(result.plan.steps[0].args.input.servicePort, '4100');
 });
+
+test('planner rejects absolute filesystem paths and repairs them through fallback output', async () => {
+  let callCount = 0;
+
+  const planner = createPlanner({
+    client: {
+      async generate() {
+        callCount += 1;
+
+        if (callCount === 1) {
+          return {
+            responseText: JSON.stringify({
+              summary: 'Read the guide.',
+              reasoning: 'Need to inspect one file first.',
+              executionMode: 'workspace_controlled',
+              steps: [
+                {
+                  stepNumber: 1,
+                  objective: 'Read the guide file',
+                  tool: 'read_file',
+                  args: {
+                    path: '/tmp/localclaw-test-workspace/docs/guide.md',
+                    maxChars: 4000,
+                  },
+                },
+              ],
+              successCriteria: ['Guide file is read'],
+            }),
+          };
+        }
+
+        return {
+          responseText: JSON.stringify({
+            summary: 'Read the guide.',
+            reasoning: 'A relative path keeps the plan portable.',
+            executionMode: 'workspace_controlled',
+            steps: [
+              {
+                stepNumber: 1,
+                objective: 'Read the guide file',
+                tool: 'read_file',
+                args: {
+                  path: 'docs/guide.md',
+                  maxChars: 4000,
+                },
+              },
+            ],
+            successCriteria: ['Guide file is read'],
+          }),
+        };
+      },
+    },
+    modelSelector: {
+      select(kind) {
+        return kind === 'planner' ? 'planner-model' : 'fast-model';
+      },
+    },
+  });
+
+  const result = await planner.planTask(
+    {
+      id: 'task-planner-4',
+      title: 'Read the guide',
+      description: 'Analyze docs/guide.md and prepare a plan.',
+    },
+    {
+      workspaceRoot: '/tmp/localclaw-test-workspace',
+      workspaceSnapshot: [],
+      toolCatalog: 'read_file(path, maxChars)',
+    }
+  );
+
+  assert.equal(result.repaired, true);
+  assert.equal(result.plan.steps[0].args.path, 'docs/guide.md');
+});
+
+test('planner keeps planning-only tasks scoped to the requested artifact shape', async () => {
+  let callCount = 0;
+
+  const planner = createPlanner({
+    client: {
+      async generate() {
+        callCount += 1;
+
+        if (callCount === 1) {
+          return {
+            responseText: JSON.stringify({
+              summary: 'Plan Stage 1 work.',
+              reasoning: 'Read the guide, then add deploy and audit follow-ups.',
+              executionMode: 'workspace_controlled',
+              steps: [
+                {
+                  stepNumber: 1,
+                  objective: 'Read the guide file',
+                  tool: 'read_file',
+                  args: {
+                    path: 'docs/guide.md',
+                    maxChars: 4000,
+                  },
+                },
+                {
+                  stepNumber: 2,
+                  objective: 'Append a deploy readiness checklist to README',
+                  tool: 'write_file',
+                  args: {
+                    path: 'README.md',
+                    content: '# Deploy\n',
+                  },
+                },
+              ],
+              successCriteria: ['Stage 1 plan exists'],
+            }),
+          };
+        }
+
+        return {
+          responseText: JSON.stringify({
+            summary: 'Plan Stage 1 work.',
+            reasoning: 'Keep the plan scoped to the requested stage.',
+            executionMode: 'workspace_controlled',
+            steps: [
+              {
+                stepNumber: 1,
+                objective: 'Read the guide file',
+                tool: 'read_file',
+                args: {
+                  path: 'docs/guide.md',
+                  maxChars: 4000,
+                },
+              },
+              {
+                stepNumber: 2,
+                objective: 'Write the Stage 1 task plan notes',
+                tool: 'write_file',
+                args: {
+                  path: 'docs/stage1-task-plan.md',
+                  content: '# Stage 1\n',
+                },
+              },
+            ],
+            successCriteria: ['Stage 1 plan exists'],
+          }),
+        };
+      },
+    },
+    modelSelector: {
+      select(kind) {
+        return kind === 'planner' ? 'planner-model' : 'fast-model';
+      },
+    },
+  });
+
+  const result = await planner.planTask(
+    {
+      id: 'task-planner-5',
+      title: 'Create a task plan for Stage 1',
+      description:
+        'Read docs/guide.md and create a task plan for Stage 1 only. Do not execute commands. Output an ordered task list with dependencies, checks, and approval points.',
+    },
+    {
+      workspaceRoot: '/tmp/localclaw-test-workspace',
+      workspaceSnapshot: [],
+      toolCatalog: 'read_file(path, maxChars), write_file(path, content, overwrite)',
+    }
+  );
+
+  assert.equal(result.modelUsed, 'deterministic_planning_only');
+  assert.equal(result.plan.steps.length, 2);
+  assert.equal(result.plan.steps[1].args.path, 'docs/stage-1-task-plan.md');
+  assert.equal(callCount, 0);
+});
+
+test('planner uses deterministic planning-only mode for task-plan requests', async () => {
+  let called = false;
+
+  const planner = createPlanner({
+    client: {
+      async generate() {
+        called = true;
+        throw new Error('should not be called for planning-only tasks');
+      },
+    },
+    modelSelector: {
+      select(kind) {
+        return kind === 'planner' ? 'planner-model' : 'fast-model';
+      },
+    },
+  });
+
+  const result = await planner.planTask(
+    {
+      id: 'task-planner-6',
+      title: 'Create a task plan for Stage 1',
+      description:
+        'Read /tmp/project/docs/localclaw_execution_guide.md and create a task plan for Stage 1 only. Do not execute commands. Output an ordered task list with dependencies, checks, and approval points.',
+    },
+    {
+      workspaceRoot: '/tmp/project',
+      workspaceSnapshot: [],
+      toolCatalog: 'read_file(path, maxChars), write_file(path, content, overwrite)',
+    }
+  );
+
+  assert.equal(called, false);
+  assert.equal(result.modelUsed, 'deterministic_planning_only');
+  assert.equal(result.plan.steps[0].tool, 'read_file');
+  assert.equal(result.plan.steps[0].args.path, 'docs/localclaw_execution_guide.md');
+  assert.equal(result.plan.steps[1].args.path, 'docs/stage-1-task-plan.md');
+});

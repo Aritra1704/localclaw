@@ -36,6 +36,7 @@ import {
 import { ReflectionEngine } from './selfimprovement/reflectionEngine.js';
 import { RepairEngine } from './selfhealing/repairEngine.js';
 import { ChatHistoryManager } from './control/chatHistory.js';
+import { collectWorkspaceSnapshot } from './tools/registry.js';
 
 const logger = pino({
   name: 'localclaw-orchestrator',
@@ -3295,9 +3296,16 @@ export class Orchestrator {
     const task = inserted.rows[0];
     const workspaceName = `${slugifyTaskTitle(task.title) || 'task'}-${task.id.slice(0, 8)}`;
     const workspaceRoot = path.join(config.ssdBasePath, 'workspace', workspaceName);
+    const previewWorkspaceRoot = options.projectPath ?? workspaceRoot;
 
     try {
       const retrievalContext = await this.buildRetrievalContext(task);
+      const previewWorkspaceSnapshot = options.projectPath
+        ? await collectWorkspaceSnapshot(options.projectPath, {
+            recursive: true,
+            limit: 80,
+          }).catch(() => [])
+        : [];
       const impactAnalysis = this.knowledgeGraph?.analyzeImpact
         ? await this.knowledgeGraph.analyzeImpact(`${task.title} ${task.description}`.trim(), {
             limit: 6,
@@ -3307,23 +3315,28 @@ export class Orchestrator {
           })
         : null;
       const planning = await this.taskExecutor.previewTaskPlan(task, {
-        workspaceRoot,
-        workspaceSnapshot: [],
+        workspaceRoot: previewWorkspaceRoot,
+        workspaceSnapshot: previewWorkspaceSnapshot,
         retrievalContext,
       });
       const requestedAt = new Date().toISOString();
-      const respondedAt = requestedAt;
-      const respondedVia = options.approvalSource ?? source;
+      const autoStartAllowed = execution.autoStartAllowed === true;
+      const preExecutionStatus = autoStartAllowed ? 'approved' : 'pending';
+      const taskStatus = autoStartAllowed ? 'pending' : 'waiting_approval';
+      const respondedAt = autoStartAllowed ? requestedAt : null;
+      const respondedVia = autoStartAllowed ? options.approvalSource ?? source : null;
 
       const resultPayload = {
         taskContract: contract,
         execution,
         preExecutionPlan: {
-          status: 'approved',
+          status: preExecutionStatus,
           requested_at: requestedAt,
           responded_at: respondedAt,
           responded_via: respondedVia,
-          note: options.approvalNote ?? 'Execution queued immediately; approval gate disabled',
+          note: autoStartAllowed
+            ? options.approvalNote ?? 'Execution queued immediately; approval gate disabled'
+            : 'Execution is waiting for explicit approval before starting.',
           workspace_root: workspaceRoot,
           model_used: planning.modelUsed,
           repaired: planning.repaired === true,
@@ -3338,7 +3351,7 @@ export class Orchestrator {
         {
           taskId: task.id,
           patch: {
-            status: 'pending',
+            status: taskStatus,
             project_name: contract.projectName,
             project_path: options.projectPath ?? workspaceRoot,
             project_target_id: projectTarget?.id ?? null,
@@ -3352,24 +3365,25 @@ export class Orchestrator {
           this.pool.query(
           `UPDATE tasks
              SET
-               status = 'pending',
-               project_name = COALESCE(project_name, $2),
-               project_path = COALESCE($3, project_path),
-               project_target_id = COALESCE($4, project_target_id),
-               blocked_reason = NULL,
-               result = $5::jsonb,
+               status = $2,
+               project_name = COALESCE(project_name, $3),
+               project_path = COALESCE($4, project_path),
+               project_target_id = COALESCE($5, project_target_id),
+               blocked_reason = CASE WHEN $2 = 'waiting_approval' THEN 'Execution waiting for approval' ELSE NULL END,
+               result = $6::jsonb,
                updated_at = NOW(),
                locked_by = NULL,
                lease_expires_at = NULL,
                last_heartbeat_at = NOW()
              WHERE id = $1`,
-            [
-              task.id,
-              contract.projectName,
-              options.projectPath ?? workspaceRoot,
-              projectTarget?.id ?? null,
-              JSON.stringify(resultPayload),
-            ]
+          [
+            task.id,
+            taskStatus,
+            contract.projectName,
+            options.projectPath ?? workspaceRoot,
+            projectTarget?.id ?? null,
+            JSON.stringify(resultPayload),
+          ]
           )
       );
 
@@ -3425,23 +3439,25 @@ export class Orchestrator {
         stepNumber: 2,
         stepType: 'approval',
         status: 'success',
-        outputSummary: 'Execution queued immediately; approval gate disabled',
+        outputSummary: autoStartAllowed
+          ? 'Execution queued immediately; approval gate disabled'
+          : 'Execution is waiting for approval before it can start',
       });
 
       const executionApproval = {
         task_id: task.id,
-        status: 'approved',
+        status: preExecutionStatus,
         responded_at: respondedAt,
         responded_via: respondedVia,
-        approvalRequired: false,
-        autoStarted: true,
+        approvalRequired: execution.approvalRequired,
+        autoStarted: autoStartAllowed,
       };
 
       return {
         task: {
           id: task.id,
           title: task.title,
-          status: 'pending',
+          status: taskStatus,
           priority: task.priority,
           source: task.source,
           project_name: contract.projectName,

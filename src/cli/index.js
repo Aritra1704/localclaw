@@ -907,7 +907,11 @@ export async function runCli(argv, io = {}, deps = {}) {
               });
               continue;
             }
-            logger.out('Execution has been queued. Use /status to inspect progress.');
+            if (plan.executionApproval?.status === 'pending' || plan.task.status === 'waiting_approval') {
+              logger.out('Execution is waiting for approval. Use /approve or reply yes in chat.');
+            } else {
+              logger.out('Execution has been queued. Use /status to inspect progress.');
+            }
             continue;
           }
 

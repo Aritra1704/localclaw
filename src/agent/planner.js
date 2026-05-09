@@ -1,3 +1,5 @@
+import path from 'node:path';
+
 import { z } from 'zod';
 
 import { extractJsonObjectText } from '../llm/ollama.js';
@@ -22,6 +24,160 @@ const plannerOutputSchema = z.object({
   successCriteria: z.array(z.string().min(1)).min(1).max(6),
   notesForVerifier: z.array(z.string().min(1)).max(6).default([]),
 });
+
+const relativePathArgKeysByTool = {
+  append_file: ['path'],
+  browser_automate: ['screenshotPath'],
+  list_files: ['path'],
+  make_dir: ['path'],
+  read_file: ['path'],
+  security_audit: ['path'],
+  write_file: ['path'],
+};
+
+function assertRelativePlannerPaths(tool, args) {
+  const keys = relativePathArgKeysByTool[tool] ?? [];
+  for (const key of keys) {
+    const value = args?.[key];
+    if (typeof value !== 'string' || value.trim().length === 0) {
+      continue;
+    }
+
+    if (path.isAbsolute(value)) {
+      throw new Error(`${tool}.${key} must be relative to the workspace root`);
+    }
+  }
+}
+
+function assertTaskAlignedSteps(task, steps) {
+  const taskText = `${task?.title ?? ''}\n${task?.description ?? ''}`.toLowerCase();
+  const planOnlyTask =
+    /\b(task plan|ordered task list|dependencies|approval points)\b/.test(taskText) ||
+    /\bdo not execute commands\b/.test(taskText);
+  const readmeRequested = /\breadme\b/.test(taskText);
+  const deployRequested = /\b(deploy|deployment|railway|readiness)\b/.test(taskText);
+  const auditRequested = /\b(audit|security)\b/.test(taskText);
+
+  for (const step of steps) {
+    const stepText = JSON.stringify(step).toLowerCase();
+
+    if (!readmeRequested && /\breadme\b/.test(stepText)) {
+      throw new Error('Planner introduced README work that the task did not request');
+    }
+
+    if (!deployRequested && /\b(deploy|deployment|railway|readiness)\b/.test(stepText)) {
+      throw new Error('Planner introduced deploy-related work that the task did not request');
+    }
+
+    if (!auditRequested && /\bsecurity_audit\b/.test(stepText)) {
+      throw new Error('Planner introduced security audit work that the task did not request');
+    }
+
+    if (
+      planOnlyTask &&
+      ['browser_automate', 'bootstrap_model', 'run_terminal_command', 'system_prune'].includes(
+        step.tool
+      )
+    ) {
+      throw new Error(`Planner introduced executable ${step.tool} work for a planning-only task`);
+    }
+  }
+}
+
+function isPlanningOnlyTask(task) {
+  const taskText = `${task?.title ?? ''}\n${task?.description ?? ''}`.toLowerCase();
+  if (/\brun_skill\b/.test(taskText)) {
+    return false;
+  }
+
+  return (
+    /\b(task plan|ordered task list|dependencies|approval points)\b/.test(taskText) ||
+    /\bdo not execute commands\b/.test(taskText)
+  );
+}
+
+function extractReferencedPath(task, workspaceRoot) {
+  const taskText = `${task?.title ?? ''}\n${task?.description ?? ''}`;
+  const pathMatch = taskText.match(/([A-Za-z]:\\[^\s"']+\.[A-Za-z0-9]+|\/[^\s"']+\.[A-Za-z0-9]+|(?:^|[\s(])([A-Za-z0-9_./-]+\.(?:md|mdx|txt|json|ya?ml|js|ts|tsx|jsx)))/);
+  const rawPath = pathMatch?.[1] ?? pathMatch?.[2] ?? null;
+  if (!rawPath) {
+    return null;
+  }
+
+  const normalized = rawPath.trim().replace(/^[("' ]+|[)"' ]+$/g, '');
+  if (path.isAbsolute(normalized) && path.isAbsolute(workspaceRoot)) {
+    const relativePath = path.relative(workspaceRoot, normalized);
+    if (relativePath && !relativePath.startsWith('..')) {
+      return relativePath;
+    }
+  }
+
+  return normalized;
+}
+
+function extractStagePlanPath(task) {
+  const taskText = `${task?.title ?? ''}\n${task?.description ?? ''}`;
+  const stageMatch = taskText.match(/\bStage\s+(\d+)\b/i);
+  if (!stageMatch) {
+    return 'docs/task-plan.md';
+  }
+
+  return `docs/stage-${stageMatch[1]}-task-plan.md`;
+}
+
+function buildDeterministicPlanningOnlyPlan(task, context) {
+  const referencedPath = extractReferencedPath(task, context.workspaceRoot);
+  const outputPath = extractStagePlanPath(task);
+  const steps = [];
+
+  if (referencedPath) {
+    steps.push({
+      stepNumber: steps.length + 1,
+      objective: 'Read the requested guide file',
+      tool: 'read_file',
+      args: {
+        path: referencedPath,
+        maxChars: 12000,
+      },
+    });
+  } else {
+    steps.push({
+      stepNumber: 1,
+      objective: 'List the docs files that are relevant to the requested plan',
+      tool: 'list_files',
+      args: {
+        path: 'docs',
+        recursive: true,
+        limit: 60,
+      },
+    });
+  }
+
+  steps.push({
+    stepNumber: steps.length + 1,
+    objective: 'Write the requested stage task plan document',
+    tool: 'write_file',
+    args: {
+      path: outputPath,
+      content: `# Stage Task Plan\n\n## Ordered Tasks\n1. Extract Stage 1 tasks from the requested guide.\n2. Record dependencies between those tasks.\n3. Record checks and verification points.\n4. Record explicit approval points.\n\n## Dependencies\n- Populate from the guide.\n\n## Checks\n- Populate from the guide.\n\n## Approval Points\n- Populate from the guide.\n`,
+      overwrite: true,
+    },
+  });
+
+  return normalizePlan(task, {
+    summary: 'Read the requested guide and prepare the requested stage task plan.',
+    reasoning:
+      'This request is planning-only, so the safe deterministic path is to read the referenced guide and draft the requested task-plan artifact without introducing unrelated execution work.',
+    executionMode: 'workspace_controlled',
+    steps,
+    successCriteria: [
+      'The referenced guide is inspected or identified',
+      'A stage task plan artifact is prepared',
+      'The plan stays scoped to dependencies, checks, and approval points',
+    ],
+    notesForVerifier: ['Planning-only requests should not introduce unrelated deploy, README, or audit work.'],
+  });
+}
 
 function coerceStepCandidate(step) {
   if (!step || typeof step === 'undefined') {
@@ -158,7 +314,7 @@ function buildDeterministicFallbackPlan(task) {
       skillInput.servicePort = servicePort;
     }
 
-    return normalizePlan({
+    return {
       summary: `Execute requested skill ${skillName} with deterministic fallback planning.`,
       reasoning:
         'Model output was malformed after repair. Falling back to a safe, schema-valid skill execution path.',
@@ -191,10 +347,10 @@ function buildDeterministicFallbackPlan(task) {
       notesForVerifier: [
         'Planner used deterministic fallback due to invalid LLM JSON output.',
       ],
-    });
+    };
   }
 
-  return normalizePlan({
+  return {
     summary: 'Deterministic fallback plan created due to malformed planner output.',
     reasoning:
       'Both primary and repair planner outputs were invalid. Fallback keeps execution bounded and verifiable.',
@@ -239,17 +395,23 @@ function buildDeterministicFallbackPlan(task) {
     notesForVerifier: [
       'Planner used deterministic fallback due to invalid LLM JSON output.',
     ],
-  });
+  };
 }
 
-function normalizePlan(plan) {
+function normalizePlan(task, plan) {
   const normalizedSteps = [...plan.steps]
     .sort((left, right) => left.stepNumber - right.stepNumber)
-    .map((step, index) => ({
-      ...step,
-      stepNumber: index + 1,
-      args: toolArgsSchemaByName[step.tool].parse(step.args ?? {}),
-    }));
+    .map((step, index) => {
+      const args = toolArgsSchemaByName[step.tool].parse(step.args ?? {});
+      assertRelativePlannerPaths(step.tool, args);
+      return {
+        ...step,
+        stepNumber: index + 1,
+        args,
+      };
+    });
+
+  assertTaskAlignedSteps(task, normalizedSteps);
 
   return {
     ...plan,
@@ -257,11 +419,11 @@ function normalizePlan(plan) {
   };
 }
 
-function parsePlannerOutput(text) {
+function parsePlannerOutput(task, text) {
   const candidate = sanitizePlannerCandidate(
     JSON.parse(extractJsonObjectText(text))
   );
-  return normalizePlan(plannerOutputSchema.parse(candidate));
+  return normalizePlan(task, plannerOutputSchema.parse(candidate));
 }
 
 function buildPlannerPrompt(task, context) {
@@ -294,6 +456,7 @@ Rules:
 - do not use shell, git, network, docker, or deployment actions
 - create concrete artifacts when useful
 - keep file content concise enough for a local development task
+- if the request is analysis, planning, or documentation only, do not add unrelated implementation, deploy-readiness, or README update steps
 
 Allowed tools:
 ${context.toolCatalog}
@@ -363,6 +526,18 @@ function buildUsage(response) {
 export function createPlanner({ client, modelSelector }) {
   return {
     async planTask(task, context) {
+      if (isPlanningOnlyTask(task)) {
+        const plan = buildDeterministicPlanningOnlyPlan(task, context);
+        return {
+          plan,
+          modelUsed: 'deterministic_planning_only',
+          repaired: false,
+          fallback: true,
+          durationMs: 0,
+          usage: null,
+        };
+      }
+
       const prompt = buildPlannerPrompt(task, context);
       const startedAt = Date.now();
       const primaryModel = modelSelector.select(context.overrideRole ?? 'planner');
@@ -380,7 +555,7 @@ export function createPlanner({ client, modelSelector }) {
       });
 
       try {
-        const plan = parsePlannerOutput(primaryResponse.responseText);
+        const plan = parsePlannerOutput(task, primaryResponse.responseText);
         return {
           plan,
           modelUsed: primaryModel,
@@ -403,7 +578,7 @@ export function createPlanner({ client, modelSelector }) {
           },
         });
         try {
-          const plan = parsePlannerOutput(repairedResponse.responseText);
+          const plan = parsePlannerOutput(task, repairedResponse.responseText);
 
           return {
             plan,
@@ -413,7 +588,7 @@ export function createPlanner({ client, modelSelector }) {
             usage: buildUsage(repairedResponse),
           };
         } catch (repairError) {
-          const plan = buildDeterministicFallbackPlan(task);
+          const plan = normalizePlan(task, buildDeterministicFallbackPlan(task));
 
           return {
             plan,

@@ -13,6 +13,17 @@ export const BASELINE_GITIGNORE_LINES = [
 ];
 
 const JUNK_SEGMENTS = new Set(['.Spotlight-V100', '.Trashes']);
+const COPY_EXCLUDED_SEGMENTS = new Set([
+  '.git',
+  '.localclaw',
+  '.next',
+  '.turbo',
+  'coverage',
+  'dist',
+  'build',
+  'logs',
+  'node_modules',
+]);
 
 function normalizePath(value) {
   return value.replace(/\\/g, '/');
@@ -28,6 +39,24 @@ function isIgnoredSegment(segment) {
     segment.startsWith('._') ||
     JUNK_SEGMENTS.has(segment)
   );
+}
+
+function shouldCopyProjectEntry(relativePath) {
+  const segments = splitSegments(relativePath);
+  if (segments.length === 0) {
+    return true;
+  }
+
+  if (segments.some((segment) => COPY_EXCLUDED_SEGMENTS.has(segment))) {
+    return false;
+  }
+
+  const baseName = segments.at(-1) ?? '';
+  if (baseName.startsWith('.env')) {
+    return false;
+  }
+
+  return !shouldIgnoreWorkspaceEntry(relativePath);
 }
 
 function buildDeployTargetSummary() {
@@ -394,6 +423,59 @@ export async function seedRepoContract({ workspaceRoot, task }) {
 
   return {
     summary: `Seeded repo contract kit with ${files.length + 1} files`,
+    artifacts,
+  };
+}
+
+export async function syncProjectIntoWorkspace({ workspaceRoot, sourceProjectPath }) {
+  if (!sourceProjectPath) {
+    return {
+      summary: 'No source project selected for workspace sync',
+      copiedCount: 0,
+      artifacts: [],
+    };
+  }
+
+  const stats = await fs.stat(sourceProjectPath).catch(() => null);
+  if (!stats?.isDirectory()) {
+    return {
+      summary: `Source project path is unavailable: ${sourceProjectPath}`,
+      copiedCount: 0,
+      artifacts: [],
+    };
+  }
+
+  const artifacts = [];
+  let copiedCount = 0;
+
+  await fs.cp(sourceProjectPath, workspaceRoot, {
+    recursive: true,
+    force: true,
+    errorOnExist: false,
+    filter(source, destination) {
+      if (source === sourceProjectPath) {
+        return true;
+      }
+
+      const relativePath = normalizePath(path.relative(sourceProjectPath, source));
+      if (!shouldCopyProjectEntry(relativePath)) {
+        return false;
+      }
+
+      const relativeDestination = normalizePath(path.relative(workspaceRoot, destination));
+      artifacts.push({
+        artifactType: 'file',
+        artifactPath: destination,
+        metadata: { relativePath: relativeDestination },
+      });
+      copiedCount += 1;
+      return true;
+    },
+  });
+
+  return {
+    summary: `Synchronized ${copiedCount} project entries into the controlled workspace`,
+    copiedCount,
     artifacts,
   };
 }

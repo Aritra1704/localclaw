@@ -113,12 +113,21 @@ export function deriveExecutionControl(contract) {
   const normalized = normalizeTaskContract(contract);
   const executionClass = deriveExecutionClass(normalized);
   const executionPolicy = normalized.executionPolicy ?? 'external_only';
+  const localOnly = executionClass === 'local_only';
+
+  let approvalRequired = true;
+  let autoStartAllowed = false;
+
+  if (localOnly && executionPolicy === 'auto_local') {
+    approvalRequired = false;
+    autoStartAllowed = true;
+  }
 
   return {
     executionClass,
     executionPolicy,
-    approvalRequired: false,
-    autoStartAllowed: true,
+    approvalRequired,
+    autoStartAllowed,
   };
 }
 
