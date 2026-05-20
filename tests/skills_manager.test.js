@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { randomUUID } from 'node:crypto';
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
@@ -6,20 +7,167 @@ import test from 'node:test';
 
 import pino from 'pino';
 
-import { getPool } from '../src/db/client.js';
-import { runMigrations } from '../src/db/migrate.js';
 import { createSkillManager } from '../src/skills/manager.js';
 import { createToolRegistry } from '../src/tools/registry.js';
 
 const logger = pino({ level: 'fatal' });
-const pool = getPool();
 
-async function cleanupSkill(name) {
-  await pool.query('DELETE FROM skills WHERE name = $1', [name]);
+function createSkillsPool() {
+  const skills = new Map();
+  const skillRuns = [];
+
+  return {
+    skills,
+    skillRuns,
+    async query(sql, params = []) {
+      if (sql.includes('DELETE FROM skills WHERE name = $1')) {
+        skills.delete(params[0]);
+        return { rowCount: 1, rows: [] };
+      }
+
+      if (sql.includes('SELECT id, version') && sql.includes('FROM skills')) {
+        const skill = skills.get(params[0]);
+        return { rows: skill ? [{ id: skill.id, version: skill.version }] : [] };
+      }
+
+      if (sql.includes('INSERT INTO skills')) {
+        const generated = sql.includes("'generated'");
+        const name = generated ? params[1] : params[0];
+        const skill = {
+          id: (generated ? params[0] : skills.get(name)?.id) ?? skills.get(name)?.id ?? randomUUID(),
+          name,
+          version: generated ? params[2] : params[1],
+          source_type: generated ? 'generated' : params[2],
+          description: generated ? params[3] : params[3],
+          definition: JSON.parse(generated ? params[4] : params[4]),
+          is_enabled: generated ? params[5] : params[5] ?? true,
+          updated_at: new Date().toISOString(),
+        };
+        skills.set(name, skill);
+        return { rows: [{ ...skill }] };
+      }
+
+      if (sql.includes('SELECT') && sql.includes('FROM skills') && sql.includes('definition') && sql.includes('is_enabled') && sql.includes('WHERE name = $1')) {
+        const skill = skills.get(params[0]);
+        return { rows: skill ? [{ ...skill }] : [] };
+      }
+
+      if (sql.includes('FROM skills') && sql.includes('LEFT JOIN') && sql.includes('skill_runs')) {
+        const includeDisabled = params[0];
+        const sourceType = params[1];
+        const limit = params[2];
+        const rows = [...skills.values()]
+          .filter((skill) => includeDisabled || skill.is_enabled === true)
+          .filter((skill) => !sourceType || skill.source_type === sourceType)
+          .sort((a, b) => a.name.localeCompare(b.name))
+          .slice(0, limit)
+          .map((skill) => {
+            const related = skillRuns.filter((run) => run.skill_id === skill.id);
+            return {
+              id: skill.id,
+              name: skill.name,
+              version: skill.version,
+              source_type: skill.source_type,
+              description: skill.description,
+              is_enabled: skill.is_enabled,
+              updated_at: skill.updated_at,
+              total_runs: related.length,
+              success_runs: related.filter((run) => run.status === 'success').length,
+              failed_runs: related.filter((run) => run.status === 'error').length,
+              last_run_at: related.at(-1)?.created_at ?? null,
+            };
+          });
+        return { rows };
+      }
+
+      if (sql.includes('UPDATE skills') && sql.includes('RETURNING id, name, source_type, version, is_enabled')) {
+        const skill = skills.get(params[0]);
+        if (!skill) {
+          return { rows: [] };
+        }
+        skill.is_enabled = params[1];
+        skill.updated_at = new Date().toISOString();
+        return {
+          rows: [
+            {
+              id: skill.id,
+              name: skill.name,
+              source_type: skill.source_type,
+              version: skill.version,
+              is_enabled: skill.is_enabled,
+            },
+          ],
+        };
+      }
+
+      if (sql.includes('FROM skills') && sql.includes('WHERE is_enabled = TRUE')) {
+        const patterns = params[0];
+        const limit = params[1];
+        const rows = [...skills.values()]
+          .filter((skill) => skill.is_enabled === true)
+          .filter((skill) =>
+            patterns.some((pattern) => {
+              const needle = pattern.replaceAll('%', '').toLowerCase();
+              return JSON.stringify(skill.definition).toLowerCase().includes(needle);
+            })
+          )
+          .slice(0, limit)
+          .map((skill) => ({
+            name: skill.name,
+            version: skill.version,
+            description: skill.description,
+            source_type: skill.source_type,
+          }));
+        return { rows };
+      }
+
+      if (sql.includes('INSERT INTO skill_runs')) {
+        skillRuns.push({
+          skill_id: params[0],
+          task_id: params[1],
+          skill_version: params[2],
+          status: params[3],
+          duration_ms: params[4],
+          error_message: params[5],
+          input_payload: JSON.parse(params[6]),
+          output_summary: params[7],
+          created_at: new Date().toISOString(),
+        });
+        return { rows: [{ id: randomUUID() }] };
+      }
+
+      if (sql.includes('SELECT\n       skill_runs.status,') && sql.includes('JOIN skills ON skills.id = skill_runs.skill_id')) {
+        const skill = skills.get(params[0]);
+        const run = [...skillRuns].reverse().find((entry) => entry.skill_id === skill?.id);
+        return {
+          rowCount: run ? 1 : 0,
+          rows: run
+            ? [
+                {
+                  status: run.status,
+                  skill_version: run.skill_version,
+                  output_summary: run.output_summary,
+                },
+              ]
+            : [],
+        };
+      }
+
+      if (sql.includes('FROM skills') && sql.includes('ORDER BY name ASC') && !sql.includes('LEFT JOIN')) {
+        return {
+          rows: [...skills.values()]
+            .sort((a, b) => a.name.localeCompare(b.name))
+            .map((skill) => ({ ...skill })),
+        };
+      }
+
+      throw new Error(`Unexpected query: ${sql.slice(0, 140)}`);
+    },
+  };
 }
 
 test('skills manager syncs built-ins, enforces enable policy, and logs runs', async () => {
-  await runMigrations();
+  const pool = createSkillsPool();
 
   const skillName = `test_skill_phase6_${Date.now()}`;
   const skillDir = await fs.mkdtemp(path.join(os.tmpdir(), 'localclaw-skills-'));
@@ -60,7 +208,7 @@ test('skills manager syncs built-ins, enforces enable policy, and logs runs', as
     builtInDirectory: skillDir,
   });
 
-  await cleanupSkill(skillName);
+  await pool.query('DELETE FROM skills WHERE name = $1', [skillName]);
   const syncSummary = await skillManager.syncRegistry();
   assert.equal(syncSummary.builtInsDiscovered, 1);
 
@@ -121,11 +269,11 @@ test('skills manager syncs built-ins, enforces enable policy, and logs runs', as
   assert.equal(runResult.rows[0].skill_version, 1);
   assert.match(runResult.rows[0].output_summary, /append_file/);
 
-  await cleanupSkill(skillName);
+  await pool.query('DELETE FROM skills WHERE name = $1', [skillName]);
 });
 
 test('generated skill creation is blocked when explicit guardrail is not enabled', async () => {
-  await runMigrations();
+  const pool = createSkillsPool();
 
   const skillManager = createSkillManager({
     logger,
@@ -157,7 +305,7 @@ test('generated skill creation is blocked when explicit guardrail is not enabled
 });
 
 test('skills manager maps port->servicePort and projectName->serviceRoot for templates', async () => {
-  await runMigrations();
+  const pool = createSkillsPool();
 
   const skillName = `test_skill_aliases_${Date.now()}`;
   const skillDir = await fs.mkdtemp(path.join(os.tmpdir(), 'localclaw-skills-alias-'));
@@ -203,7 +351,7 @@ test('skills manager maps port->servicePort and projectName->serviceRoot for tem
     builtInDirectory: skillDir,
   });
 
-  await cleanupSkill(skillName);
+  await pool.query('DELETE FROM skills WHERE name = $1', [skillName]);
   await skillManager.syncRegistry();
 
   const toolRegistry = createToolRegistry({ skillManager });
@@ -228,7 +376,7 @@ test('skills manager maps port->servicePort and projectName->serviceRoot for tem
   );
   assert.equal(portText, '4100');
 
-  await cleanupSkill(skillName);
+  await pool.query('DELETE FROM skills WHERE name = $1', [skillName]);
 });
 
 test('skills manager uses postgres MCP server for registry, lookup, and run logging', async () => {

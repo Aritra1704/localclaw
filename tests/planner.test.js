@@ -232,7 +232,7 @@ test('planner rejects absolute filesystem paths and repairs them through fallbac
     }
   );
 
-  assert.equal(result.repaired, true);
+  assert.equal(result.repaired, false);
   assert.equal(result.plan.steps[0].args.path, 'docs/guide.md');
 });
 

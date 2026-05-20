@@ -5,6 +5,7 @@ import { deriveExecutionControl, extractTaskContractFromTask } from '../control/
 import { removeWorkspaceJunk, seedRepoContract, syncProjectIntoWorkspace } from '../project/contract.js';
 import { collectWorkspaceSnapshot } from '../tools/registry.js';
 import { buildDeployTarget, hasDeployMapping } from '../project/targets.js';
+import { buildPlannerLongContext } from './plannerContext.js';
 
 function slugifyTaskTitle(value) {
   return value
@@ -191,23 +192,29 @@ export function createTaskExecutor({
         recursive: true,
         limit: 50,
       }));
+    const plannerContextBundle = await buildPlannerLongContext(task, {
+      projectRoot: workspaceRoot,
+      workspaceSnapshot,
+    });
 
-    return planner.planTask(task, {
+    const result = await planner.planTask(task, {
       workspaceRoot,
       workspaceSnapshot,
       toolCatalog: toolRegistry.plannerCatalog(),
       retrievalContext: options.retrievalContext ?? null,
       chatHistory: options.chatHistory ?? null,
+      plannerContext: plannerContextBundle.text,
       overrideRole: options.overrideRole ?? null,
       onStart: options.onStart,
     });
+
+    return {
+      ...result,
+      plannerContextDiagnostics: plannerContextBundle.diagnostics,
+    };
   }
 
-  return {
-    previewTaskPlan,
-    toolRegistry,
-
-    async executeTask(task, hooks = {}) {
+  async function executeTask(task, hooks = {}) {
       const workspaceName = `${slugifyTaskTitle(task.title) || 'task'}-${task.id.slice(0, 8)}`;
       const workspaceRoot = path.join(config.ssdBasePath, 'workspace', workspaceName);
       const artifacts = [
@@ -269,21 +276,35 @@ export function createTaskExecutor({
       logStepNumber += 1;
 
       if (task.project_path && task.project_path !== workspaceRoot) {
-        const projectSyncResult = await syncProjectIntoWorkspace({
-          workspaceRoot,
-          sourceProjectPath: task.project_path,
-        });
-        artifacts.push(...projectSyncResult.artifacts);
-        await hooks.logStep?.({
-          stepNumber: logStepNumber,
-          stepType: 'system',
-          status: 'success',
-          inputSummary: 'Sync selected project into controlled workspace',
-          outputSummary: projectSyncResult.summary,
-        });
-        logStepNumber += 1;
-      }
-
+        if (task.project_path && task.project_path !== workspaceRoot) {
+          const projectSyncResult = await syncProjectIntoWorkspace({
+            workspaceRoot,
+            sourceProjectPath: task.project_path,
+          });
+          artifacts.push(...projectSyncResult.artifacts);
+          await hooks.logStep?.({
+            stepNumber: logStepNumber,
+            stepType: 'system',
+            status: 'success',
+            inputSummary: 'Sync selected project into controlled workspace',
+            outputSummary: projectSyncResult.summary,
+          });
+          logStepNumber += 1;
+        } else if (task.project_path && task.project_path === workspaceRoot) {
+          // If project path is the same as workspace root, no sync is needed.
+          // Log this as a system step for clarity.
+          await hooks.logStep?.({
+            stepNumber: logStepNumber,
+            stepType: 'system',
+            status: 'success',
+            inputSummary: 'Skip sync: project path is workspace root',
+            outputSummary: 'Skipped project synchronization as source and destination are the same.',
+          });
+          logStepNumber += 1;
+        } else {
+          // If task.project_path is not provided, syncProjectIntoWorkspace is skipped.
+          // This is a no-op and does not need a log entry unless explicitly required.
+        }
       const seedWorkspaceResult = await toolRegistry.runTool(
         'write_file',
         {
@@ -336,6 +357,10 @@ export function createTaskExecutor({
         buildPlanningFromPreview(task) ??
         (await previewTaskPlan(task, {
           workspaceRoot,
+          workspaceSnapshot: await collectWorkspaceSnapshot(workspaceRoot, {
+            recursive: true,
+            limit: 80,
+          }),
           retrievalContext: hooks.retrievalContext ?? null,
           chatHistory: hooks.chatHistory ?? null,
           overrideRole: actorRole,
@@ -857,6 +882,12 @@ export function createTaskExecutor({
         deployment,
         artifacts,
       };
-    },
+  }
+
+  return {
+    previewTaskPlan,
+    toolRegistry,
+    executeTask,
   };
+}
 }

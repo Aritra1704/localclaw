@@ -1,7 +1,9 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
 
+import { config } from '../config.js';
 import { getPool } from '../db/client.js';
+import { createGraphifyAdapter } from './graphifyAdapter.js';
 
 const CODE_EXTENSIONS = new Set(['.js', '.jsx', '.mjs', '.cjs', '.ts', '.tsx']);
 const DOC_EXTENSIONS = new Set(['.md', '.mdx', '.txt']);
@@ -333,6 +335,13 @@ export function createKnowledgeGraphService(options = {}) {
   const logger = options.logger ?? null;
   const mcpRegistry = options.mcpRegistry ?? null;
   const postgresServer = mcpRegistry?.getServer?.('postgres') ?? null;
+  const graphifyAdapter =
+    config.graphBackend === 'graphify'
+      ? createGraphifyAdapter({
+          logger,
+          indexPath: options.graphifyIndexPath ?? config.graphifyIndexPath,
+        })
+      : null;
 
   async function callPostgresTool(toolName, args, fallback) {
     if (postgresServer) {
@@ -341,9 +350,155 @@ export function createKnowledgeGraphService(options = {}) {
     return fallback();
   }
 
+  async function upsertGraphNode(node) {
+    return callPostgresTool(
+      'upsert_graph_node',
+      node,
+      () =>
+        pool.query(
+          `INSERT INTO knowledge_graph_nodes (
+             node_key,
+             node_type,
+             display_name,
+             source_path,
+             checksum,
+             metadata,
+             updated_at
+           )
+           VALUES ($1, $2, $3, $4, $5, $6::jsonb, NOW())
+           ON CONFLICT (node_key)
+           DO UPDATE SET
+             node_type = EXCLUDED.node_type,
+             display_name = EXCLUDED.display_name,
+             source_path = COALESCE(EXCLUDED.source_path, knowledge_graph_nodes.source_path),
+             checksum = EXCLUDED.checksum,
+             metadata = EXCLUDED.metadata,
+             updated_at = NOW()
+           RETURNING id`,
+          [
+            node.nodeKey,
+            node.nodeType,
+            node.displayName,
+            node.sourcePath ?? null,
+            node.checksum ?? null,
+            JSON.stringify(node.metadata ?? {}),
+          ]
+        )
+    );
+  }
+
+  async function upsertGraphEdge(edge) {
+    return callPostgresTool(
+      'upsert_graph_edge',
+      edge,
+      () =>
+        pool.query(
+          `INSERT INTO knowledge_graph_edges (
+             from_node_id,
+             to_node_id,
+             edge_type,
+             metadata,
+             updated_at
+           )
+           VALUES ($1, $2, $3, $4::jsonb, NOW())
+           ON CONFLICT (from_node_id, to_node_id, edge_type)
+           DO UPDATE SET metadata = EXCLUDED.metadata, updated_at = NOW()`,
+          [
+            edge.fromNodeId,
+            edge.toNodeId,
+            edge.edgeType,
+            JSON.stringify(edge.metadata ?? {}),
+          ]
+        )
+    );
+  }
+
+  async function persistNormalizedGraph(graph) {
+    const summary = {
+      scanned: graph.nodes.length,
+      nodesUpserted: 0,
+      edgesUpserted: 0,
+      source: graph.source ?? 'graphify',
+    };
+    const nodeIdsByKey = new Map();
+    const sourcePaths = [...new Set(graph.nodes.map((node) => node.sourcePath).filter(Boolean))];
+
+    for (const sourcePath of sourcePaths) {
+      await callPostgresTool(
+        'delete_graph_nodes_by_source_path',
+        {
+          sourcePath,
+          nodeTypes: ['symbol'],
+        },
+        () =>
+          pool.query(
+            `DELETE FROM knowledge_graph_nodes
+             WHERE source_path = $1
+               AND node_type = ANY($2::text[])`,
+            [sourcePath, ['symbol']]
+          )
+      );
+    }
+
+    for (const node of graph.nodes) {
+      const result = await upsertGraphNode(node);
+      nodeIdsByKey.set(node.nodeKey, result.rows[0].id);
+      summary.nodesUpserted += 1;
+
+      if (node.nodeType === 'file' || node.nodeType === 'document') {
+        await callPostgresTool(
+          'delete_graph_edges_from_node',
+          { nodeId: result.rows[0].id },
+          () => pool.query(`DELETE FROM knowledge_graph_edges WHERE from_node_id = $1`, [result.rows[0].id])
+        );
+      }
+    }
+
+    for (const edge of graph.edges) {
+      const fromNodeId = nodeIdsByKey.get(edge.fromNodeKey);
+      const toNodeId = nodeIdsByKey.get(edge.toNodeKey);
+
+      if (!fromNodeId || !toNodeId) {
+        continue;
+      }
+
+      await upsertGraphEdge({
+        fromNodeId,
+        toNodeId,
+        edgeType: edge.edgeType,
+        metadata: edge.metadata ?? {},
+      });
+      summary.edgesUpserted += 1;
+    }
+
+    logger?.info(
+      {
+        graphSummary: summary,
+        graphifySourcePath: graph.sourcePath ?? null,
+      },
+      'Knowledge graph sync completed via Graphify adapter'
+    );
+
+    return summary;
+  }
+
   return {
     async ingestProjectGraph(input = {}) {
       const projectRoot = input.projectRoot ?? process.cwd();
+      if (graphifyAdapter) {
+        try {
+          const graphifyGraph = await graphifyAdapter.loadNormalizedGraph({ projectRoot });
+          if (graphifyGraph) {
+            return persistNormalizedGraph(graphifyGraph);
+          }
+        } catch (error) {
+          logger?.warn(
+            { err: error, projectRoot },
+            'Graphify-backed indexing failed; falling back to native graph ingestion'
+          );
+        }
+      }
+
       const sourcePaths = await collectProjectPaths(projectRoot);
       const knownPaths = new Set(sourcePaths);
       const summary = {

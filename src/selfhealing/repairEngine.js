@@ -1,7 +1,8 @@
 import { z } from 'zod';
 import pino from 'pino';
 import { config } from '../config.js';
-import { createOllamaClient, extractJsonObjectText } from '../llm/ollama.js';
+import { createOllamaClient } from '../llm/ollama.js';
+import { extractJsonObjectText } from '../llm/json.js';
 import { TOOL_DEFINITIONS, TOOL_NAMES } from '../tools/registry.js';
 
 const logger = pino({
@@ -102,8 +103,9 @@ Rules:
 
 export class RepairEngine {
   constructor(options = {}) {
-    this.ollama = options.ollamaClient ?? createOllamaClient();
-    this.modelName = options.modelName ?? config.modelReview;
+    this.client = options.llmClient ?? options.ollamaClient ?? createOllamaClient();
+    this.modelSelector = options.modelSelector ?? null;
+    this.modelName = options.modelName ?? null;
     this.logger = options.logger ?? logger;
   }
 
@@ -111,9 +113,10 @@ export class RepairEngine {
     this.logger.info({ taskId: task.id }, 'Generating repair proposal');
 
     const prompt = buildRepairPrompt(task, context);
+    const model = this.modelName ?? this.modelSelector?.select?.('review') ?? config.modelReview;
     
-    const response = await this.ollama.generate({
-      model: this.modelName,
+    const response = await this.client.generate({
+      model,
       prompt,
       format: 'json',
       options: {
@@ -125,7 +128,7 @@ export class RepairEngine {
       const proposal = parseRepairOutput(response.responseText);
       return {
         proposal,
-        modelUsed: this.modelName,
+        modelUsed: model,
         durationMs: response.totalDuration ? response.totalDuration / 1000000 : null,
       };
     } catch (error) {

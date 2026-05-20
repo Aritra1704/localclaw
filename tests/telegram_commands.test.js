@@ -1,23 +1,18 @@
 import assert from 'node:assert/strict';
+import { randomUUID } from 'node:crypto';
 import test from 'node:test';
 
 import pino from 'pino';
 
-import { closePool, getPool } from '../src/db/client.js';
-import { runMigrations } from '../src/db/migrate.js';
-import { Orchestrator } from '../src/orchestrator.js';
 import { createTelegramHandlers } from '../src/telegram/commands.js';
 
 const logger = pino({ level: 'fatal' });
-const pool = getPool();
 
 const testState = {
-  orchestrator: null,
   handlers: null,
   replies: [],
   killReasons: [],
-  originalStatus: null,
-  originalPauseReason: null,
+  orchestrator: null,
 };
 
 function createCtx(text) {
@@ -37,23 +32,95 @@ async function runCommand(name, text) {
   return testState.replies.at(-1) ?? null;
 }
 
-test.before(async () => {
-  await runMigrations();
+function createOrchestratorStub() {
+  const agentState = new Map([
+    ['status', 'running'],
+    ['pause_reason', null],
+    ['current_task_id', null],
+    ['stats', { tasks_completed: 0, tasks_failed: 0, uptime_start: '2026-04-20T00:00:00.000Z' }],
+    ['boot_phase', 'boot_ready'],
+    ['boot_error', null],
+    ['polling_active', false],
+  ]);
+  const tasks = [];
 
-  testState.orchestrator = new Orchestrator({
-    logger,
-    pollIntervalMs: 60_000,
-  });
+  return {
+    tasks,
+    async getStatusSnapshot() {
+      return {
+        status: agentState.get('status'),
+        bootPhase: agentState.get('boot_phase'),
+        bootError: agentState.get('boot_error'),
+        pollingActive: agentState.get('polling_active'),
+        currentTaskId: agentState.get('current_task_id'),
+        pauseReason: agentState.get('pause_reason'),
+        stats: agentState.get('stats'),
+        queue: {
+          pending_count: tasks.filter((task) => task.status === 'pending').length,
+          in_progress_count: tasks.filter((task) => task.status === 'in_progress').length,
+          blocked_count: tasks.filter((task) => task.status === 'blocked').length,
+          waiting_approval_count: tasks.filter((task) => task.status === 'waiting_approval').length,
+        },
+        approvals: { pending_count: 0 },
+        deployments: { deploying_count: 0 },
+        currentTask: null,
+        instanceId: 'test-instance',
+        pollIntervalMs: 60000,
+      };
+    },
+    async createTask(description, options = {}) {
+      const task = {
+        id: randomUUID(),
+        title: options.title ?? description,
+        source: options.source ?? 'telegram',
+        status: 'pending',
+        priority: options.priority ?? 'medium',
+        created_at: new Date().toISOString(),
+      };
+      tasks.push(task);
+      return task;
+    },
+    async listTasks() {
+      return [...tasks];
+    },
+    async pause(reason) {
+      agentState.set('status', 'paused');
+      agentState.set('pause_reason', reason);
+    },
+    async resume() {
+      agentState.set('status', 'running');
+      agentState.set('pause_reason', null);
+    },
+    async markStopped(reason) {
+      agentState.set('status', 'stopped');
+      agentState.set('pause_reason', reason);
+    },
+    async getAgentStateValue(key, fallback = null) {
+      return agentState.has(key) ? agentState.get(key) : fallback;
+    },
+    async setAgentStateValue(key, value) {
+      agentState.set(key, value);
+    },
+    async listPendingApprovals() {
+      return [];
+    },
+    async listSkills() {
+      return [];
+    },
+    async setSkillEnabled() {
+      return null;
+    },
+    async approveApproval() {
+      return null;
+    },
+    async rejectApproval() {
+      return null;
+    },
+  };
+}
 
-  testState.originalStatus = await testState.orchestrator.getAgentStateValue(
-    'status',
-    'running'
-  );
-  testState.originalPauseReason = await testState.orchestrator.getAgentStateValue(
-    'pause_reason',
-    null
-  );
-
+test.before(() => {
+  testState.orchestrator = createOrchestratorStub();
   testState.handlers = createTelegramHandlers({
     logger,
     orchestrator: testState.orchestrator,
@@ -61,26 +128,6 @@ test.before(async () => {
       testState.killReasons.push(reason);
     },
   });
-});
-
-test.after(async () => {
-  await pool.query(
-    `DELETE FROM tasks
-     WHERE source = 'telegram'
-       AND title LIKE 'LC_TEST_%'`
-  );
-
-  await testState.orchestrator.setAgentStateValue(
-    'status',
-    testState.originalStatus ?? 'running'
-  );
-  await testState.orchestrator.setAgentStateValue(
-    'pause_reason',
-    testState.originalPauseReason ?? null
-  );
-  await testState.orchestrator.setAgentStateValue('current_task_id', null);
-
-  await closePool();
 });
 
 test('telegram command handlers update agent_state and tasks', async () => {
@@ -93,24 +140,14 @@ test('telegram command handlers update agent_state and tasks', async () => {
   const addReply = await runCommand('add', '/add LC_TEST_create hello world api');
   assert.match(addReply, /Task created\./);
 
-  const taskResult = await pool.query(
-    `SELECT title, source, status
-     FROM tasks
-     WHERE title = 'LC_TEST_create hello world api'
-     ORDER BY created_at DESC
-     LIMIT 1`
+  const createdTask = testState.orchestrator.tasks.find(
+    (task) => task.title === 'LC_TEST_create hello world api'
   );
+  assert.ok(createdTask);
+  assert.equal(createdTask.source, 'telegram');
+  assert.equal(createdTask.status, 'pending');
 
-  assert.equal(taskResult.rowCount, 1);
-  assert.equal(taskResult.rows[0].source, 'telegram');
-  assert.equal(taskResult.rows[0].status, 'pending');
-
-  await pool.query(
-    `UPDATE tasks
-     SET priority = 'critical'
-     WHERE title = 'LC_TEST_create hello world api'
-       AND source = 'telegram'`
-  );
+  createdTask.priority = 'critical';
 
   const tasksReply = await runCommand('tasks', '/tasks');
   assert.match(tasksReply, /LC_TEST_create hello world api/);

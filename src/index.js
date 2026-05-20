@@ -10,8 +10,11 @@ import {
   checkDatabaseConnection,
 } from './db/client.js';
 import { runMigrations } from './db/migrate.js';
+import { parseModelRef } from './llm/base.js';
 import { createOllamaClient } from './llm/ollama.js';
+import { createGeminiClient } from './llm/providers/gemini.js';
 import { createModelSelector } from './llm/modelSelector.js';
+import { createLlmRuntime } from './llm/runtime.js';
 import { createPlanner } from './agent/planner.js';
 import { createVerifier } from './agent/verifier.js';
 import { createSpecializedReviewService } from './agent/specializedReview.js';
@@ -53,24 +56,29 @@ let projectService;
 let chatService;
 const BOOT_STAGE_TIMEOUT_MS = 60_000;
 
-async function warmOllamaModels(client) {
+async function warmOllamaModels(client, modelSelector) {
   if (!config.ollamaWarmupEnabled) {
     return [];
   }
 
   const candidates = [
-    { model: config.modelPlanner, mode: 'generate', role: 'planner' },
-    { model: config.modelCoder, mode: 'generate', role: 'coder' },
-    { model: config.modelFast, mode: 'generate', role: 'fast' },
-    { model: config.modelReview, mode: 'generate', role: 'review' },
-    { model: config.modelEmbed, mode: 'embed', role: 'embed' },
+    { role: 'planner', mode: 'generate' },
+    { role: 'coder', mode: 'generate' },
+    { role: 'fast', mode: 'generate' },
+    { role: 'review', mode: 'generate' },
+    { role: 'embed', mode: 'embed' },
   ];
   const seen = new Set();
   const warmed = [];
 
   for (const candidate of candidates) {
-    const key = `${candidate.mode}:${candidate.model}`;
-    if (!candidate.model || seen.has(key)) {
+    const resolved = parseModelRef(modelSelector.select(candidate.role));
+    if (resolved.provider !== 'ollama' || !resolved.model) {
+      continue;
+    }
+
+    const key = `${candidate.mode}:${resolved.model}`;
+    if (seen.has(key)) {
       continue;
     }
 
@@ -78,14 +86,18 @@ async function warmOllamaModels(client) {
 
     try {
       const result = await client.warmModel({
-        model: candidate.model,
+        model: resolved.model,
         mode: candidate.mode,
         timeoutMs: config.ollamaWarmupTimeoutMs,
       });
-      warmed.push({ ...candidate, cached: result.cached ?? false });
+      warmed.push({
+        ...candidate,
+        model: resolved.model,
+        cached: result.cached ?? false,
+      });
     } catch (error) {
       logger.warn(
-        { err: error, model: candidate.model, role: candidate.role, mode: candidate.mode },
+        { err: error, model: resolved.model, role: candidate.role, mode: candidate.mode },
         'Ollama warmup failed; continuing without preloaded model'
       );
     }
@@ -156,15 +168,17 @@ async function bootstrap() {
   await setBootPhase('boot_db_ready');
 
   const ollamaClient = createOllamaClient({ logger });
+  const geminiClient = createGeminiClient({ logger });
   const modelSelector = createModelSelector();
+  const llmClient = createLlmRuntime({
+    providers: {
+      ollama: ollamaClient,
+      ...(config.geminiEnabled ? { gemini: geminiClient } : {}),
+    },
+  });
+  const requiredModelsByProvider = modelSelector.requiredModelsByProvider();
   const ollamaHealth = await ollamaClient.healthCheck({
-    requiredModels: [
-      config.modelPlanner,
-      config.modelCoder,
-      config.modelFast,
-      config.modelReview,
-      config.modelEmbed,
-    ],
+    requiredModels: requiredModelsByProvider.ollama,
   });
 
   if (!ollamaHealth.ok) {
@@ -178,7 +192,7 @@ async function bootstrap() {
     },
     'Ollama connection healthy'
   );
-  const warmedModels = await warmOllamaModels(ollamaClient);
+  const warmedModels = await warmOllamaModels(ollamaClient, modelSelector);
   logger.info(
     {
       warmedModels: warmedModels.map((entry) => ({
@@ -190,21 +204,42 @@ async function bootstrap() {
     },
     'Ollama warmup pass complete'
   );
+  if (config.geminiEnabled) {
+    const geminiHealth = await geminiClient.healthCheck({
+      requiredModels: requiredModelsByProvider.gemini,
+    });
+    if (!geminiHealth.ok) {
+      logger.warn(
+        { missing: geminiHealth.missingModels },
+        'Gemini cloud planning is unavailable; LocalClaw will continue with local fallbacks'
+      );
+    } else {
+      logger.info(
+        {
+          geminiBaseUrl: config.geminiApiBaseUrl,
+          availableModels: geminiHealth.models.map(
+            (model) => model.baseModelId ?? model.name?.replace(/^models\//, '')
+          ),
+        },
+        'Gemini connection healthy'
+      );
+    }
+  }
   await setBootPhase('boot_ollama_ready');
 
   const planner = createPlanner({
-    client: ollamaClient,
+    client: llmClient,
     modelSelector,
   });
   const verifier = createVerifier({
-    client: ollamaClient,
+    client: llmClient,
     modelSelector,
   });
   const specializedReviewer = createSpecializedReviewService({
     logger,
   });
   const learningExtractor = createLearningExtractor({
-    client: ollamaClient,
+    client: llmClient,
     modelSelector,
   });
   const mcpRegistry = createMcpRegistry({
@@ -214,12 +249,12 @@ async function bootstrap() {
     ],
   });
   const ragIngestor = createRagIngestor({
-    embeddingClient: ollamaClient,
+    embeddingClient: llmClient,
     logger,
     mcpRegistry,
   });
   const ragRetriever = createRagRetriever({
-    embeddingClient: ollamaClient,
+    embeddingClient: llmClient,
     logger,
     mcpRegistry,
   });
@@ -303,7 +338,7 @@ async function bootstrap() {
   await setBootPhase('boot_skills_ready');
 
   const repairEngine = new RepairEngine({
-    client: ollamaClient,
+    llmClient,
     logger,
     modelSelector,
   });
@@ -318,12 +353,13 @@ async function bootstrap() {
     verifier,
     toolRegistry,
     repairEngine,
-    router: createDynamicRouter({ client: ollamaClient, modelSelector }),
+    router: createDynamicRouter({ client: llmClient, modelSelector }),
   });
 
   const reflectionEngine = new ReflectionEngine({
     pool: getPool(),
-    ollamaClient,
+    llmClient,
+    modelSelector,
     logger,
     mcpRegistry,
   });
@@ -355,7 +391,7 @@ async function bootstrap() {
     pool: getPool(),
     projectService,
     orchestrator,
-    llmClient: ollamaClient,
+    llmClient,
     modelSelector,
     logger,
     mcpRegistry,

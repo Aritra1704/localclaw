@@ -2,7 +2,8 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import pino from 'pino';
 import { getPool } from '../db/client.js';
-import { createOllamaClient, extractJsonObjectText } from '../llm/ollama.js';
+import { createOllamaClient } from '../llm/ollama.js';
+import { extractJsonObjectText } from '../llm/json.js';
 import { config } from '../config.js';
 
 const logger = pino({
@@ -13,8 +14,9 @@ const logger = pino({
 export class ReflectionEngine {
   constructor(options = {}) {
     this.pool = options.pool ?? getPool();
-    this.ollama = options.ollamaClient ?? createOllamaClient();
-    this.modelName = options.modelName ?? config.modelReview;
+    this.client = options.llmClient ?? options.ollamaClient ?? createOllamaClient();
+    this.modelSelector = options.modelSelector ?? null;
+    this.modelName = options.modelName ?? null;
     this.logger = options.logger ?? logger;
     this.mcpRegistry = options.mcpRegistry ?? null;
     this.rulesPath = options.rulesPath ?? path.resolve(process.cwd(), 'PROJECT_RULES.md');
@@ -130,8 +132,9 @@ Respond ONLY with a JSON object in this format:
 }`;
 
     // 3. Generate Reflection
-    const generation = await this.ollama.generate({
-      model: this.modelName,
+    const model = this.modelName ?? this.modelSelector?.select?.('review') ?? config.modelReview;
+    const generation = await this.client.generate({
+      model,
       prompt,
       format: 'json',
       temperature: 0.1

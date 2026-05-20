@@ -1,4 +1,4 @@
-import { extractJsonObjectText } from '../llm/ollama.js';
+import { extractJsonObjectText } from '../llm/json.js';
 
 export function createDynamicRouter({ client, modelSelector }) {
   return {

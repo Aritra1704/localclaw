@@ -44,6 +44,7 @@ const envSchema = z.object({
     .transform((value) => value === 'true'),
   RAILWAY_DEPLOY_POLL_INTERVAL_MS: z.coerce.number().int().positive().default(10000),
   RAILWAY_DEPLOY_TIMEOUT_MS: z.coerce.number().int().positive().default(900000),
+  ORCHESTRATOR_MODE: z.enum(['local', 'hybrid']).default('local'),
   OLLAMA_BASE_URL: z.string().url().default('http://127.0.0.1:11434'),
   OLLAMA_KEEP_ALIVE: z.string().default('30s'),
   OLLAMA_REQUEST_TIMEOUT_MS: z.coerce.number().int().positive().default(120000),
@@ -53,11 +54,22 @@ const envSchema = z.object({
     .transform((value) => value === 'true'),
   OLLAMA_WARMUP_TIMEOUT_MS: z.coerce.number().int().positive().default(180000),
   OLLAMA_MAX_RETRIES: z.coerce.number().int().min(0).max(3).default(1),
+  GEMINI_API_KEY: z.string().optional(),
+  GEMINI_API_BASE_URL: z
+    .string()
+    .url()
+    .default('https://generativelanguage.googleapis.com/v1beta'),
+  GEMINI_REQUEST_TIMEOUT_MS: z.coerce.number().int().positive().default(120000),
+  GEMINI_MAX_RETRIES: z.coerce.number().int().min(0).max(3).default(1),
   MODEL_PLANNER: z.string().default('qwen2.5-coder:7b'),
   MODEL_CODER: z.string().default('qwen2.5-coder:7b'),
   MODEL_FAST: z.string().default('llama3.2:3b'),
   MODEL_REVIEW: z.string().default('qwen2.5-coder:7b'),
   MODEL_EMBED: z.string().default('nomic-embed-text:latest'),
+  MODEL_PLANNER_CLOUD: z.string().default('gemini-2.5-pro'),
+  MODEL_REVIEW_CLOUD: z.string().default('gemini-2.5-pro'),
+  MODEL_SECURITY_CLOUD: z.string().default('gemini-2.5-pro'),
+  MODEL_FAST_CLOUD: z.string().default('gemini-2.5-flash'),
   TASK_POLL_INTERVAL_MS: z.coerce.number().int().positive().default(30000),
   TASK_TIMEOUT_HOURS: z.coerce.number().positive().default(2),
   MAX_CONSECUTIVE_FAILURES: z.coerce.number().int().positive().default(3),
@@ -99,6 +111,8 @@ const envSchema = z.object({
     .enum(['true', 'false'])
     .default('false')
     .transform((value) => value === 'true'),
+  GRAPH_BACKEND: z.enum(['native', 'graphify']).default('native'),
+  GRAPHIFY_INDEX_PATH: z.string().optional(),
 });
 
 const parsedEnv = envSchema.safeParse(process.env);
@@ -141,17 +155,26 @@ export const config = {
   railwayDeployEnabled: localOnlyMode ? false : env.RAILWAY_DEPLOY_ENABLED,
   railwayDeployPollIntervalMs: env.RAILWAY_DEPLOY_POLL_INTERVAL_MS,
   railwayDeployTimeoutMs: env.RAILWAY_DEPLOY_TIMEOUT_MS,
+  orchestratorMode: env.ORCHESTRATOR_MODE,
   ollamaBaseUrl: env.OLLAMA_BASE_URL,
   ollamaKeepAlive: env.OLLAMA_KEEP_ALIVE,
   ollamaRequestTimeoutMs: env.OLLAMA_REQUEST_TIMEOUT_MS,
   ollamaWarmupEnabled: env.OLLAMA_WARMUP_ENABLED,
   ollamaWarmupTimeoutMs: env.OLLAMA_WARMUP_TIMEOUT_MS,
   ollamaMaxRetries: env.OLLAMA_MAX_RETRIES,
+  geminiApiKey: localOnlyMode ? '' : env.GEMINI_API_KEY ?? '',
+  geminiApiBaseUrl: env.GEMINI_API_BASE_URL,
+  geminiRequestTimeoutMs: env.GEMINI_REQUEST_TIMEOUT_MS,
+  geminiMaxRetries: env.GEMINI_MAX_RETRIES,
   modelPlanner: env.MODEL_PLANNER,
   modelCoder: env.MODEL_CODER,
   modelFast: env.MODEL_FAST,
   modelReview: env.MODEL_REVIEW,
   modelEmbed: env.MODEL_EMBED,
+  modelPlannerCloud: env.MODEL_PLANNER_CLOUD,
+  modelReviewCloud: env.MODEL_REVIEW_CLOUD,
+  modelSecurityCloud: env.MODEL_SECURITY_CLOUD,
+  modelFastCloud: env.MODEL_FAST_CLOUD,
   taskPollIntervalMs: env.TASK_POLL_INTERVAL_MS,
   taskTimeoutHours: env.TASK_TIMEOUT_HOURS,
   maxConsecutiveFailures: env.MAX_CONSECUTIVE_FAILURES,
@@ -178,7 +201,11 @@ export const config = {
     .filter(Boolean),
   repairAutoApprove: env.REPAIR_AUTO_APPROVE,
   deployAutoApprove: env.DEPLOY_AUTO_APPROVE,
+  graphBackend: env.GRAPH_BACKEND,
+  graphifyIndexPath: env.GRAPHIFY_INDEX_PATH ?? '',
 };
+
+config.geminiEnabled = config.geminiApiKey.length > 0;
 
 export function requireConfig(...keys) {
   const missing = keys.filter((key) => !config[key]);

@@ -2,7 +2,7 @@ import path from 'node:path';
 
 import { z } from 'zod';
 
-import { extractJsonObjectText } from '../llm/ollama.js';
+import { extractJsonObjectText } from '../llm/json.js';
 import { TOOL_DEFINITIONS, TOOL_NAMES } from '../tools/registry.js';
 
 const toolArgsSchemaByName = Object.fromEntries(
@@ -457,6 +457,10 @@ function buildPlannerPrompt(task, context) {
     typeof context.chatHistory === 'string' && context.chatHistory.trim().length > 0
       ? `Recent Conversation Context:\n${context.chatHistory.trim()}`
       : '';
+  const plannerContext =
+    typeof context.plannerContext === 'string' && context.plannerContext.trim().length > 0
+      ? context.plannerContext.trim()
+      : '';
 
   return `You are the LocalClaw planner.
 Return exactly one JSON object and nothing else.
@@ -492,6 +496,8 @@ Retrieved historical context:
 ${retrievedContext}
 
 ${chatHistory}
+
+${plannerContext}
 
 JSON contract:
 {

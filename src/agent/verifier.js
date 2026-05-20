@@ -1,6 +1,6 @@
 import { z } from 'zod';
 
-import { extractJsonObjectText } from '../llm/ollama.js';
+import { extractJsonObjectText } from '../llm/json.js';
 import { collectWorkspaceSnapshot } from '../tools/registry.js';
 
 const verifierOutputSchema = z.object({

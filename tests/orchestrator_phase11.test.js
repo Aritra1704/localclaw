@@ -186,6 +186,11 @@ test('orchestrator routes queue recovery, leasing, and task history through post
               },
             ],
           };
+        case 'list_memory_artifacts':
+          return { rows: [] };
+        case 'search_learnings':
+        case 'search_document_chunks':
+          return { rows: [] };
         default:
           throw new Error(`Unexpected MCP tool: ${toolName}`);
       }
@@ -232,6 +237,11 @@ test('orchestrator routes queue recovery, leasing, and task history through post
       'get_task_by_id',
       'list_task_logs',
       'list_task_artifacts',
+      'list_memory_artifacts',
+      'list_memory_artifacts',
+      'search_learnings',
+      'search_document_chunks',
+      'list_memory_artifacts',
     ]
   );
 });
@@ -257,6 +267,8 @@ test('repair approvals resume immediately through postgres MCP and repair toolin
           };
         case 'update_deployments_by_approval':
           return { rows: [] };
+        case 'insert_memory_artifact':
+          return { rows: [{ id: 'memory-1', created_at: '2026-04-16T00:00:00.000Z' }] };
         case 'list_ready_repairs':
           return {
             rows: [
@@ -367,6 +379,7 @@ test('repair approvals resume immediately through postgres MCP and repair toolin
     calls.map((entry) => entry.toolName),
     [
       'respond_to_approval',
+      'insert_memory_artifact',
       'update_deployments_by_approval',
       'list_ready_repairs',
       'mark_approval_applied',
@@ -391,6 +404,8 @@ test('queueRepairApproval records repair budget metadata and increments retry co
         case 'insert_task_artifact':
         case 'insert_agent_log':
           return { rows: [{ id: 'ok' }] };
+        case 'insert_memory_artifact':
+          return { rows: [{ id: 'memory-1', created_at: '2026-04-19T00:00:00.000Z' }] };
         case 'insert_approval':
           return {
             rows: [
@@ -403,6 +418,16 @@ test('queueRepairApproval records repair budget metadata and increments retry co
           };
         case 'update_task_record':
           return { rows: [{ id: args.taskId, status: args.patch.status }] };
+        case 'respond_to_approval':
+          return {
+            rows: [
+              {
+                id: args.approvalId,
+                task_id: 'task-1',
+                approval_type: 'repair',
+              },
+            ],
+          };
         case 'update_approval_request_message':
           return { rows: [{ id: args.approvalId }] };
         default:
@@ -499,6 +524,8 @@ test('approved repairs stay pending until their cooldown window opens', async ()
           };
         case 'update_deployments_by_approval':
           return { rows: [] };
+        case 'insert_memory_artifact':
+          return { rows: [{ id: 'memory-1', created_at: '2026-04-19T00:00:00.000Z' }] };
         case 'list_ready_repairs':
           return {
             rows: [
@@ -550,7 +577,7 @@ test('approved repairs stay pending until their cooldown window opens', async ()
   assert.equal(orchestrator.activeTasks.size, 0);
   assert.deepEqual(
     calls.map((entry) => entry.toolName),
-    ['respond_to_approval', 'update_deployments_by_approval', 'list_ready_repairs']
+    ['respond_to_approval', 'insert_memory_artifact', 'update_deployments_by_approval', 'list_ready_repairs']
   );
 });
 

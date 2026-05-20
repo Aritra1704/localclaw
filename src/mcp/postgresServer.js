@@ -64,6 +64,18 @@ const POSTGRES_TOOLS = [
     description: 'Insert a task artifact row.',
   },
   {
+    name: 'insert_memory_artifact',
+    description: 'Insert an exact-fidelity memory artifact row.',
+  },
+  {
+    name: 'list_memory_artifacts',
+    description: 'List scoped exact-fidelity memory artifacts with optional supersession filtering.',
+  },
+  {
+    name: 'archive_memory_artifacts',
+    description: 'Archive exact-fidelity memory artifacts that match scoped retention filters.',
+  },
+  {
     name: 'insert_learning',
     description: 'Insert a learning extracted from a task run.',
   },
@@ -597,10 +609,11 @@ export function createPostgresMcpServer({ pool }) {
                    project_name,
                    project_path,
                    project_target_id,
-                   repo_url,
-                   retry_count,
-                   max_retries,
-                   blocked_reason,
+                   chat_session_id,
+                    repo_url,
+                    retry_count,
+                    max_retries,
+                    blocked_reason,
                    result,
                    created_at,
                    started_at,
@@ -724,6 +737,182 @@ export function createPostgresMcpServer({ pool }) {
           return { rows: result.rows };
         }
 
+        case 'insert_memory_artifact': {
+          const result = await pool.query(
+            `INSERT INTO memory_artifacts (
+               task_id,
+               chat_session_id,
+               artifact_type,
+               project_scope,
+               subsystem,
+               source_message_id,
+               source_step_number,
+               retrieval_priority,
+               content,
+               content_summary,
+               metadata,
+               supersedes_artifact_id,
+               archived_at,
+               expires_at
+             )
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11::jsonb, $12, $13, $14)
+             RETURNING id, created_at`,
+            [
+              args.taskId ?? null,
+              args.chatSessionId ?? null,
+              args.artifactType,
+              args.projectScope ?? null,
+              args.subsystem ?? null,
+              args.sourceMessageId ?? null,
+              args.sourceStepNumber ?? null,
+              args.retrievalPriority ?? 50,
+              args.content,
+              args.contentSummary ?? null,
+              JSON.stringify(args.metadata ?? {}),
+              args.supersedesArtifactId ?? null,
+              args.archivedAt ?? null,
+              args.expiresAt ?? null,
+            ]
+          );
+          return { rows: result.rows };
+        }
+
+        case 'list_memory_artifacts': {
+          const values = [];
+          const where = [];
+          const limit = Math.max(1, Math.min(Number(args.limit ?? 20) || 20, 200));
+          const artifactTypes = Array.isArray(args.artifactTypes)
+            ? args.artifactTypes.filter(Boolean)
+            : [];
+          const includeArchived = args.includeArchived === true;
+          const excludeSuperseded = args.excludeSuperseded !== false;
+          const historicalMode = args.historicalMode === true;
+
+          if (args.taskId) {
+            values.push(args.taskId);
+            where.push(`memory_artifacts.task_id = $${values.length}`);
+          }
+
+          if (args.chatSessionId) {
+            values.push(args.chatSessionId);
+            where.push(`memory_artifacts.chat_session_id = $${values.length}`);
+          }
+
+          if (artifactTypes.length > 0) {
+            values.push(artifactTypes);
+            where.push(`memory_artifacts.artifact_type = ANY($${values.length}::text[])`);
+          }
+
+          if (args.projectScope) {
+            values.push(args.projectScope);
+            where.push(`memory_artifacts.project_scope = $${values.length}`);
+          }
+
+          if (args.subsystem) {
+            values.push(args.subsystem);
+            where.push(`memory_artifacts.subsystem = $${values.length}`);
+          }
+
+          if (args.beforeCreatedAt) {
+            values.push(args.beforeCreatedAt);
+            where.push(`memory_artifacts.created_at < $${values.length}::timestamptz`);
+          }
+
+          if (Number.isFinite(Number(args.minPriority))) {
+            values.push(Number(args.minPriority));
+            where.push(`memory_artifacts.retrieval_priority >= $${values.length}`);
+          }
+
+          if (!includeArchived) {
+            where.push(`memory_artifacts.archived_at IS NULL`);
+          }
+
+          where.push(
+            historicalMode
+              ? `TRUE`
+              : `(memory_artifacts.expires_at IS NULL OR memory_artifacts.expires_at > NOW())`
+          );
+
+          if (excludeSuperseded && !historicalMode) {
+            where.push(
+              `NOT EXISTS (
+                 SELECT 1
+                 FROM memory_artifacts newer
+                 WHERE newer.supersedes_artifact_id = memory_artifacts.id
+                   AND newer.archived_at IS NULL
+               )`
+            );
+          }
+
+          values.push(limit);
+          const result = await pool.query(
+            `SELECT
+               memory_artifacts.id,
+               memory_artifacts.task_id,
+               memory_artifacts.chat_session_id,
+               memory_artifacts.artifact_type,
+               memory_artifacts.project_scope,
+               memory_artifacts.subsystem,
+               memory_artifacts.source_message_id,
+               memory_artifacts.source_step_number,
+               memory_artifacts.retrieval_priority,
+               memory_artifacts.content,
+               memory_artifacts.content_summary,
+               memory_artifacts.metadata,
+               memory_artifacts.supersedes_artifact_id,
+               memory_artifacts.archived_at,
+               memory_artifacts.expires_at,
+               memory_artifacts.created_at
+             FROM memory_artifacts
+             WHERE ${where.length > 0 ? where.join('\n               AND ') : 'TRUE'}
+             ORDER BY
+               memory_artifacts.retrieval_priority DESC,
+               memory_artifacts.created_at DESC
+             LIMIT $${values.length}`,
+            values
+          );
+          return { rows: result.rows };
+        }
+
+        case 'archive_memory_artifacts': {
+          const values = [];
+          const where = [`archived_at IS NULL`];
+
+          if (args.taskId) {
+            values.push(args.taskId);
+            where.push(`task_id = $${values.length}`);
+          }
+
+          if (args.chatSessionId) {
+            values.push(args.chatSessionId);
+            where.push(`chat_session_id = $${values.length}`);
+          }
+
+          if (args.projectScope) {
+            values.push(args.projectScope);
+            where.push(`project_scope = $${values.length}`);
+          }
+
+          if (Array.isArray(args.artifactTypes) && args.artifactTypes.length > 0) {
+            values.push(args.artifactTypes.filter(Boolean));
+            where.push(`artifact_type = ANY($${values.length}::text[])`);
+          }
+
+          if (args.createdBefore) {
+            values.push(args.createdBefore);
+            where.push(`created_at < $${values.length}::timestamptz`);
+          }
+
+          const result = await pool.query(
+            `UPDATE memory_artifacts
+             SET archived_at = NOW()
+             WHERE ${where.join('\n               AND ')}
+             RETURNING id`,
+            values
+          );
+          return { rows: result.rows, rowCount: result.rowCount ?? result.rows.length };
+        }
+
         case 'insert_learning': {
           const result = await pool.query(
             `INSERT INTO learnings (
@@ -799,7 +988,19 @@ export function createPostgresMcpServer({ pool }) {
             await client.query('BEGIN');
 
             const selected = await client.query(
-              `SELECT id, title, description, priority, project_name, project_path
+              `SELECT
+                 id,
+                 title,
+                 description,
+                 priority,
+                 project_name,
+                 project_path,
+                 project_target_id,
+                 chat_session_id,
+                 status,
+                 source,
+                 blocked_reason,
+                 result
                FROM tasks
                WHERE status = 'pending'
                ORDER BY

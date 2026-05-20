@@ -36,6 +36,18 @@ import {
 import { ReflectionEngine } from './selfimprovement/reflectionEngine.js';
 import { RepairEngine } from './selfhealing/repairEngine.js';
 import { ChatHistoryManager } from './control/chatHistory.js';
+import {
+  buildApprovalPromptMemoryContent,
+  buildApprovalResponseMemoryContent,
+  buildMemoryArtifactRecord,
+  buildPlanDraftMemoryContent,
+  buildVerificationMemoryContent,
+} from './memory/exactArtifacts.js';
+import {
+  assembleLayeredRetrievalContext,
+  createLayerEntry,
+  createMemoryArtifactLayerEntry,
+} from './memory/retrieval.js';
 import { collectWorkspaceSnapshot } from './tools/registry.js';
 
 const logger = pino({
@@ -89,6 +101,63 @@ function extractKeywords(text, limit = 12) {
     );
 
   return [...new Set(tokens)].slice(0, limit);
+}
+
+function formatSummaryStateForPrompt(summaryState) {
+  if (!summaryState || typeof summaryState !== 'object') {
+    return null;
+  }
+
+  const lines = [];
+  if (typeof summaryState.summary === 'string' && summaryState.summary.trim()) {
+    lines.push(`summary: ${summaryState.summary.trim()}`);
+  }
+
+  if (Array.isArray(summaryState.highlights) && summaryState.highlights.length > 0) {
+    lines.push(`highlights: ${summaryState.highlights.slice(0, 4).join(' | ')}`);
+  }
+
+  if (summaryState.pendingAction?.type && summaryState.pendingAction.type !== 'none') {
+    lines.push(`pending_action: ${summaryState.pendingAction.type}`);
+  }
+
+  if (summaryState.contractDraft?.objective) {
+    lines.push(`draft_objective: ${summaryState.contractDraft.objective}`);
+  }
+
+  return lines.length > 0 ? lines.join('\n') : null;
+}
+
+function formatTaskStateForPrompt(task) {
+  if (!task) {
+    return null;
+  }
+
+  const lines = [
+    `task_id: ${task.id}`,
+    `title: ${task.title}`,
+    `status: ${task.status ?? 'pending'}`,
+    `priority: ${task.priority ?? 'medium'}`,
+  ];
+
+  if (task.blocked_reason) {
+    lines.push(`blocked_reason: ${task.blocked_reason}`);
+  }
+
+  const execution = task?.result?.execution ?? task?.result?.taskContract ?? null;
+  if (execution?.executionClass) {
+    lines.push(`execution_class: ${execution.executionClass}`);
+  }
+  if (execution?.executionPolicy) {
+    lines.push(`execution_policy: ${execution.executionPolicy}`);
+  }
+
+  const preExecutionPlan = task?.result?.preExecutionPlan ?? null;
+  if (preExecutionPlan?.status) {
+    lines.push(`pre_execution_plan_status: ${preExecutionPlan.status}`);
+  }
+
+  return lines.join('\n');
 }
 
 function formatRetrievedContext(
@@ -490,6 +559,7 @@ function deriveFinalReviewStatus(result) {
     return 'blocked';
   }
 
+  // If verification and specialized reviews passed, the task is considered done.
   return 'done';
 }
 
@@ -560,7 +630,17 @@ export class Orchestrator {
   async callPostgresTool(toolName, args, fallback) {
     const postgresServer = this.getPostgresMcpServer();
     if (postgresServer) {
-      return postgresServer.callTool(toolName, args);
+      try {
+        return await postgresServer.callTool(toolName, args);
+      } catch (error) {
+        if (
+          typeof fallback === 'function' &&
+          /Unsupported PostgreSQL MCP tool|Unexpected MCP tool/i.test(error?.message ?? '')
+        ) {
+          return fallback();
+        }
+        throw error;
+      }
     }
 
     return fallback();
@@ -1045,7 +1125,8 @@ export class Orchestrator {
     });
 
     try {
-      const { retrievalContext, chatHistory } = await this.buildRetrievalContext(task);
+      const { retrievalContext, chatHistory, diagnostics: retrievalDiagnostics } =
+        await this.buildRetrievalContext(task);
       const projectTarget = await this.getProjectTargetRecord({
         projectTargetId: task.project_target_id ?? null,
         projectPath: task.project_path ?? null,
@@ -1069,6 +1150,25 @@ export class Orchestrator {
       });
 
       if (result.status === 'needs_repair') {
+        await this.persistMemoryArtifact(
+          {
+            taskId: task.id,
+            chatSessionId: task.chat_session_id ?? null,
+            artifactType: 'plan_draft',
+            content: buildPlanDraftMemoryContent(task, result.plan, {
+              modelUsed: result.modelUsed ?? null,
+            }),
+            sourceStepNumber: 1,
+            metadata: {
+              phase: 'execution',
+              retrievalDiagnostics,
+            },
+          },
+          {
+            task,
+            supersedeLatest: true,
+          }
+        );
         await this.queueRepairApproval(task, result);
         return;
       }
@@ -1107,6 +1207,37 @@ export class Orchestrator {
       }
 
       await this.persistArtifacts(task.id, [...(result.artifacts ?? []), ...personaArtifacts]);
+      await this.persistMemoryArtifacts(
+        [
+          {
+            taskId: task.id,
+            chatSessionId: task.chat_session_id ?? null,
+            artifactType: 'plan_draft',
+            content: buildPlanDraftMemoryContent(task, result.plan, {
+              modelUsed: result.modelUsed ?? null,
+            }),
+            sourceStepNumber: 1,
+            metadata: {
+              phase: 'execution',
+              retrievalDiagnostics,
+            },
+          },
+          {
+            taskId: task.id,
+            chatSessionId: task.chat_session_id ?? null,
+            artifactType: 'verification_summary',
+            content: buildVerificationMemoryContent(result),
+            sourceStepNumber: 900,
+            metadata: {
+              finalStatus: result.verification?.review?.status ?? null,
+            },
+          },
+        ],
+        {
+          task,
+          supersedeLatest: true,
+        }
+      );
       await this.persistLearnings(task, result);
       await this.enqueueSpecializedFollowUpTasks(task, result.specializedReview?.followUpTasks ?? []);
 
@@ -1385,12 +1516,271 @@ export class Orchestrator {
     this.notifier = notifier;
   }
 
-  async buildRetrievalContext(task) {
+  async findLatestMemoryArtifact(filters = {}) {
+    const result = await this.callPostgresTool(
+      'list_memory_artifacts',
+      {
+        ...filters,
+        limit: 1,
+        historicalMode: true,
+        includeArchived: true,
+      },
+      () =>
+        this.pool.query(
+          `SELECT
+             id,
+             task_id,
+             chat_session_id,
+             artifact_type,
+             project_scope,
+             subsystem,
+             source_message_id,
+             source_step_number,
+             retrieval_priority,
+             content,
+             content_summary,
+             metadata,
+             supersedes_artifact_id,
+             archived_at,
+             expires_at,
+             created_at
+           FROM memory_artifacts
+           WHERE ($1::uuid IS NULL OR task_id = $1)
+             AND ($2::uuid IS NULL OR chat_session_id = $2)
+             AND ($3::text[] IS NULL OR artifact_type = ANY($3::text[]))
+           ORDER BY retrieval_priority DESC, created_at DESC
+           LIMIT 1`,
+          [
+            filters.taskId ?? null,
+            filters.chatSessionId ?? null,
+            Array.isArray(filters.artifactTypes) && filters.artifactTypes.length > 0
+              ? filters.artifactTypes
+              : null,
+          ]
+        )
+    );
+
+    return result.rows[0] ?? null;
+  }
+
+  async persistMemoryArtifact(input, options = {}) {
+    const record = buildMemoryArtifactRecord(input, {
+      task: options.task ?? null,
+    });
+    if (!record) {
+      return null;
+    }
+
+    if (options.supersedeLatest === true && !record.supersedesArtifactId) {
+      const previous = await this.findLatestMemoryArtifact({
+        taskId: record.taskId,
+        chatSessionId: record.chatSessionId,
+        artifactTypes: [record.artifactType],
+      });
+      if (previous?.id) {
+        record.supersedesArtifactId = previous.id;
+      }
+    }
+
+    let result;
+    try {
+      result = await this.callPostgresTool(
+        'insert_memory_artifact',
+        record,
+        () =>
+          this.pool.query(
+            `INSERT INTO memory_artifacts (
+               task_id,
+               chat_session_id,
+               artifact_type,
+               project_scope,
+               subsystem,
+               source_message_id,
+               source_step_number,
+               retrieval_priority,
+               content,
+               content_summary,
+               metadata,
+               supersedes_artifact_id,
+               archived_at,
+               expires_at
+             )
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11::jsonb, $12, $13, $14)
+             RETURNING id, created_at`,
+            [
+              record.taskId,
+              record.chatSessionId,
+              record.artifactType,
+              record.projectScope,
+              record.subsystem,
+              record.sourceMessageId,
+              record.sourceStepNumber,
+              record.retrievalPriority,
+              record.content,
+              record.contentSummary,
+              JSON.stringify(record.metadata ?? {}),
+              record.supersedesArtifactId,
+              record.archivedAt,
+              record.expiresAt,
+            ]
+          )
+      );
+    } catch (error) {
+      this.logger.warn(
+        { err: error, artifactType: record.artifactType, taskId: record.taskId ?? null },
+        'Failed to persist exact memory artifact'
+      );
+      return null;
+    }
+
+    return {
+      ...record,
+      id: result.rows[0]?.id ?? null,
+      createdAt: result.rows[0]?.created_at ?? null,
+    };
+  }
+
+  async persistMemoryArtifacts(items = [], options = {}) {
+    const persisted = [];
+    for (const item of items) {
+      const stored = await this.persistMemoryArtifact(item, options);
+      if (stored) {
+        persisted.push(stored);
+      }
+    }
+    return persisted;
+  }
+
+  async listMemoryArtifacts(filters = {}) {
+    const result = await this.callPostgresTool(
+      'list_memory_artifacts',
+      filters,
+      () =>
+        this.pool.query(
+          `SELECT
+             memory_artifacts.id,
+             memory_artifacts.task_id,
+             memory_artifacts.chat_session_id,
+             memory_artifacts.artifact_type,
+             memory_artifacts.project_scope,
+             memory_artifacts.subsystem,
+             memory_artifacts.source_message_id,
+             memory_artifacts.source_step_number,
+             memory_artifacts.retrieval_priority,
+             memory_artifacts.content,
+             memory_artifacts.content_summary,
+             memory_artifacts.metadata,
+             memory_artifacts.supersedes_artifact_id,
+             memory_artifacts.archived_at,
+             memory_artifacts.expires_at,
+             memory_artifacts.created_at
+           FROM memory_artifacts
+           WHERE ($1::uuid IS NULL OR memory_artifacts.task_id = $1)
+             AND ($2::uuid IS NULL OR memory_artifacts.chat_session_id = $2)
+             AND ($3::text[] IS NULL OR memory_artifacts.artifact_type = ANY($3::text[]))
+             AND ($4::text IS NULL OR memory_artifacts.project_scope = $4)
+             AND ($5::text IS NULL OR memory_artifacts.subsystem = $5)
+             AND ($6::boolean OR memory_artifacts.archived_at IS NULL)
+             AND ($7::boolean OR memory_artifacts.expires_at IS NULL OR memory_artifacts.expires_at > NOW())
+             AND (
+               $8::boolean = FALSE
+               OR NOT EXISTS (
+                 SELECT 1
+                 FROM memory_artifacts newer
+                 WHERE newer.supersedes_artifact_id = memory_artifacts.id
+                   AND newer.archived_at IS NULL
+               )
+             )
+           ORDER BY memory_artifacts.retrieval_priority DESC, memory_artifacts.created_at DESC
+           LIMIT $9`,
+          [
+            filters.taskId ?? null,
+            filters.chatSessionId ?? null,
+            Array.isArray(filters.artifactTypes) && filters.artifactTypes.length > 0
+              ? filters.artifactTypes
+              : null,
+            filters.projectScope ?? null,
+            filters.subsystem ?? null,
+            filters.includeArchived === true,
+            filters.historicalMode === true,
+            filters.excludeSuperseded !== false,
+            Math.max(1, Math.min(Number(filters.limit ?? 20) || 20, 200)),
+          ]
+        )
+    );
+
+    return result.rows;
+  }
+
+  async captureTaskInstructionMemory(task, contract = null, options = {}) {
+    if (!task || !contract) {
+      return null;
+    }
+
+    const content = [
+      `Objective: ${contract.objective}`,
+      contract.notes ? `Notes: ${contract.notes}` : null,
+      contract.constraints?.length ? `Constraints:\n- ${contract.constraints.join('\n- ')}` : null,
+      contract.inScope?.length ? `In scope:\n- ${contract.inScope.join('\n- ')}` : null,
+      contract.outOfScope?.length ? `Out of scope:\n- ${contract.outOfScope.join('\n- ')}` : null,
+      contract.successCriteria?.length
+        ? `Success criteria:\n- ${contract.successCriteria.join('\n- ')}`
+        : null,
+    ]
+      .filter(Boolean)
+      .join('\n\n');
+
+    return this.persistMemoryArtifact(
+      {
+        taskId: task.id,
+        chatSessionId: options.chatSessionId ?? task.chat_session_id ?? null,
+        artifactType: 'user_instruction',
+        content,
+        sourceMessageId: options.sourceMessageId ?? null,
+        retrievalPriority: 100,
+        metadata: {
+          source: options.source ?? 'task_contract',
+          priority: contract.priority ?? null,
+        },
+      },
+      {
+        task,
+        supersedeLatest: true,
+      }
+    );
+  }
+
+  async buildRetrievalContext(task, options = {}) {
     const queryText = `${task.title} ${task.description}`.trim();
     const keywords = extractKeywords(queryText);
     const postgresServer = this.getPostgresMcpServer();
 
     try {
+      const chatSummaryState = task.chat_session_id
+        ? await this.getChatSessionSummaryState(task.chat_session_id).catch(() => null)
+        : null;
+      const taskLinkedArtifacts = await this.listMemoryArtifacts({
+        taskId: task.id,
+        artifactTypes: [
+          'user_instruction',
+          'system_decision',
+          'approval_prompt',
+          'approval_response',
+          'repair_proposal',
+          'verification_summary',
+          'plan_draft',
+        ],
+        limit: 8,
+        historicalMode: false,
+      }).catch(() => []);
+      const chatLinkedArtifacts = task.chat_session_id
+        ? await this.listMemoryArtifacts({
+            chatSessionId: task.chat_session_id,
+            artifactTypes: ['user_instruction', 'approval_response', 'system_decision'],
+            limit: 5,
+            historicalMode: false,
+          }).catch(() => [])
+        : [];
       const learningResult =
         keywords.length > 0
           ? postgresServer
@@ -1466,38 +1856,162 @@ export class Orchestrator {
           })
         : null;
 
-      const context = formatRetrievedContext(
-        learningResult.rows,
-        documentChunks,
-        suggestedSkills,
-        graphContext,
-        impactAnalysis
-      );
-
       let chatHistory = null;
       if (this.chatHistoryManager && task.chat_session_id) {
         const history = await this.chatHistoryManager.getHistory(task.chat_session_id);
         chatHistory = this.chatHistoryManager.formatForPrompt(history);
       }
 
-      try {
-        await this.bumpLearningUsage(
-          learningResult.rows.map((row) => row.id).filter(Boolean)
-        );
-      } catch (error) {
-        this.logger.warn(
-          { err: error, taskId: task.id },
-          'Failed to update learning usage counters'
+      const layers = {
+        L0: [
+          createLayerEntry({
+            label: 'Current task state',
+            source: 'task_state',
+            text: formatTaskStateForPrompt(task),
+          }),
+          createLayerEntry({
+            label: 'Current chat summary',
+            source: 'chat_summary_state',
+            text: formatSummaryStateForPrompt(chatSummaryState),
+          }),
+        ].filter(Boolean),
+        L1: [
+          ...taskLinkedArtifacts.map((artifact) => createMemoryArtifactLayerEntry(artifact)),
+          ...chatLinkedArtifacts
+            .filter(
+              (artifact) =>
+                artifact.task_id !== task.id ||
+                artifact.chat_session_id !== task.chat_session_id
+            )
+            .map((artifact) =>
+              createMemoryArtifactLayerEntry(artifact, `Chat-linked exact memory: ${artifact.artifact_type}`)
+            ),
+        ].filter(Boolean),
+        L2: [
+          learningResult.rows.length > 0
+            ? createLayerEntry({
+                label: 'Learnings',
+                source: 'learning',
+                text: learningResult.rows
+                  .map(
+                    (learning) =>
+                      `- [${learning.category}] ${learning.observation} (confidence=${learning.confidence_score})`
+                  )
+                  .join('\n'),
+                metadata: {
+                  learningIds: learningResult.rows.map((learning) => learning.id).filter(Boolean),
+                },
+              })
+            : null,
+          documentChunks.length > 0
+            ? createLayerEntry({
+                label: 'Document context',
+                source: 'document_chunk',
+                text: documentChunks
+                  .map(
+                    (chunk) =>
+                      `- [${chunk.title || chunk.source_path || 'document'}] ${chunk.content}`
+                  )
+                  .join('\n'),
+              })
+            : null,
+          suggestedSkills.length > 0
+            ? createLayerEntry({
+                label: 'Suggested skills',
+                source: 'skill',
+                text: suggestedSkills
+                  .map((skill) => `- ${skill.name} (v${skill.version}) ${skill.description}`)
+                  .join('\n'),
+              })
+            : null,
+          ...((graphContext?.lines ?? []).length > 0
+            ? [
+                createLayerEntry({
+                  label: 'Architecture graph',
+                  source: 'knowledge_graph',
+                  text: graphContext.lines.join('\n'),
+                }),
+              ]
+            : []),
+          ...((impactAnalysis?.lines ?? []).length > 0
+            ? [
+                createLayerEntry({
+                  label: 'Semantic impact analysis',
+                  source: 'impact_analysis',
+                  text: impactAnalysis.lines.join('\n'),
+                }),
+              ]
+            : []),
+        ].filter(Boolean),
+        L3: [],
+      };
+
+      if (
+        options.historicalMode === true ||
+        (layers.L1.length === 0 && layers.L2.length === 0)
+      ) {
+        const archivalArtifacts = await this.listMemoryArtifacts({
+          taskId: task.id,
+          limit: 6,
+          historicalMode: true,
+          excludeSuperseded: false,
+        }).catch(() => []);
+
+        layers.L3.push(
+          ...archivalArtifacts.map((artifact) =>
+            createMemoryArtifactLayerEntry(artifact, `Historical exact memory: ${artifact.artifact_type}`)
+          )
         );
       }
 
+      const assembled = assembleLayeredRetrievalContext(layers, {
+        includeHeaders: true,
+      });
+
+      if (options.bumpLearningUsage !== false) {
+        try {
+          await this.bumpLearningUsage(
+            learningResult.rows.map((row) => row.id).filter(Boolean)
+          );
+        } catch (error) {
+          this.logger.warn(
+            { err: error, taskId: task.id },
+            'Failed to update learning usage counters'
+          );
+        }
+      }
+
       return {
-        retrievalContext: context.length > 0 ? context : null,
-        chatHistory
+        retrievalContext: assembled.text.length > 0 ? assembled.text : null,
+        chatHistory,
+        layers,
+        diagnostics: assembled.diagnostics,
+        exactArtifacts: {
+          taskLinked: taskLinkedArtifacts,
+          chatLinked: chatLinkedArtifacts,
+        },
       };
     } catch (error) {
       this.logger.warn({ err: error, taskId: task.id }, 'Failed to retrieve Phase 5/14 context');
-      return { retrievalContext: null, chatHistory: null };
+      return {
+        retrievalContext: null,
+        chatHistory: null,
+        layers: {
+          L0: [],
+          L1: [],
+          L2: [],
+          L3: [],
+        },
+        diagnostics: {
+          budgets: {},
+          order: ['L0', 'L1', 'L2', 'L3'],
+          layers: {},
+        },
+        exactArtifacts: {
+          taskLinked: [],
+          chatLinked: [],
+        },
+      };
     }
   }
 
@@ -1652,6 +2166,15 @@ export class Orchestrator {
   async queueDeploymentApproval(task, result, narratedSummary = null) {
     const target = this.deployer.getTarget(result.deployment?.target ?? {});
     const initialStatus = config.deployAutoApprove ? 'approved' : 'pending';
+    const approvalMessage = [
+      `Deploy approval requested.`,
+      `Task: ${task.title}`,
+      `Repository: ${result.publication.repo.htmlUrl}`,
+      `Environment: ${target.environmentName}`,
+      `Service: ${target.serviceId ?? 'not configured'}`,
+      `Approve: /approve`,
+      `Reject: /reject`,
+    ].join('\n');
     const approvalResult = await this.callPostgresTool(
       'insert_approval',
       {
@@ -1688,6 +2211,32 @@ export class Orchestrator {
     );
 
     const approval = approvalResult.rows[0];
+    await this.persistMemoryArtifact(
+      {
+        taskId: task.id,
+        chatSessionId: task.chat_session_id ?? null,
+        artifactType: 'approval_prompt',
+        content: buildApprovalPromptMemoryContent({
+          approvalType: 'railway_deploy',
+          taskTitle: task.title,
+          channel: 'telegram',
+          message: approvalMessage,
+          details: {
+            approvalId: approval.id,
+            repoUrl: result.publication.repo.htmlUrl,
+            target,
+          },
+        }),
+        sourceStepNumber: 900,
+        metadata: {
+          approvalType: 'railway_deploy',
+          approvalId: approval.id,
+        },
+      },
+      {
+        task,
+      }
+    );
     const initialDeploymentStatus = config.deployAutoApprove ? 'queued' : 'approval_pending';
     const deploymentResult = await this.callPostgresTool(
       'insert_deployment',
@@ -1970,6 +2519,45 @@ export class Orchestrator {
     );
 
     const approval = approvalResult.rows[0];
+    await this.persistMemoryArtifacts(
+      [
+        {
+          taskId: task.id,
+          chatSessionId: task.chat_session_id ?? null,
+          artifactType: 'repair_proposal',
+          content: JSON.stringify(result.repairProposal ?? {}, null, 2),
+          sourceStepNumber: 900,
+          metadata: {
+            approvalId: approval.id,
+            repairState,
+          },
+        },
+        {
+          taskId: task.id,
+          chatSessionId: task.chat_session_id ?? null,
+          artifactType: 'approval_prompt',
+          content: buildApprovalPromptMemoryContent({
+            approvalType: 'repair',
+            taskTitle: task.title,
+            channel: 'telegram',
+            message: `Repair approval requested for ${task.title}`,
+            details: {
+              approvalId: approval.id,
+              repairState,
+              repairProposal: result.repairProposal,
+            },
+          }),
+          sourceStepNumber: 910,
+          metadata: {
+            approvalType: 'repair',
+            approvalId: approval.id,
+          },
+        },
+      ],
+      {
+        task,
+      }
+    );
 
     await this.callPostgresTool(
       'update_task_record',
@@ -2013,15 +2601,65 @@ export class Orchestrator {
 
     if (config.repairAutoApprove) {
       this.logger.info({ taskId: task.id, approvalId: approval.id }, 'Auto-triggering repair');
-      // Update task status to pending so it can be picked up by the next tick
-      await this.pool.query(
-        `UPDATE tasks SET status = 'pending', updated_at = NOW() WHERE id = $1`,
-        [task.id]
+      await this.callPostgresTool(
+        'update_task_record',
+        {
+          taskId: task.id,
+          patch: {
+            status: 'pending',
+            clear_blocked_reason: true,
+            clear_lock: true,
+            touch_heartbeat: true,
+          },
+        },
+        () =>
+          this.pool.query(
+            `UPDATE tasks
+             SET status = 'pending', blocked_reason = NULL, updated_at = NOW(), locked_by = NULL,
+                 lease_expires_at = NULL, last_heartbeat_at = NOW()
+             WHERE id = $1`,
+            [task.id]
+          )
       );
-      // Mark approval as approved
-      await this.pool.query(
-        `UPDATE approvals SET status = 'approved', responded_at = NOW(), responded_via = 'auto_approve' WHERE id = $1`,
-        [approval.id]
+      await this.callPostgresTool(
+        'respond_to_approval',
+        {
+          approvalId: approval.id,
+          status: 'approved',
+          mergeResponsePayload: {
+            respondedVia: 'auto_approve',
+            note: 'Repair auto-approved by runtime policy.',
+          },
+        },
+        () =>
+          this.pool.query(
+            `UPDATE approvals
+             SET status = 'approved', responded_at = NOW(), responded_via = 'auto_approve'
+             WHERE id = $1`,
+            [approval.id]
+          )
+      );
+      await this.persistMemoryArtifact(
+        {
+          taskId: task.id,
+          chatSessionId: task.chat_session_id ?? null,
+          artifactType: 'approval_response',
+          content: buildApprovalResponseMemoryContent({
+            approvalType: 'repair',
+            decision: 'approved',
+            respondedVia: 'auto_approve',
+            note: 'Repair auto-approved by runtime policy.',
+            respondedAt: new Date().toISOString(),
+          }),
+          sourceStepNumber: 910,
+          metadata: {
+            approvalId: approval.id,
+            autoApproved: true,
+          },
+        },
+        {
+          task,
+        }
       );
       return;
     }
@@ -2427,6 +3065,31 @@ export class Orchestrator {
       return null;
     }
 
+    const approvalType = approval.approval_type === 'repair' ? 'repair' : 'railway_deploy';
+    await this.persistMemoryArtifact(
+      {
+        taskId: approval.task_id,
+        chatSessionId: null,
+        artifactType: 'approval_response',
+        content: buildApprovalResponseMemoryContent({
+          approvalType,
+          decision: 'approved',
+          respondedVia: payload.respondedVia,
+          note: payload.note,
+          respondedAt: new Date().toISOString(),
+        }),
+        metadata: {
+          approvalId: approval.id,
+          approvalType,
+        },
+      },
+      {
+        task: {
+          id: approval.task_id,
+        },
+      }
+    );
+
     await this.callPostgresTool(
       'update_deployments_by_approval',
       {
@@ -2486,7 +3149,7 @@ export class Orchestrator {
              response_payload = COALESCE(response_payload, '{}'::jsonb) || $2::jsonb
            WHERE id = $1
              AND status = 'pending'
-           RETURNING id, task_id`,
+           RETURNING id, task_id, approval_type`,
           [approvalId, JSON.stringify(payload)]
         )
     );
@@ -2495,6 +3158,29 @@ export class Orchestrator {
     if (!approval) {
       return null;
     }
+
+    await this.persistMemoryArtifact(
+      {
+        taskId: approval.task_id,
+        chatSessionId: null,
+        artifactType: 'approval_response',
+        content: buildApprovalResponseMemoryContent({
+          approvalType: approval.approval_type ?? 'generic_approval',
+          decision: 'rejected',
+          respondedVia: payload.respondedVia,
+          reason,
+          respondedAt: new Date().toISOString(),
+        }),
+        metadata: {
+          approvalId: approval.id,
+        },
+      },
+      {
+        task: {
+          id: approval.task_id,
+        },
+      }
+    );
 
     await this.callPostgresTool(
       'update_deployments_by_approval',
@@ -3299,7 +3985,7 @@ export class Orchestrator {
     const previewWorkspaceRoot = options.projectPath ?? workspaceRoot;
 
     try {
-      const retrievalContext = await this.buildRetrievalContext(task);
+      const retrieval = await this.buildRetrievalContext(task);
       const previewWorkspaceSnapshot = options.projectPath
         ? await collectWorkspaceSnapshot(options.projectPath, {
             recursive: true,
@@ -3317,7 +4003,8 @@ export class Orchestrator {
       const planning = await this.taskExecutor.previewTaskPlan(task, {
         workspaceRoot: previewWorkspaceRoot,
         workspaceSnapshot: previewWorkspaceSnapshot,
-        retrievalContext,
+        retrievalContext: retrieval.retrievalContext,
+        chatHistory: retrieval.chatHistory,
       });
       const requestedAt = new Date().toISOString();
       const autoStartAllowed = execution.autoStartAllowed === true;
@@ -3425,6 +4112,73 @@ export class Orchestrator {
         }),
       ]);
 
+      await this.captureTaskInstructionMemory(task, contract, {
+        chatSessionId: options.chatSessionId ?? null,
+        source: source,
+      });
+      await this.persistMemoryArtifacts(
+        [
+          {
+            taskId: task.id,
+            chatSessionId: options.chatSessionId ?? null,
+            artifactType: 'plan_draft',
+            content: buildPlanDraftMemoryContent(task, planning.plan, {
+              modelUsed: planning.modelUsed,
+              repaired: planning.repaired === true,
+              fallback: planning.fallback === true,
+            }),
+            sourceStepNumber: 1,
+            metadata: {
+              phase: 'pre_execution_preview',
+            },
+          },
+          {
+            taskId: task.id,
+            chatSessionId: options.chatSessionId ?? null,
+            artifactType: 'system_decision',
+            content: JSON.stringify(
+              {
+                status: taskStatus,
+                approvalRequired: execution.approvalRequired,
+                autoStartAllowed: execution.autoStartAllowed,
+                retrievalDiagnostics: retrieval.diagnostics,
+              },
+              null,
+              2
+            ),
+            sourceStepNumber: 2,
+            metadata: {
+              decision: autoStartAllowed ? 'queued_without_approval' : 'waiting_for_execution_approval',
+            },
+          },
+          !autoStartAllowed
+            ? {
+                taskId: task.id,
+                chatSessionId: options.chatSessionId ?? null,
+                artifactType: 'approval_prompt',
+                content: buildApprovalPromptMemoryContent({
+                  approvalType: 'task_execution',
+                  taskTitle: task.title,
+                  channel: options.approvalSource ?? source,
+                  message: 'Execution is waiting for explicit approval before starting.',
+                  details: {
+                    planSummary: planning.plan.summary,
+                    objective: contract.objective,
+                  },
+                }),
+                sourceStepNumber: 2,
+                metadata: {
+                  approvalType: 'task_execution',
+                },
+              }
+            : null,
+        ].filter(Boolean),
+        {
+          task,
+          supersedeLatest: false,
+        }
+      );
+
       await this.logTaskStep(task.id, {
         stepNumber: 1,
         stepType: 'plan',
@@ -3521,7 +4275,7 @@ export class Orchestrator {
       { taskId, view: 'detail' },
       () =>
         this.pool.query(
-          `SELECT id, status, result
+          `SELECT id, title, project_name, project_path, chat_session_id, status, result
            FROM tasks
            WHERE id = $1`,
           [taskId]
@@ -3586,6 +4340,28 @@ export class Orchestrator {
       outputSummary: 'Execution approved; task returned to pending queue',
     });
 
+    await this.persistMemoryArtifact(
+      {
+        taskId,
+        chatSessionId: task.chat_session_id ?? null,
+        artifactType: 'approval_response',
+        content: buildApprovalResponseMemoryContent({
+          approvalType: 'task_execution',
+          decision: 'approved',
+          respondedVia: options.respondedVia ?? 'control_api',
+          note: options.note ?? null,
+          respondedAt,
+        }),
+        sourceStepNumber: 3,
+        metadata: {
+          approvalType: 'task_execution',
+        },
+      },
+      {
+        task,
+      }
+    );
+
     return {
       task_id: taskId,
       status: 'approved',
@@ -3599,7 +4375,7 @@ export class Orchestrator {
       { taskId, view: 'detail' },
       () =>
         this.pool.query(
-          `SELECT id, status, result
+          `SELECT id, title, project_name, project_path, chat_session_id, status, result
            FROM tasks
            WHERE id = $1`,
           [taskId]
@@ -3665,6 +4441,28 @@ export class Orchestrator {
       outputSummary: null,
       errorMessage: reason,
     });
+
+    await this.persistMemoryArtifact(
+      {
+        taskId,
+        chatSessionId: task.chat_session_id ?? null,
+        artifactType: 'approval_response',
+        content: buildApprovalResponseMemoryContent({
+          approvalType: 'task_execution',
+          decision: 'rejected',
+          respondedVia: options.respondedVia ?? 'control_api',
+          reason,
+          respondedAt,
+        }),
+        sourceStepNumber: 3,
+        metadata: {
+          approvalType: 'task_execution',
+        },
+      },
+      {
+        task,
+      }
+    );
 
     return {
       task_id: taskId,
@@ -3769,6 +4567,7 @@ export class Orchestrator {
              project_name,
              project_path,
              project_target_id,
+             chat_session_id,
              repo_url,
              blocked_reason,
              result,
@@ -3840,10 +4639,33 @@ export class Orchestrator {
         )
     );
 
+    const memoryArtifacts = await this.listMemoryArtifacts({
+      taskId,
+      limit: 30,
+      historicalMode: true,
+      excludeSuperseded: false,
+    }).catch(() => []);
+    const retrievalPreview = await this.buildRetrievalContext(task, {
+      historicalMode: true,
+      bumpLearningUsage: false,
+    }).catch(() => ({
+      diagnostics: {
+        budgets: {},
+        order: ['L0', 'L1', 'L2', 'L3'],
+        layers: {},
+      },
+      retrievalContext: null,
+    }));
+
     return {
       task,
       logs: logsResult.rows,
       artifacts: artifactsResult.rows,
+      memory: {
+        exactArtifacts: memoryArtifacts,
+        retrievalDiagnostics: retrievalPreview.diagnostics,
+        retrievalContext: retrievalPreview.retrievalContext,
+      },
       persona: hydratePersonaArtifacts(artifactsResult.rows),
       runtime: mergeRuntimeSnapshots(
         derivePersistedRuntime(task, logsResult.rows),

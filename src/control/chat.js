@@ -705,6 +705,30 @@ function isExecutionTaskRequest(message) {
   return EXECUTION_REQUEST_PATTERNS.some((pattern) => pattern.test(normalized));
 }
 
+function isHighSignalInstructionMessage(message, summaryState = null) {
+  const content = `${message ?? ''}`.trim();
+  if (!content || content.startsWith('/')) {
+    return false;
+  }
+
+  if (
+    isExecutionTaskRequest(content) ||
+    isExecutionApprovalIntent(content) ||
+    isShortAffirmative(content) ||
+    isShortNegative(content)
+  ) {
+    return true;
+  }
+
+  if (summaryState?.contractDraft?.pendingClarification) {
+    return true;
+  }
+
+  return /\b(must|should|only|exactly|do not|don't|without|with|keep|avoid|required|constraint|success criteria)\b/i.test(
+    content
+  );
+}
+
 function formatPlanForChat(plan) {
   const lines = [];
   const summary = `${plan?.summary ?? ''}`.trim();
@@ -1309,6 +1333,37 @@ export function createChatService({
         messages,
         previousSummaryState: session.summary_state,
       });
+      if (
+        isHighSignalInstructionMessage(parsed.content, conversationSummaryState) &&
+        typeof orchestrator.persistMemoryArtifact === 'function'
+      ) {
+        try {
+          await orchestrator.persistMemoryArtifact(
+            {
+              chatSessionId: sessionId,
+              artifactType: 'user_instruction',
+              content: parsed.content,
+              sourceMessageId: user.id,
+              retrievalPriority: 100,
+              projectPath: session.project_path ?? null,
+              metadata: {
+                actor,
+                sessionTitle: session.title,
+                source: 'chat_message',
+              },
+            },
+            {
+              task: {
+                chat_session_id: sessionId,
+                project_path: session.project_path ?? null,
+              },
+              supersedeLatest: false,
+            }
+          );
+        } catch (error) {
+          logger?.warn?.({ err: error, sessionId }, 'Failed to capture high-signal chat instruction');
+        }
+      }
       const activeDraft = conversationSummaryState.contractDraft ?? null;
       const isAffirmativeReply = isShortAffirmative(parsed.content);
       const isNegativeReply = isShortNegative(parsed.content);
