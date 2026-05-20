@@ -122,6 +122,15 @@ test('control API enforces token on mutating routes and returns deterministic re
         task_id: '11111111-1111-4111-8111-111111111111',
       };
     },
+    async pruneMemoryArtifacts(options) {
+      callLog.push({ fn: 'pruneMemoryArtifacts', options });
+      return {
+        archivedCount: 1,
+        expiredCount: 2,
+        deletedCount: 3,
+        updatedAt: '2026-05-20T00:00:00.000Z',
+      };
+    },
     async pause() {},
     async resume() {},
     async getPersonaSettings() {
@@ -212,6 +221,18 @@ test('control API enforces token on mutating routes and returns deterministic re
     const mcpPayload = await mcpResponse.json();
     assert.equal(mcpPayload.data.servers[0].name, 'filesystem');
 
+    const pruneResponse = await fetch(`${baseUrl}/v1/maintenance/prune-memory`, {
+      method: 'POST',
+      headers: {
+        authorization: 'Bearer test-token',
+        'content-type': 'application/json',
+      },
+      body: JSON.stringify({ maxRows: 25 }),
+    });
+    assert.equal(pruneResponse.status, 200);
+    const prunePayload = await pruneResponse.json();
+    assert.equal(prunePayload.data.deletedCount, 3);
+
     const unauthorizedResponse = await fetch(`${baseUrl}/v1/tasks/plan`, {
       method: 'POST',
       headers: {
@@ -282,6 +303,7 @@ test('control API enforces token on mutating routes and returns deterministic re
 
     const callSummary = callLog.map((entry) => entry.fn);
     assert.deepEqual(callSummary, [
+      'pruneMemoryArtifacts',
       'createPlannedTask',
       'createPlannedTask',
       'publishTaskReviewDraft',

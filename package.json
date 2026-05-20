@@ -11,6 +11,8 @@
     "start": "node src/index.js",
     "dev": "node --watch src/index.js",
     "migrate": "node src/db/migrate.js",
+    "ops:prune-memory": "node scripts/prune-memory-artifacts.mjs",
+    "ops:hybrid-check": "node scripts/hybrid-rollout-check.mjs",
     "cli": "node src/cli/bin.js",
     "ui:dev": "npm --prefix web run dev",
     "ui:build": "npm --prefix web run build"

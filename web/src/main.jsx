@@ -1096,11 +1096,111 @@ function Skills({ skills }) {
   );
 }
 
-function Diagnostics({ status, error }) {
+function Diagnostics({ status, error, tokenReady, onPruneMemory }) {
+  const [busy, setBusy] = useState(false);
+  const [actionError, setActionError] = useState('');
+
+  const llmRuntime = status?.llmRuntime || {};
+  const memoryRetention = status?.memoryRetention || {};
+  const providerEntries = Object.entries(llmRuntime.providers || {});
+  const memoryCounts = memoryRetention.counts || {};
+
+  async function handlePrune() {
+    if (!onPruneMemory || busy) {
+      return;
+    }
+
+    try {
+      setBusy(true);
+      setActionError('');
+      await onPruneMemory();
+    } catch (nextError) {
+      setActionError(toErrorMessage(nextError));
+    } finally {
+      setBusy(false);
+    }
+  }
+
   return (
     <section className="panel detail-panel">
       <PanelTitle eyebrow="Runtime" title="Diagnostics" detail="local service" />
       {error && <div className="error">{error}</div>}
+      {actionError && <div className="error">{actionError}</div>}
+      <div className="fact-grid diagnostics-grid">
+        <div className="fact-card">
+          <span>Planner mode</span>
+          <strong>{llmRuntime.mode || 'local'}</strong>
+        </div>
+        <div className="fact-card">
+          <span>Graph backend</span>
+          <strong>{status?.graphRuntime?.backend || 'native'}</strong>
+        </div>
+        <div className="fact-card">
+          <span>Memory active</span>
+          <strong>{memoryCounts.active_count ?? 0}</strong>
+        </div>
+        <div className="fact-card">
+          <span>Memory archived</span>
+          <strong>{memoryCounts.archived_count ?? 0}</strong>
+        </div>
+      </div>
+      {providerEntries.length > 0 && (
+        <div className="diagnostics-section">
+          <div className="runtime-checklist-header">
+            <strong>Providers</strong>
+            <span>{providerEntries.length} configured</span>
+          </div>
+          <div className="diagnostics-provider-list">
+            {providerEntries.map(([name, provider]) => (
+              <div className="project diagnostics-provider" key={name}>
+                <b>{name}</b>
+                <span>
+                  configured={provider?.configured ? 'yes' : 'no'} ok={provider?.ok ? 'yes' : 'no'}
+                </span>
+                <p>
+                  selected models:{' '}
+                  {Object.entries(llmRuntime.selectedModels || {})
+                    .filter(([, modelRef]) => `${modelRef}`.startsWith(`${name}::`))
+                    .map(([role, modelRef]) => `${role}=${modelRef.replace(`${name}::`, '')}`)
+                    .join(' | ') || 'none'}
+                </p>
+                {Array.isArray(provider?.missingModels) && provider.missingModels.length > 0 && (
+                  <small>missing: {provider.missingModels.join(', ')}</small>
+                )}
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+      <div className="diagnostics-section">
+        <div className="runtime-checklist-header">
+          <strong>Memory retention</strong>
+          <span>last run {formatDateTime(memoryRetention.lastRun?.updatedAt)}</span>
+        </div>
+        <div className="fact-grid diagnostics-grid">
+          <div className="fact-card">
+            <span>Active days</span>
+            <strong>{memoryRetention.policy?.activeDays ?? 'n/a'}</strong>
+          </div>
+          <div className="fact-card">
+            <span>Archived days</span>
+            <strong>{memoryRetention.policy?.archivedDays ?? 'n/a'}</strong>
+          </div>
+          <div className="fact-card">
+            <span>Orphan days</span>
+            <strong>{memoryRetention.policy?.orphanDays ?? 'n/a'}</strong>
+          </div>
+          <div className="fact-card">
+            <span>Expired memory</span>
+            <strong>{memoryCounts.expired_count ?? 0}</strong>
+          </div>
+        </div>
+        <div className="actions">
+          <button disabled={!tokenReady || busy} onClick={handlePrune}>
+            {busy ? 'Pruning…' : 'Run memory prune now'}
+          </button>
+        </div>
+      </div>
       <pre>{JSON.stringify(status || {}, null, 2)}</pre>
     </section>
   );
@@ -1397,6 +1497,14 @@ function App() {
     setActiveView('tasks');
   }
 
+  async function pruneMemoryNow() {
+    await api('/v1/maintenance/prune-memory', {
+      method: 'POST',
+      body: {},
+    });
+    await refresh();
+  }
+
   const content = {
     chat: (
       <Chat
@@ -1438,7 +1546,14 @@ function App() {
       />
     ),
     skills: <Skills skills={state.skills} />,
-    diagnostics: <Diagnostics status={state.status} error={error} />,
+    diagnostics: (
+      <Diagnostics
+        status={state.status}
+        error={error}
+        tokenReady={tokenReady}
+        onPruneMemory={pruneMemoryNow}
+      />
+    ),
   };
 
   return (

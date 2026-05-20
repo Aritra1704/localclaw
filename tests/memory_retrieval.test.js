@@ -5,6 +5,7 @@ import pino from 'pino';
 
 import { Orchestrator } from '../src/orchestrator.js';
 import { createPostgresMcpServer } from '../src/mcp/postgresServer.js';
+import { pruneMemoryArtifactsWithPool } from '../src/memory/retention.js';
 import { assembleLayeredRetrievalContext, createLayerEntry } from '../src/memory/retrieval.js';
 
 const logger = pino({ level: 'fatal' });
@@ -228,6 +229,48 @@ test('postgres MCP server inserts, lists, and archives memory artifacts', async 
   assert.equal(listed.rows[0].artifact_type, 'user_instruction');
   assert.equal(archived.rowCount, 1);
   assert.equal(calls.length >= 3, true);
+});
+
+test('memory retention helper archives, expires, and deletes old artifacts', async () => {
+  const calls = [];
+  const pool = {
+    async query(sql, params) {
+      calls.push({ sql, params });
+
+      if (sql.includes('SET archived_at = NOW()')) {
+        return { rowCount: 2, rows: [{ id: 'archive-1' }, { id: 'archive-2' }] };
+      }
+
+      if (sql.includes('SET expires_at = NOW()')) {
+        return { rowCount: 3, rows: [{ id: 'expire-1' }, { id: 'expire-2' }, { id: 'expire-3' }] };
+      }
+
+      if (sql.includes('DELETE FROM memory_artifacts')) {
+        return { rowCount: 1, rows: [{ id: 'delete-1' }] };
+      }
+
+      throw new Error(`Unexpected query: ${sql.slice(0, 80)}`);
+    },
+  };
+
+  const summary = await pruneMemoryArtifactsWithPool(
+    pool,
+    {
+      enabled: true,
+      activeDays: 30,
+      archivedDays: 7,
+      orphanDays: 14,
+      maxPrune: 50,
+    },
+    {
+      maxRows: 50,
+    }
+  );
+
+  assert.equal(summary.archivedCount, 2);
+  assert.equal(summary.expiredCount, 3);
+  assert.equal(summary.deletedCount, 1);
+  assert.equal(calls.length, 3);
 });
 
 test('approveTaskExecution captures an exact approval response artifact', async () => {

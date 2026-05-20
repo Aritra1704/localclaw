@@ -48,6 +48,7 @@ import {
   createLayerEntry,
   createMemoryArtifactLayerEntry,
 } from './memory/retrieval.js';
+import { getMemoryRetentionPolicy, pruneMemoryArtifactsWithPool } from './memory/retention.js';
 import { collectWorkspaceSnapshot } from './tools/registry.js';
 
 const logger = pino({
@@ -601,6 +602,8 @@ export class Orchestrator {
     this.reflectionEngine = options.reflectionEngine ?? null;
     this.repairEngine = options.repairEngine ?? null;
     this.chatHistoryManager = options.chatHistoryManager ?? null;
+    this.llmClient = options.llmClient ?? null;
+    this.modelSelector = options.modelSelector ?? null;
     this.reflectionInFlight = false;
     this.lastReflectionAt = 0;
     this.timer = null;
@@ -612,6 +615,9 @@ export class Orchestrator {
     this.lastAutoPruneAt = 0;
     this.lastWorkspaceJunkCleanupAt = 0;
     this.lastSpaceWarningAt = 0;
+    this.memoryRetentionPolicy = getMemoryRetentionPolicy(options.memoryRetentionPolicy ?? {});
+    this.memoryRetentionInFlight = false;
+    this.lastMemoryRetentionAt = 0;
     this.proactiveRemediations = new Set(
       (options.proactiveRemediations ?? config.proactiveRemediations ?? [])
         .map((value) => `${value}`.trim().toLowerCase())
@@ -667,6 +673,14 @@ export class Orchestrator {
     if (!stats.uptime_start) {
       stats.uptime_start = new Date().toISOString();
       await this.setAgentStateValue('stats', stats);
+    }
+
+    const memoryRetentionState = await this.getAgentStateValue('memory_retention:last_run', null);
+    if (memoryRetentionState?.updatedAt) {
+      const lastRunAt = Date.parse(memoryRetentionState.updatedAt);
+      if (Number.isFinite(lastRunAt)) {
+        this.lastMemoryRetentionAt = lastRunAt;
+      }
     }
 
     await this.recoverInterruptedTasks();
@@ -727,6 +741,7 @@ export class Orchestrator {
       await this.syncRagCorpusIfDue();
       await this.runSelfReflectionIfDue();
       await this.pollActiveDeployments();
+      await this.runMemoryRetentionIfDue();
 
       const status = await this.getAgentStateValue('status', 'running');
       if (status !== 'running') {
@@ -3788,6 +3803,97 @@ export class Orchestrator {
     );
   }
 
+  async getMemoryArtifactCounts() {
+    const result = await this.callPostgresTool(
+      'get_memory_artifact_counts',
+      {},
+      () =>
+        this.pool.query(
+          `SELECT
+             COUNT(*) FILTER (
+               WHERE archived_at IS NULL
+                 AND (expires_at IS NULL OR expires_at > NOW())
+             )::int AS active_count,
+             COUNT(*) FILTER (
+               WHERE archived_at IS NULL
+                 AND expires_at IS NOT NULL
+                 AND expires_at <= NOW()
+             )::int AS expired_count,
+             COUNT(*) FILTER (WHERE archived_at IS NOT NULL)::int AS archived_count,
+             COUNT(*)::int AS total_count
+           FROM memory_artifacts`
+        )
+    );
+
+    return (
+      result.rows?.[0] ?? {
+        active_count: 0,
+        expired_count: 0,
+        archived_count: 0,
+        total_count: 0,
+      }
+    );
+  }
+
+  async pruneMemoryArtifacts(options = {}) {
+    const summaryResult = await this.callPostgresTool(
+      'prune_memory_artifacts',
+      {
+        ...this.memoryRetentionPolicy,
+        maxPrune: options.maxRows ?? this.memoryRetentionPolicy.maxPrune,
+      },
+      () =>
+        Promise.resolve({
+          rows: [
+            pruneMemoryArtifactsWithPool(
+              this.pool,
+              this.memoryRetentionPolicy,
+              {
+                maxRows: options.maxRows ?? this.memoryRetentionPolicy.maxPrune,
+              }
+            ),
+          ],
+        })
+    );
+    const summary = await Promise.resolve(summaryResult.rows?.[0] ?? summaryResult.rows ?? summaryResult);
+    const counts = await this.getMemoryArtifactCounts().catch(() => null);
+    const next = {
+      ...summary,
+      counts,
+      runMode: options.runMode ?? 'manual',
+      updatedAt: summary?.updatedAt ?? new Date().toISOString(),
+    };
+
+    this.lastMemoryRetentionAt = Date.now();
+    await this.setAgentStateValue('memory_retention:last_run', next);
+    return next;
+  }
+
+  async runMemoryRetentionIfDue() {
+    if (!this.memoryRetentionPolicy.enabled || this.memoryRetentionInFlight) {
+      return;
+    }
+
+    const now = Date.now();
+    if (
+      this.lastMemoryRetentionAt &&
+      now - this.lastMemoryRetentionAt < this.memoryRetentionPolicy.intervalMs
+    ) {
+      return;
+    }
+
+    this.memoryRetentionInFlight = true;
+
+    try {
+      const summary = await this.pruneMemoryArtifacts({ runMode: 'automatic' });
+      this.logger.info({ summary }, 'Memory retention pass completed');
+    } catch (error) {
+      this.logger.warn({ err: error }, 'Memory retention pass failed');
+    } finally {
+      this.memoryRetentionInFlight = false;
+    }
+  }
+
   async getPersonaSettings() {
     return normalizePersonaSettings(
       await this.getAgentStateValue(PERSONA_SETTINGS_STATE_KEY, null)
@@ -4759,6 +4865,10 @@ export class Orchestrator {
       statusCounts,
       diskAutoPruneState,
       workspaceJunkCleanupState,
+      llmRuntimeState,
+      graphRuntimeState,
+      memoryRetentionState,
+      memoryArtifactCounts,
     ] =
       await Promise.all([
         this.getAgentStateValue('status', 'running'),
@@ -4807,6 +4917,10 @@ export class Orchestrator {
         ),
         this.getAgentStateValue('proactive_remediation:disk_auto_prune', null),
         this.getAgentStateValue('proactive_remediation:workspace_junk_cleanup', null),
+        this.getAgentStateValue('llm_runtime', null),
+        this.getAgentStateValue('graph_runtime', null),
+        this.getAgentStateValue('memory_retention:last_run', null),
+        this.getMemoryArtifactCounts().catch(() => null),
       ]);
 
     const taskResult = currentTaskId
@@ -4850,6 +4964,21 @@ export class Orchestrator {
         enabled: [...this.proactiveRemediations].sort(),
         diskAutoPrune: diskAutoPruneState,
         workspaceJunkCleanup: workspaceJunkCleanupState,
+      },
+      llmRuntime: llmRuntimeState ?? {
+        mode: config.orchestratorMode,
+        geminiEnabled: config.geminiEnabled,
+        selectedModels: this.modelSelector?.list?.() ?? null,
+        providers: {},
+      },
+      graphRuntime: graphRuntimeState ?? {
+        backend: config.graphBackend,
+        graphifyIndexPath: config.graphifyIndexPath || null,
+      },
+      memoryRetention: {
+        policy: this.memoryRetentionPolicy,
+        lastRun: memoryRetentionState,
+        counts: memoryArtifactCounts,
       },
     };
   }

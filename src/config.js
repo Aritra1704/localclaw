@@ -113,6 +113,15 @@ const envSchema = z.object({
     .transform((value) => value === 'true'),
   GRAPH_BACKEND: z.enum(['native', 'graphify']).default('native'),
   GRAPHIFY_INDEX_PATH: z.string().optional(),
+  MEMORY_RETENTION_ENABLED: z
+    .enum(['true', 'false'])
+    .default('true')
+    .transform((value) => value === 'true'),
+  MEMORY_RETENTION_ACTIVE_DAYS: z.coerce.number().int().min(1).max(3650).default(30),
+  MEMORY_RETENTION_ARCHIVED_DAYS: z.coerce.number().int().min(1).max(3650).default(7),
+  MEMORY_RETENTION_ORPHAN_DAYS: z.coerce.number().int().min(1).max(3650).default(14),
+  MEMORY_RETENTION_INTERVAL_MS: z.coerce.number().int().positive().default(21600000),
+  MEMORY_RETENTION_MAX_PRUNE: z.coerce.number().int().positive().max(5000).default(500),
 });
 
 const parsedEnv = envSchema.safeParse(process.env);
@@ -203,6 +212,12 @@ export const config = {
   deployAutoApprove: env.DEPLOY_AUTO_APPROVE,
   graphBackend: env.GRAPH_BACKEND,
   graphifyIndexPath: env.GRAPHIFY_INDEX_PATH ?? '',
+  memoryRetentionEnabled: env.MEMORY_RETENTION_ENABLED,
+  memoryRetentionActiveDays: env.MEMORY_RETENTION_ACTIVE_DAYS,
+  memoryRetentionArchivedDays: env.MEMORY_RETENTION_ARCHIVED_DAYS,
+  memoryRetentionOrphanDays: env.MEMORY_RETENTION_ORPHAN_DAYS,
+  memoryRetentionIntervalMs: env.MEMORY_RETENTION_INTERVAL_MS,
+  memoryRetentionMaxPrune: env.MEMORY_RETENTION_MAX_PRUNE,
 };
 
 config.geminiEnabled = config.geminiApiKey.length > 0;

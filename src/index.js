@@ -15,6 +15,7 @@ import { createOllamaClient } from './llm/ollama.js';
 import { createGeminiClient } from './llm/providers/gemini.js';
 import { createModelSelector } from './llm/modelSelector.js';
 import { createLlmRuntime } from './llm/runtime.js';
+import { getMemoryRetentionPolicy } from './memory/retention.js';
 import { createPlanner } from './agent/planner.js';
 import { createVerifier } from './agent/verifier.js';
 import { createSpecializedReviewService } from './agent/specializedReview.js';
@@ -180,6 +181,13 @@ async function bootstrap() {
   const ollamaHealth = await ollamaClient.healthCheck({
     requiredModels: requiredModelsByProvider.ollama,
   });
+  let geminiHealth = {
+    ok: false,
+    disabled: !config.geminiEnabled,
+    modelCount: 0,
+    models: [],
+    missingModels: requiredModelsByProvider.gemini,
+  };
 
   if (!ollamaHealth.ok) {
     logger.warn({ missing: ollamaHealth.missingModels }, 'Missing required Ollama models. Booting anyway, but execution may fail until weights finish downloading.');
@@ -205,7 +213,7 @@ async function bootstrap() {
     'Ollama warmup pass complete'
   );
   if (config.geminiEnabled) {
-    const geminiHealth = await geminiClient.healthCheck({
+    geminiHealth = await geminiClient.healthCheck({
       requiredModels: requiredModelsByProvider.gemini,
     });
     if (!geminiHealth.ok) {
@@ -225,6 +233,37 @@ async function bootstrap() {
       );
     }
   }
+  await setAgentStateValue('llm_runtime', {
+    mode: config.orchestratorMode,
+    geminiEnabled: config.geminiEnabled,
+    selectedModels: modelSelector.list(),
+    requiredModelsByProvider,
+    providers: {
+      ollama: {
+        configured: true,
+        ok: ollamaHealth.ok,
+        missingModels: ollamaHealth.missingModels,
+        availableModels: ollamaHealth.models.map((model) => model.name),
+        checkedAt: new Date().toISOString(),
+      },
+      gemini: {
+        configured: config.geminiEnabled,
+        ok: geminiHealth.ok,
+        disabled: geminiHealth.disabled === true,
+        missingModels: geminiHealth.missingModels ?? [],
+        availableModels: (geminiHealth.models ?? []).map(
+          (model) => model.baseModelId ?? model.name?.replace(/^models\//, '')
+        ),
+        checkedAt: new Date().toISOString(),
+      },
+    },
+  });
+  await setAgentStateValue('graph_runtime', {
+    backend: config.graphBackend,
+    graphifyIndexPath: config.graphifyIndexPath || null,
+    checkedAt: new Date().toISOString(),
+  });
+  await setAgentStateValue('memory_retention:policy', getMemoryRetentionPolicy());
   await setBootPhase('boot_ollama_ready');
 
   const planner = createPlanner({
@@ -369,6 +408,8 @@ async function bootstrap() {
     taskExecutor,
     publisher,
     deployer,
+    llmClient,
+    modelSelector,
     learningExtractor,
     ragIngestor,
     ragRetriever,
@@ -378,6 +419,7 @@ async function bootstrap() {
     repairEngine,
     chatHistoryManager,
     mcpRegistry,
+    memoryRetentionPolicy: getMemoryRetentionPolicy(),
   });
 
   toolRegistry.setOrchestrator(orchestrator);

@@ -1,3 +1,5 @@
+import { pruneMemoryArtifactsWithPool } from '../memory/retention.js';
+
 const POSTGRES_TOOLS = [
   {
     name: 'get_agent_state',
@@ -74,6 +76,14 @@ const POSTGRES_TOOLS = [
   {
     name: 'archive_memory_artifacts',
     description: 'Archive exact-fidelity memory artifacts that match scoped retention filters.',
+  },
+  {
+    name: 'prune_memory_artifacts',
+    description: 'Apply exact-memory retention rules and return a prune summary.',
+  },
+  {
+    name: 'get_memory_artifact_counts',
+    description: 'Return active, expired, archived, and total exact-memory counts.',
   },
   {
     name: 'insert_learning',
@@ -911,6 +921,42 @@ export function createPostgresMcpServer({ pool }) {
             values
           );
           return { rows: result.rows, rowCount: result.rowCount ?? result.rows.length };
+        }
+
+        case 'prune_memory_artifacts': {
+          const summary = await pruneMemoryArtifactsWithPool(
+            pool,
+            {
+              enabled: args.enabled,
+              activeDays: args.activeDays,
+              archivedDays: args.archivedDays,
+              orphanDays: args.orphanDays,
+              maxPrune: args.maxPrune,
+            },
+            {
+              maxRows: args.maxRows ?? args.maxPrune,
+            }
+          );
+          return { rows: [summary] };
+        }
+
+        case 'get_memory_artifact_counts': {
+          const result = await pool.query(
+            `SELECT
+               COUNT(*) FILTER (
+                 WHERE archived_at IS NULL
+                   AND (expires_at IS NULL OR expires_at > NOW())
+               )::int AS active_count,
+               COUNT(*) FILTER (
+                 WHERE archived_at IS NULL
+                   AND expires_at IS NOT NULL
+                   AND expires_at <= NOW()
+               )::int AS expired_count,
+               COUNT(*) FILTER (WHERE archived_at IS NOT NULL)::int AS archived_count,
+               COUNT(*)::int AS total_count
+             FROM memory_artifacts`
+          );
+          return { rows: result.rows };
         }
 
         case 'insert_learning': {

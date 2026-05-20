@@ -1158,6 +1158,29 @@ nav button.active {
   background: rgba(180, 35, 24, 0.08);
 }
 
+.diagnostics-grid {
+  margin-bottom: 1rem;
+}
+
+.diagnostics-section {
+  display: grid;
+  gap: 0.8rem;
+  margin-bottom: 1.1rem;
+}
+
+.diagnostics-provider-list {
+  display: grid;
+  gap: 0.75rem;
+}
+
+.diagnostics-provider p {
+  margin: 0.4rem 0 0.2rem;
+}
+
+.diagnostics-provider small {
+  color: var(--muted);
+}
+
 @keyframes pulse {
   0%,
   100% {

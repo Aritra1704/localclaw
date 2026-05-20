@@ -41,6 +41,13 @@ const pauseSchema = z
   .partial()
   .strict();
 
+const pruneMemorySchema = z
+  .object({
+    maxRows: z.number().int().positive().max(5000).optional(),
+  })
+  .partial()
+  .strict();
+
 const createChatSessionSchema = z
   .object({
     title: z.string().trim().min(1).max(160).optional(),
@@ -337,6 +344,16 @@ export function createControlApiServer({
       if (pathname === '/v1/status' && req.method === 'GET') {
         const snapshot = await orchestrator.getStatusSnapshot();
         sendJson(res, 200, { data: snapshot });
+        return;
+      }
+
+      if (pathname === '/v1/maintenance/prune-memory' && req.method === 'POST') {
+        const parsed = pruneMemorySchema.parse(await readJsonBody(req));
+        const summary = await orchestrator.pruneMemoryArtifacts({
+          runMode: 'operator',
+          maxRows: parsed.maxRows,
+        });
+        sendJson(res, 200, { data: summary });
         return;
       }
 
