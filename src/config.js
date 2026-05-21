@@ -71,6 +71,7 @@ const envSchema = z.object({
   MODEL_SECURITY_CLOUD: z.string().default('gemini-2.5-pro'),
   MODEL_FAST_CLOUD: z.string().default('gemini-2.5-flash'),
   TASK_POLL_INTERVAL_MS: z.coerce.number().int().positive().default(30000),
+  HEARTBEAT_INTERVAL_MS: z.coerce.number().int().positive().default(3600000),
   TASK_TIMEOUT_HOURS: z.coerce.number().positive().default(2),
   MAX_CONSECUTIVE_FAILURES: z.coerce.number().int().positive().default(3),
   DOCKER_SANDBOX_ENABLED: z
@@ -122,6 +123,10 @@ const envSchema = z.object({
   MEMORY_RETENTION_ORPHAN_DAYS: z.coerce.number().int().min(1).max(3650).default(14),
   MEMORY_RETENTION_INTERVAL_MS: z.coerce.number().int().positive().default(21600000),
   MEMORY_RETENTION_MAX_PRUNE: z.coerce.number().int().positive().max(5000).default(500),
+  SOUL_EVOLUTION_ENABLED: z
+    .enum(['true', 'false'])
+    .default('true')
+    .transform((value) => value === 'true'),
 });
 
 const parsedEnv = envSchema.safeParse(process.env);
@@ -185,6 +190,7 @@ export const config = {
   modelSecurityCloud: env.MODEL_SECURITY_CLOUD,
   modelFastCloud: env.MODEL_FAST_CLOUD,
   taskPollIntervalMs: env.TASK_POLL_INTERVAL_MS,
+  heartbeatIntervalMs: env.HEARTBEAT_INTERVAL_MS,
   taskTimeoutHours: env.TASK_TIMEOUT_HOURS,
   maxConsecutiveFailures: env.MAX_CONSECUTIVE_FAILURES,
   dockerSandboxEnabled: env.DOCKER_SANDBOX_ENABLED,
@@ -218,6 +224,7 @@ export const config = {
   memoryRetentionOrphanDays: env.MEMORY_RETENTION_ORPHAN_DAYS,
   memoryRetentionIntervalMs: env.MEMORY_RETENTION_INTERVAL_MS,
   memoryRetentionMaxPrune: env.MEMORY_RETENTION_MAX_PRUNE,
+  soulEvolutionEnabled: env.SOUL_EVOLUTION_ENABLED,
 };
 
 config.geminiEnabled = config.geminiApiKey.length > 0;

@@ -207,6 +207,121 @@ test('cli task run --approve sends approveExecution=true', async () => {
   assert.match(capture.out.join(''), /Execution approval: approved/);
 });
 
+test('cli ops hybrid-check prints provider, graph, and retention state', async () => {
+  const capture = createIO();
+  const fetchImpl = async (url) => {
+    if (url.endsWith('/v1/status')) {
+      return {
+        ok: true,
+        status: 200,
+        async json() {
+          return {
+            data: {
+              currentTask: null,
+              llmRuntime: {
+                mode: 'hybrid',
+                selectedModels: {
+                  planner: 'gemini::gemini-2.5-pro',
+                  coder: 'ollama::qwen2.5-coder:7b',
+                },
+                providers: {
+                  ollama: { configured: true, ok: true, missingModels: [] },
+                  gemini: { configured: true, ok: true, missingModels: [] },
+                },
+              },
+              graphRuntime: {
+                backend: 'graphify',
+                graphifyIndexPath: '/tmp/graphify-index.json',
+              },
+              memoryRetention: {
+                policy: { enabled: true },
+                lastRun: { updatedAt: '2026-05-20T00:00:00.000Z' },
+                counts: {
+                  active_count: 4,
+                  expired_count: 1,
+                  archived_count: 2,
+                  total_count: 7,
+                },
+              },
+            },
+          };
+        },
+      };
+    }
+
+    throw new Error(`Unexpected URL: ${url}`);
+  };
+
+  const exitCode = await runCli(
+    ['ops', 'hybrid-check'],
+    capture.io,
+    { fetchImpl }
+  );
+
+  assert.equal(exitCode, 0);
+  const output = capture.out.join('');
+  assert.match(output, /Planner mode: hybrid/);
+  assert.match(output, /Providers: ollama=ok \| gemini=ok/);
+  assert.match(output, /Graph backend: graphify/);
+  assert.match(output, /Memory retention: enabled=yes/);
+});
+
+test('cli ops prune-memory posts to maintenance endpoint and prints summary', async () => {
+  const capture = createIO();
+  const calls = [];
+  const fetchImpl = async (url, options = {}) => {
+    calls.push({ url, options });
+    if (url.endsWith('/health')) {
+      return {
+        ok: true,
+        status: 200,
+        async json() {
+          return { ok: true };
+        },
+      };
+    }
+
+    if (url.endsWith('/v1/maintenance/prune-memory')) {
+      return {
+        ok: true,
+        status: 200,
+        async json() {
+          return {
+            data: {
+              archivedCount: 2,
+              expiredCount: 3,
+              deletedCount: 1,
+              updatedAt: '2026-05-20T00:00:00.000Z',
+              counts: {
+                active_count: 10,
+                expired_count: 1,
+                archived_count: 2,
+                total_count: 13,
+              },
+            },
+          };
+        },
+      };
+    }
+
+    throw new Error(`Unexpected URL: ${url}`);
+  };
+
+  const exitCode = await runCli(
+    ['ops', 'prune-memory', '--max-rows', '25', '--token', 'abc123'],
+    capture.io,
+    { fetchImpl }
+  );
+
+  assert.equal(exitCode, 0);
+  assert.equal(calls.length, 2);
+  assert.match(calls[1].url, /\/v1\/maintenance\/prune-memory$/);
+  assert.equal(calls[1].options.method, 'POST');
+  assert.deepEqual(JSON.parse(calls[1].options.body), { maxRows: 25 });
+  assert.match(capture.out.join(''), /Archived: 2/);
+  assert.match(capture.out.join(''), /Deleted: 1/);
+});
+
 test('cli waits for control API health before mutating requests', async () => {
   const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'localclaw-cli-'));
   const contractPath = path.join(tempRoot, 'task.json');

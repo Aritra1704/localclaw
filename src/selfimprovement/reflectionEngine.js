@@ -20,6 +20,7 @@ export class ReflectionEngine {
     this.logger = options.logger ?? logger;
     this.mcpRegistry = options.mcpRegistry ?? null;
     this.rulesPath = options.rulesPath ?? path.resolve(process.cwd(), 'PROJECT_RULES.md');
+    this.soulPath = options.soulPath ?? path.resolve(process.cwd(), 'src/memory/soul.md');
   }
 
   getPostgresMcpServer() {
@@ -123,11 +124,14 @@ Execution Logs:
 ${logContext}
 
 Analyze why the agent failed. Extract ONE clear, universal programming or workflow constraint the agent must follow next time to avoid this.
+Additionally, if the failure was due to personality or directive issues (e.g. was too aggressive, was too passive, ignored instructions), provide a "soul_trait" observation.
+
 Respond ONLY with a JSON object in this format:
 {
   "category": "system-reflection",
   "observation": "Provide a detailed but concise explanation of the failure pattern.",
   "new_rule": "The exact sentence to append to PROJECT_RULES.md (e.g. 'Never use deprecated require() syntax').",
+  "soul_trait": "Optional: A behavioral directive to add to soul.md (e.g. 'Always double check the verifier logs before assuming success').",
   "keywords": ["tag1", "tag2"]
 }`;
 
@@ -176,6 +180,19 @@ Respond ONLY with a JSON object in this format:
       this.logger.warn({ err: fsError }, 'Could not append to PROJECT_RULES.md. It may not exist.');
       // If it doesn't exist, create it
       await fs.writeFile(this.rulesPath, `# LocalClaw Dynamic Rules\n\n- ${parsed.new_rule}\n`);
+    }
+
+    // 6. Append to soul.md (if provided)
+    if (parsed.soul_trait && this.soulPath) {
+      try {
+        let currentSoul = await fs.readFile(this.soulPath, 'utf8');
+        if (!currentSoul.includes(parsed.soul_trait)) {
+          await fs.appendFile(this.soulPath, `\n- ${parsed.soul_trait} (Reflected from task ${task.id})\n`);
+          this.logger.info({ trait: parsed.soul_trait }, 'Appended new identity trait to soul.md');
+        }
+      } catch (fsError) {
+        this.logger.warn({ err: fsError }, 'Could not append to soul.md');
+      }
     }
   }
 }

@@ -58,6 +58,8 @@ function usage() {
     '  localclaw tasks [--limit 20]',
     '  localclaw approvals [--limit 20]',
     '  localclaw skills [--limit 20] [--include-disabled]',
+    '  localclaw ops hybrid-check',
+    '  localclaw ops prune-memory [--max-rows 200]',
     '  localclaw projects list',
     '  localclaw projects add <path> [--name <name>] [--github-owner <owner>] [--github-repo <repo>]',
     '  localclaw chat [--project <path>] [--actor architect]',
@@ -223,6 +225,45 @@ function formatPlanOutput(plan) {
   }
 
   return lines.join('\n');
+}
+
+function formatProviderSummary(status = {}) {
+  const providers = status?.llmRuntime?.providers ?? {};
+  const entries = Object.entries(providers);
+  if (entries.length === 0) {
+    return 'none';
+  }
+
+  return entries
+    .map(([name, provider]) => {
+      const state = provider?.configured
+        ? provider?.ok
+          ? 'ok'
+          : provider?.disabled
+            ? 'disabled'
+            : 'degraded'
+        : 'not-configured';
+      const missing =
+        Array.isArray(provider?.missingModels) && provider.missingModels.length > 0
+          ? ` missing=${provider.missingModels.join(',')}`
+          : '';
+      return `${name}=${state}${missing}`;
+    })
+    .join(' | ');
+}
+
+function formatMemoryRetentionSummary(status = {}) {
+  const retention = status?.memoryRetention ?? {};
+  const counts = retention.counts ?? {};
+  const policy = retention.policy ?? {};
+
+  return [
+    `enabled=${policy.enabled === false ? 'no' : 'yes'}`,
+    `active=${counts.active_count ?? 0}`,
+    `expired=${counts.expired_count ?? 0}`,
+    `archived=${counts.archived_count ?? 0}`,
+    `last_run=${retention.lastRun?.updatedAt ?? 'never'}`,
+  ].join(' | ');
 }
 
 function formatTaskProgressOutput(taskDetail) {
@@ -603,13 +644,35 @@ export async function runCli(argv, io = {}, deps = {}) {
         checks.push({
           name: 'database/status',
           ok: true,
-          detail: `boot=${status.bootPhase}, polling=${status.pollingActive ? 'yes' : 'no'}`,
+          detail: `boot=${status.bootPhase}, polling=${status.pollingActive ? 'yes' : 'no'}, planner=${status.llmRuntime?.mode ?? 'local'}`,
+        });
+        checks.push({
+          name: 'providers',
+          ok: Object.values(status.llmRuntime?.providers ?? {}).every(
+            (provider) => provider?.configured !== true || provider?.ok === true || provider?.disabled === true
+          ),
+          detail: formatProviderSummary(status),
+        });
+        checks.push({
+          name: 'memory retention',
+          ok: true,
+          detail: formatMemoryRetentionSummary(status),
         });
       } catch (error) {
         checks.push({
           name: 'database/status',
           ok: false,
           detail: error.message,
+        });
+        checks.push({
+          name: 'providers',
+          ok: false,
+          detail: 'status unavailable',
+        });
+        checks.push({
+          name: 'memory retention',
+          ok: false,
+          detail: 'status unavailable',
         });
       }
 
@@ -666,6 +729,10 @@ export async function runCli(argv, io = {}, deps = {}) {
           `Status: ${status.status}`,
           `Boot phase: ${status.bootPhase}`,
           `Polling active: ${status.pollingActive ? 'yes' : 'no'}`,
+          `Planner mode: ${status.llmRuntime?.mode ?? 'local'}`,
+          `Providers: ${formatProviderSummary(status)}`,
+          `Graph backend: ${status.graphRuntime?.backend ?? 'native'}`,
+          `Memory retention: ${formatMemoryRetentionSummary(status)}`,
           `Pending: ${status.queue.pending_count}`,
           `In progress: ${status.queue.in_progress_count}`,
           `Blocked: ${status.queue.blocked_count}`,
@@ -748,6 +815,66 @@ export async function runCli(argv, io = {}, deps = {}) {
           .join('\n')
       );
       return 0;
+    }
+
+    if (command === 'ops') {
+      const subcommand = positionals[1];
+
+      if (subcommand === 'hybrid-check') {
+        const status = await requestJson({
+          fetchImpl,
+          baseUrl,
+          pathName: '/v1/status',
+          waitMs,
+          sleepImpl,
+        });
+
+        logger.out(
+          [
+            `Planner mode: ${status.llmRuntime?.mode ?? 'local'}`,
+            `Providers: ${formatProviderSummary(status)}`,
+            `Graph backend: ${status.graphRuntime?.backend ?? 'native'}`,
+            `Graphify index: ${status.graphRuntime?.graphifyIndexPath ?? 'n/a'}`,
+            `Selected models: ${Object.entries(status.llmRuntime?.selectedModels ?? {})
+              .map(([role, model]) => `${role}=${model}`)
+              .join(' | ') || 'none'}`,
+            `Memory retention: ${formatMemoryRetentionSummary(status)}`,
+            `Current task: ${status.currentTask?.title ?? 'none'}`,
+          ].join('\n')
+        );
+        return 0;
+      }
+
+      if (subcommand === 'prune-memory') {
+        const maxRows = Number(options['max-rows'] ?? options.maxRows ?? 0);
+        const response = await requestJson({
+          fetchImpl,
+          baseUrl,
+          pathName: '/v1/maintenance/prune-memory',
+          method: 'POST',
+          token,
+          body: Number.isInteger(maxRows) && maxRows > 0 ? { maxRows } : {},
+          waitMs,
+          sleepImpl,
+        });
+
+        logger.out(
+          [
+            `Memory prune completed at ${response.updatedAt ?? 'unknown'}`,
+            `Archived: ${response.archivedCount ?? 0}`,
+            `Expired: ${response.expiredCount ?? 0}`,
+            `Deleted: ${response.deletedCount ?? 0}`,
+            response.counts
+              ? `Counts: active=${response.counts.active_count ?? 0} expired=${response.counts.expired_count ?? 0} archived=${response.counts.archived_count ?? 0} total=${response.counts.total_count ?? 0}`
+              : null,
+          ]
+            .filter(Boolean)
+            .join('\n')
+        );
+        return 0;
+      }
+
+      throw new Error('Unknown ops subcommand. Use: hybrid-check | prune-memory');
     }
 
     if (command === 'projects') {

@@ -583,10 +583,11 @@ export function createPostgresMcpServer({ pool }) {
                project_path,
                project_target_id,
                chat_session_id,
-               status
+               status,
+               scheduled_at
              )
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
-             RETURNING id, title, description, status, priority, source, project_name, project_path, project_target_id, chat_session_id, created_at`,
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+             RETURNING id, title, description, status, priority, source, project_name, project_path, project_target_id, chat_session_id, created_at, scheduled_at`,
             [
               args.title,
               args.description,
@@ -597,6 +598,7 @@ export function createPostgresMcpServer({ pool }) {
               args.projectTargetId ?? null,
               args.chatSessionId ?? null,
               args.status ?? 'pending',
+              args.scheduledAt ?? null,
             ]
           );
           return { rows: result.rows };
@@ -1019,7 +1021,8 @@ export function createPostgresMcpServer({ pool }) {
           const result = await pool.query(
             `SELECT COUNT(*)::int AS count
              FROM tasks
-             WHERE status = 'pending'`
+             WHERE status = 'pending'
+               AND (scheduled_at IS NULL OR scheduled_at <= NOW())`
           );
           return { rows: result.rows };
         }
@@ -1049,6 +1052,7 @@ export function createPostgresMcpServer({ pool }) {
                  result
                FROM tasks
                WHERE status = 'pending'
+                 AND (scheduled_at IS NULL OR scheduled_at <= NOW())
                ORDER BY
                  CASE priority
                    WHEN 'critical' THEN 1

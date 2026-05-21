@@ -461,8 +461,15 @@ function buildPlannerPrompt(task, context) {
     typeof context.plannerContext === 'string' && context.plannerContext.trim().length > 0
       ? context.plannerContext.trim()
       : '';
+  const soul =
+    typeof context.soulContext === 'string' && context.soulContext.trim().length > 0
+      ? `## Core Identity and Guidelines:\n${context.soulContext.trim()}`
+      : '';
 
   return `You are the LocalClaw planner.
+
+${soul}
+
 Return exactly one JSON object and nothing else.
 
 Rules:

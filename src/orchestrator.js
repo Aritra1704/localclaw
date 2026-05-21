@@ -1,4 +1,4 @@
-import { statfs } from 'node:fs/promises';
+import { readFile, statfs } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import process from 'node:process';
@@ -33,6 +33,7 @@ import {
   hasDeployMapping,
   hasRepositoryMapping,
 } from './project/targets.js';
+import { createHeartbeatAgent } from './agent/heartbeat.js';
 import { ReflectionEngine } from './selfimprovement/reflectionEngine.js';
 import { RepairEngine } from './selfhealing/repairEngine.js';
 import { ChatHistoryManager } from './control/chatHistory.js';
@@ -604,6 +605,12 @@ export class Orchestrator {
     this.chatHistoryManager = options.chatHistoryManager ?? null;
     this.llmClient = options.llmClient ?? null;
     this.modelSelector = options.modelSelector ?? null;
+    this.soulPath = options.soulPath ?? path.resolve(process.cwd(), 'src/memory/soul.md');
+    this.heartbeatAgent = createHeartbeatAgent({
+      client: this.llmClient,
+      modelSelector: this.modelSelector,
+    });
+    this.lastAgenticHeartbeatAt = 0;
     this.reflectionInFlight = false;
     this.lastReflectionAt = 0;
     this.timer = null;
@@ -749,6 +756,7 @@ export class Orchestrator {
         return;
       }
 
+      await this.runAgenticHeartbeatIfDue();
       await this.processReadyDeployments();
       await this.processReadyRepairs();
       await this.runProactiveRemediationsIfDue();
@@ -978,6 +986,58 @@ export class Orchestrator {
     await this.runWorkspaceJunkCleanupIfDue(force);
   }
 
+  async readSoulContext() {
+    if (!this.soulPath) return '';
+    try {
+      return await readFile(this.soulPath, 'utf8');
+    } catch (err) {
+      this.logger.warn({ err, path: this.soulPath }, 'Failed to read soul context');
+      return '';
+    }
+  }
+
+  async runAgenticHeartbeatIfDue() {
+    if (!this.heartbeatAgent || !this.llmClient || !this.modelSelector) {
+      return;
+    }
+
+    const toolRegistry = this.taskExecutor?.toolRegistry;
+    if (!toolRegistry?.plannerCatalog) {
+      return;
+    }
+
+    const now = Date.now();
+    const interval = config.heartbeatIntervalMs ?? 60 * 60 * 1000;
+    if (now - this.lastAgenticHeartbeatAt < interval) return;
+
+    this.logger.info('Running proactive agentic heartbeat scan...');
+
+    try {
+      const snapshot = await collectWorkspaceSnapshot(process.cwd(), { limit: 100 });
+      const soulContext = await this.readSoulContext();
+
+      const tasks = await this.heartbeatAgent.analyzeProject({
+        workspaceSnapshot: JSON.stringify(snapshot),
+        recentLearnings: '',
+        toolCatalog: toolRegistry.plannerCatalog(),
+        soulContext,
+      });
+
+      for (const task of Array.isArray(tasks) ? tasks : []) {
+        await this.createTask(task.description, {
+          title: task.title,
+          priority: task.priority,
+          source: 'heartbeat_agent',
+        });
+        this.logger.info({ task: task.title }, 'Heartbeat agent proposed new task');
+      }
+    } catch (error) {
+      this.logger.error({ err: error }, 'Agentic heartbeat scan failed');
+    } finally {
+      this.lastAgenticHeartbeatAt = now;
+    }
+  }
+
   async runSelfReflectionIfDue(force = false) {
     if (!this.reflectionEngine) return;
     if (this.reflectionInFlight) return;
@@ -1049,7 +1109,8 @@ export class Orchestrator {
         this.pool.query(
           `SELECT COUNT(*)::int AS count
            FROM tasks
-           WHERE status = 'pending'`
+           WHERE status = 'pending'
+             AND (scheduled_at IS NULL OR scheduled_at <= NOW())`
         )
     );
 
@@ -1070,6 +1131,7 @@ export class Orchestrator {
             `SELECT id, title, description, priority, project_name, project_path, project_target_id, chat_session_id, result
              FROM tasks
              WHERE status = 'pending'
+               AND (scheduled_at IS NULL OR scheduled_at <= NOW())
              ORDER BY
                CASE priority
                  WHEN 'critical' THEN 1
@@ -1147,6 +1209,7 @@ export class Orchestrator {
         projectPath: task.project_path ?? null,
       });
       const taskContract = extractTaskContractFromTask(task);
+      const soulContext = await this.readSoulContext();
       let result = await this.taskExecutor.executeTask(task, {
         startStepNumber: 2,
         publisher: this.publisher,
@@ -1155,6 +1218,7 @@ export class Orchestrator {
         taskContract,
         retrievalContext,
         chatHistory,
+        soulContext,
         logStep: async (step) => {
           await this.logTaskStep(task.id, step);
           await this.touchTaskLease(task.id);
@@ -4056,6 +4120,7 @@ export class Orchestrator {
         projectTargetId: projectTarget?.id ?? null,
         chatSessionId: options.chatSessionId ?? null,
         status: 'pending',
+        scheduledAt: options.scheduledAt ?? null,
       },
       () =>
         this.pool.query(
@@ -4068,10 +4133,11 @@ export class Orchestrator {
              project_path,
              project_target_id,
              chat_session_id,
-             status
+             status,
+             scheduled_at
            )
-           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 'pending')
-           RETURNING id, title, description, status, priority, source, project_target_id, created_at`,
+           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 'pending', $9)
+           RETURNING id, title, description, status, priority, source, project_target_id, created_at, scheduled_at`,
           [
             title,
             description,
@@ -4081,6 +4147,7 @@ export class Orchestrator {
             options.projectPath ?? null,
             projectTarget?.id ?? null,
             options.chatSessionId ?? null,
+            options.scheduledAt ?? null,
           ]
         )
     );
@@ -4106,11 +4173,13 @@ export class Orchestrator {
             learningLimit: 4,
           })
         : null;
+      const soulContext = await this.readSoulContext();
       const planning = await this.taskExecutor.previewTaskPlan(task, {
         workspaceRoot: previewWorkspaceRoot,
         workspaceSnapshot: previewWorkspaceSnapshot,
         retrievalContext: retrieval.retrievalContext,
         chatHistory: retrieval.chatHistory,
+        soulContext,
       });
       const requestedAt = new Date().toISOString();
       const autoStartAllowed = execution.autoStartAllowed === true;
@@ -4602,6 +4671,7 @@ export class Orchestrator {
         projectName: options.projectName ?? null,
         projectPath: options.projectPath ?? null,
         projectTargetId: options.projectTargetId ?? null,
+        scheduledAt: options.scheduledAt ?? null,
       },
       () =>
         this.pool.query(
@@ -4612,10 +4682,11 @@ export class Orchestrator {
              source,
              project_name,
              project_path,
-             project_target_id
+             project_target_id,
+             scheduled_at
            )
-           VALUES ($1, $2, $3, $4, $5, $6, $7)
-           RETURNING id, title, status, priority, created_at`,
+           VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+           RETURNING id, title, status, priority, created_at, scheduled_at`,
           [
             title,
             trimmedDescription,
@@ -4624,6 +4695,7 @@ export class Orchestrator {
             options.projectName ?? null,
             options.projectPath ?? null,
             options.projectTargetId ?? null,
+            options.scheduledAt ?? null,
           ]
         )
     );

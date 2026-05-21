@@ -150,6 +150,18 @@ export const TOOL_DEFINITIONS = [
       }),
     },
     {
+      name: 'schedule_task',
+      description: 'Schedule a task to run in the future (e.g., at a specific ISO time or in a relative duration like "in 5 minutes").',
+      plannerArgs: '{"title":"Security Scan","description":"Perform a full codebase audit.","runAt":"2026-05-20T09:00:00Z","priority":"medium"}',
+      argsSchema: z.object({
+        title: z.string().min(1),
+        description: z.string().min(1),
+        runAt: z.string().min(1),
+        priority: z.enum(['critical', 'high', 'medium', 'low']).default('medium'),
+        projectPath: z.string().optional(),
+      }),
+    },
+    {
       name: 'get_task_status',
       description: 'Check the current status and result of a previously spawned task.',
       plannerArgs: '{"taskId":"uuid-here"}',
@@ -202,6 +214,47 @@ export function createToolRegistry(options = {}) {
         return {
           summary: `Spawned sub-task: ${task.title} (ID: ${task.id})`,
           output: JSON.stringify({ taskId: task.id, status: task.status }),
+          artifacts: [],
+        };
+      }
+
+      case 'schedule_task': {
+        if (!orchestrator) {
+          throw new Error('Orchestrator is not connected to tool registry.');
+        }
+
+        let scheduledAt = new Date(args.runAt);
+        if (isNaN(scheduledAt.getTime())) {
+          // Simple relative parsing: "in 5 minutes", "in 2 hours"
+          const match = args.runAt.match(/in (\d+) (minute|hour|day)s?/i);
+          if (match) {
+            const amount = parseInt(match[1], 10);
+            const unit = match[2].toLowerCase();
+            const now = new Date();
+            if (unit.startsWith('minute')) now.setMinutes(now.getMinutes() + amount);
+            else if (unit.startsWith('hour')) now.setHours(now.getHours() + amount);
+            else if (unit.startsWith('day')) now.setDate(now.getDate() + amount);
+            scheduledAt = now;
+          } else {
+            throw new Error(`Invalid date or duration format: ${args.runAt}`);
+          }
+        }
+
+        const task = await orchestrator.createTask(args.description, {
+          title: args.title,
+          priority: args.priority,
+          projectPath: args.projectPath || workspaceRoot,
+          source: 'schedule_tool',
+          scheduledAt,
+        });
+
+        return {
+          summary: `Scheduled task: ${task.title} for ${scheduledAt.toISOString()} (ID: ${task.id})`,
+          output: JSON.stringify({
+            taskId: task.id,
+            status: task.status,
+            scheduledAt: scheduledAt.toISOString(),
+          }),
           artifacts: [],
         };
       }

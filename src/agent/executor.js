@@ -204,6 +204,7 @@ export function createTaskExecutor({
       retrievalContext: options.retrievalContext ?? null,
       chatHistory: options.chatHistory ?? null,
       plannerContext: plannerContextBundle.text,
+      soulContext: options.soulContext ?? null,
       overrideRole: options.overrideRole ?? null,
       onStart: options.onStart,
     });
